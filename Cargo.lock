@@ -799,13 +799,26 @@ checksum = "edf234dd1594d6dd434a8fb8cada51ddbbc593e40e4a01556a0b31c62da2775b"
 name = "echofiles"
 version = "0.1.0"
 dependencies = [
+ "echofiles-config",
  "echofiles-core",
  "echofiles-disks",
+ "echofiles-index",
  "echofiles-theme",
  "echofiles-vfs",
  "iced",
+ "libc",
  "mimalloc",
  "rayon",
+ "rustix 1.1.5",
+]
+
+[[package]]
+name = "echofiles-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
@@ -830,7 +843,9 @@ name = "echofiles-index"
 version = "0.1.0"
 dependencies = [
  "divan",
+ "echofiles-config",
  "memchr",
+ "memmap2",
  "mimalloc",
  "rayon",
  "rustix 1.1.5",

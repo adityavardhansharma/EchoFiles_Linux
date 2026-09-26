@@ -181,6 +181,11 @@ fn compare(l: &Listing, keys: &NameKeys, spec: SortSpec, a: usize, b: usize) -> 
             return db.cmp(&da);
         }
     }
+    // A folder's st_size is its directory block, not its contents (the list shows "—"), so
+    // sorting by size keeps folders in name order.
+    if spec.by == SortBy::Size && l.kind[a] == Kind::Dir && l.kind[b] == Kind::Dir {
+        return keys.get(a).cmp(keys.get(b)).then_with(|| l.name_bytes(a).cmp(l.name_bytes(b)));
+    }
     let primary = match spec.by {
         SortBy::Name => Ordering::Equal,
         SortBy::Size => l.size[a].cmp(&l.size[b]),
