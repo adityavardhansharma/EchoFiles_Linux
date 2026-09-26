@@ -22,7 +22,7 @@ fn main() {
         Some("index") => {
             let root = PathBuf::from(args.get(1).expect("usage: ef index <root> [file]"));
             let out = args.get(2).map(PathBuf::from).unwrap_or_else(index_path);
-            let idx = ef_index::Index::build(&root);
+            let idx = ef_index::Index::build(&root).unwrap();
             let crawl = t0.elapsed();
             std::fs::create_dir_all(out.parent().unwrap()).unwrap();
             idx.save(&out).unwrap();
@@ -43,15 +43,17 @@ fn main() {
             let limit = args.iter().position(|a| a == "--limit").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
             let idx = ef_index::Index::load(&index_path()).expect("run `ef index ~` first");
             let loaded = t0.elapsed();
-            let needle = if ext { format!(".{pattern}") } else { pattern.clone() };
-            let hits = idx.find(&needle, ext);
+            let mut q = ef_index::Query::new(if ext { "" } else { pattern });
+            q.ext = ext.then_some(pattern.as_str());
+            q.hidden = true;
+            let hits = idx.search(&q);
             let queried = t0.elapsed();
             let mut out = std::io::BufWriter::new(std::io::stdout().lock());
             if count_only {
                 let _ = writeln!(out, "{}", hits.len());
             } else {
                 for &h in hits.iter().take(limit) {
-                    let _ = writeln!(out, "{}", idx.path(h as usize).display());
+                    let _ = writeln!(out, "{}", idx.path(h).display());
                 }
             }
             let _ = out.flush();
