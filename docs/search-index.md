@@ -4,6 +4,8 @@ Status: implemented in `crates/index` (library `ef_index`), 2026-09-26. Scope: t
 EchoFiles app uses. Agent commands (`ef …`) are out of scope here; the old prototype `ef`
 binary is only kept compiling.
 
+Update (2026-09-26): the index file is now memory-mapped and compact (format `EFIDX003`), junk folders are skipped by default, and exclusions are editable in Settings → Search — measured on the laptop in [threading-freshness-and-next-optimizations.md](threading-freshness-and-next-optimizations.md). Numbers below are from the original cloud run.
+
 Related: [speed-architecture-and-agent-index.md](speed-architecture-and-agent-index.md)
 (why we build our own index), `build plan.md` §2.8 (index) and §2.9 (measurement).
 
