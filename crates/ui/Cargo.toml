@@ -10,6 +10,10 @@ ef-core.workspace = true
 ef-disks.workspace = true
 ef-theme.workspace = true
 ef-vfs.workspace = true
+ef-index.workspace = true
+ef-config.workspace = true
 iced = { workspace = true, features = ["wayland", "x11", "smol", "crisp"] }
 mimalloc.workspace = true
 rayon.workspace = true
+rustix.workspace = true
+libc = "0.2"

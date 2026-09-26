@@ -1,10 +1,13 @@
-//! Application state, update and view.
+//! Application state and update logic. Views live in `view.rs` (files) and `settings.rs`.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use ef_core::fmt::{self, DateFormatter};
+use ef_config::{self as config, Scope, Settings};
+use ef_core::fmt::DateFormatter;
 use ef_core::listing;
 use ef_core::sort::{self, NameKeys, SortBy, SortSpec};
 use ef_core::volume::{self, FsInfo};
@@ -13,17 +16,22 @@ use ef_disks::Volume;
 use ef_theme::Palette;
 use iced::futures::channel::mpsc;
 use iced::keyboard::{self, key::Named, Key};
-use iced::widget::{button, column, container, row, svg, text, text_input, Space};
-use iced::{Alignment, Background, Border, Color, Element, Length, Subscription, Task};
+use iced::{window, Subscription, Task};
 
-use crate::file_list::{self, Action, FileList};
-use crate::style::{self, color, Icons};
+use crate::file_list::{self, Action};
+use crate::indexer::{self, IndexState, RootIndex, Watcher};
+use crate::search::{self, Results};
+use crate::settings::{SettingsMsg, SettingsUi};
+use crate::style::Icons;
+use crate::system::{self, Request};
 
 /// A directory as far as it has been loaded. Shared with the loader thread through `Arc`.
 pub struct Loaded {
     pub listing: Listing,
     pub keys: Arc<NameKeys>,
     pub metadata_ready: bool,
+    /// Dotfiles in the listing, counted once on the loader thread (not per frame).
+    pub hidden: usize,
     pub names_ms: f64,
     pub meta_ms: f64,
     pub sort_ms: f64,
@@ -45,18 +53,42 @@ pub enum Message {
     Back,
     Forward,
     Up,
+    Reload,
     ToggleHidden,
     Volumes(Result<Vec<Volume>, String>),
     DriveClicked(usize),
     Key(keyboard::Event),
-    ThemeTick,
+    Escape,
+    Tick,
     Frame(Instant),
     Search(String),
+    SearchSubmit,
     FocusSearch,
+    SetScope(Scope),
+    SearchDone { generation: u64, results: Option<Results> },
+    ResultClick(usize),
+    ResultOpen(usize),
+    ResultReveal(usize),
+    DismissNotice,
     ShowSkeleton(u64),
+    IndexOpened(Vec<RootIndex>),
+    IndexBuilt(Vec<RootIndex>),
+    IndexTick,
+    FsChanged(indexer::Change),
+    Request(Request),
+    WindowOpened(window::Id),
+    CloseRequested(window::Id),
+    WindowClosed(window::Id),
+    Settings(SettingsMsg),
 }
 
-const SEARCH_ID: &str = "search";
+pub const SEARCH_ID: &str = "search";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Files,
+    Settings,
+}
 
 struct Bench {
     frames: Vec<f64>,
@@ -65,38 +97,52 @@ struct Bench {
 }
 
 pub struct App {
-    palette: Palette,
-    icons: Icons,
-    dates: DateFormatter,
+    pub(crate) window: Option<window::Id>,
+    pub(crate) mode: Mode,
+    pub(crate) settings: Settings,
+    pub(crate) settings_ui: SettingsUi,
+    pub(crate) palette: Palette,
+    pub(crate) icons: Icons,
+    pub(crate) dates: DateFormatter,
     theme_stamp: Option<SystemTime>,
-    location: PathBuf,
-    back: Vec<PathBuf>,
-    forward: Vec<PathBuf>,
-    generation: u64,
+    pub(crate) location: PathBuf,
+    pub(crate) back: Vec<PathBuf>,
+    pub(crate) forward: Vec<PathBuf>,
+    pub(crate) generation: u64,
     nav_started: Instant,
-    first_paint_ms: f64,
-    loaded: Option<Arc<Loaded>>,
-    order: Arc<Vec<u32>>,
-    show_hidden: bool,
-    selected: Vec<u64>,
-    cursor: Option<usize>,
+    pub(crate) first_paint_ms: f64,
+    pub(crate) loaded: Option<Arc<Loaded>>,
+    pub(crate) order: Arc<Vec<u32>>,
+    pub(crate) show_hidden: bool,
+    pub(crate) selected: Vec<u64>,
+    pub(crate) cursor: Option<usize>,
     anchor: Option<usize>,
-    volumes: Vec<Volume>,
-    notice: Option<String>,
+    /// Select this name once the next listing arrives ("Show in folder").
+    reveal: Option<OsString>,
+    pub(crate) volumes: Vec<Volume>,
+    pub(crate) volume_fs: Vec<Option<FsInfo>>,
+    pub(crate) notice: Option<String>,
     typeahead: (String, Instant),
     bench: Option<Bench>,
     first_frame_logged: bool,
-    sort: SortSpec,
-    query: String,
-    /// A navigation is in flight; the old listing stays up for 150 ms, then a skeleton.
-    pending: bool,
-    skeleton: bool,
-    fs: Option<FsInfo>,
-    volume_fs: Vec<Option<FsInfo>>,
-}
-
-pub fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| "/".into())
+    pub(crate) sort: SortSpec,
+    pub(crate) query: String,
+    pub(crate) pending: bool,
+    pub(crate) skeleton: bool,
+    pub(crate) fs: Option<FsInfo>,
+    // search
+    pub(crate) scope: Scope,
+    pub(crate) results: Option<Results>,
+    pub(crate) result_cursor: Option<usize>,
+    pub(crate) searching: bool,
+    search_generation: u64,
+    search_cancel: Arc<AtomicBool>,
+    // index
+    pub(crate) index_state: IndexState,
+    pub(crate) roots: Vec<RootIndex>,
+    pub(crate) index_error: Option<String>,
+    index_dirty: Option<Instant>,
+    watcher: Option<Arc<Watcher>>,
 }
 
 fn theme_stamp() -> Option<SystemTime> {
@@ -104,13 +150,107 @@ fn theme_stamp() -> Option<SystemTime> {
     std::fs::metadata(dir.join("colors.toml")).and_then(|m| m.modified()).ok()
 }
 
+fn ms(t: Instant) -> f64 {
+    t.elapsed().as_secs_f64() * 1000.0
+}
+
+/// Error text per the design system: name the thing, the reason, and the fix.
+fn describe(dir: &Path, e: &std::io::Error) -> String {
+    let name = config::tilde(dir);
+    match e.kind() {
+        std::io::ErrorKind::PermissionDenied => format!("Couldn't open {name} — you don't have permission to read it."),
+        std::io::ErrorKind::NotFound => format!("{name} no longer exists."),
+        _ => format!("Couldn't open {name}: {e}"),
+    }
+}
+
+/// Keep entries whose name contains `query`, ignoring ASCII case.
+fn filter(l: &Listing, order: Vec<u32>, query: &str) -> Vec<u32> {
+    if query.is_empty() {
+        return order;
+    }
+    let q = query.as_bytes();
+    order
+        .into_iter()
+        .filter(|&i| {
+            let n = l.name_bytes(i as usize);
+            n.len() >= q.len() && n.windows(q.len()).any(|w| w.eq_ignore_ascii_case(q))
+        })
+        .collect()
+}
+
+/// Stream of folder changes from the watcher thread.
+static CHANGES: OnceLock<Mutex<Option<mpsc::UnboundedReceiver<indexer::Change>>>> = OnceLock::new();
+
+fn changes() -> impl iced::futures::Stream<Item = indexer::Change> {
+    let rx = CHANGES.get().and_then(|m| m.lock().unwrap().take());
+    iced::futures::stream::unfold(rx, |rx| async move {
+        use iced::futures::StreamExt;
+        let mut rx = rx?;
+        let item = rx.next().await?;
+        Some((item, Some(rx)))
+    })
+}
+
+/// Run blocking work on a plain thread and deliver its result as a message.
+fn background<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static, to: impl Fn(T) -> Message + Send + 'static) -> Task<Message> {
+    Task::perform(
+        async move {
+            let (tx, rx) = iced::futures::channel::oneshot::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(work());
+            });
+            rx.await
+        },
+        move |r| match r {
+            Ok(v) => to(v),
+            Err(_) => Message::Tick,
+        },
+    )
+}
+
+pub fn window_settings() -> window::Settings {
+    window::Settings {
+        size: iced::Size::new(1280.0, 800.0),
+        exit_on_close_request: false,
+        platform_specific: window::settings::PlatformSpecific { application_id: "echofiles".into(), ..Default::default() },
+        ..Default::default()
+    }
+}
+
 impl App {
     pub fn boot() -> (Self, Task<Message>) {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let background_launch = args.iter().any(|a| a == "--background");
+        let (settings, settings_error) = match Settings::load() {
+            Ok(s) => (s, None),
+            Err(e) => (Settings::default(), Some(format!("Couldn't read your settings, so defaults are used: {e}"))),
+        };
         let palette = ef_theme::load_active();
         let icons = Icons::new(&palette);
         let bench_dir = std::env::var_os("ECHOFILES_BENCH").map(PathBuf::from);
-        let start = bench_dir.clone().or_else(|| std::env::args_os().nth(1).map(PathBuf::from)).unwrap_or_else(home);
+        let path_arg = args.iter().find(|a| !a.starts_with("--")).map(|a| config::expand(a));
+        let start = bench_dir
+            .clone()
+            .or(path_arg)
+            .or_else(|| (settings.general.open_to == config::OpenTo::Last).then(system::last_folder).flatten())
+            .unwrap_or_else(config::home);
+
+        let (tx, rx) = mpsc::unbounded();
+        CHANGES.get_or_init(|| Mutex::new(Some(rx)));
+        let watcher = Watcher::new(move |c| {
+            let _ = tx.unbounded_send(c);
+        })
+        .map(Arc::new);
+        if let Some(w) = &watcher {
+            w.watch_landing_folders();
+            w.watch_current(&start);
+        }
+
         let mut app = Self {
+            window: None,
+            mode: if args.iter().any(|a| a == "--settings") { Mode::Settings } else { Mode::Files },
+            settings_ui: SettingsUi::new(settings_error),
             palette,
             icons,
             dates: DateFormatter::new(),
@@ -123,11 +263,13 @@ impl App {
             first_paint_ms: 0.0,
             loaded: None,
             order: Arc::new(Vec::new()),
-            show_hidden: false,
+            show_hidden: settings.general.show_hidden,
             selected: Vec::new(),
             cursor: None,
             anchor: None,
+            reveal: None,
             volumes: Vec::new(),
+            volume_fs: Vec::new(),
             notice: None,
             typeahead: (String::new(), Instant::now()),
             bench: bench_dir.map(|_| Bench { frames: Vec::with_capacity(700), last: None, started: false }),
@@ -137,29 +279,47 @@ impl App {
             pending: true,
             skeleton: false,
             fs: volume::fs_info(&start),
-            volume_fs: Vec::new(),
+            scope: settings.search.default_scope,
+            results: None,
+            result_cursor: None,
+            searching: false,
+            search_generation: 0,
+            search_cancel: Arc::new(AtomicBool::new(false)),
+            index_state: if settings.search.index { IndexState::Opening } else { IndexState::Off },
+            roots: Vec::new(),
+            index_error: None,
+            index_dirty: None,
+            watcher,
+            settings,
         };
-        let load = app.load(start);
-        let probe = Task::perform(
-            async {
-                let (tx, rx) = iced::futures::channel::oneshot::channel();
-                std::thread::spawn(move || {
-                    let _ = tx.send(ef_disks::windows_volumes().map_err(|e| e.to_string()));
-                });
-                rx.await.unwrap_or_else(|_| Err("drive probe stopped".into()))
-            },
-            Message::Volumes,
-        );
-        (app, Task::batch([load, probe]))
+        let mut tasks = vec![app.load(start)];
+        tasks.push(background(|| ef_disks::windows_volumes().map_err(|e| e.to_string()), Message::Volumes));
+        if app.settings.search.index {
+            let cfg = app.settings.search.clone();
+            tasks.push(background(move || indexer::open_existing(&cfg), Message::IndexOpened));
+        }
+        if !background_launch {
+            let (_, open) = window::open(window_settings());
+            tasks.push(open.map(Message::WindowOpened));
+        }
+        (app, Task::batch(tasks))
     }
 
-    pub fn title(&self) -> String {
-        let name = self.location.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "/".into());
-        format!("{name} — EchoFiles")
+    pub fn title(&self, _window: window::Id) -> String {
+        match self.mode {
+            Mode::Settings => "Settings — EchoFiles".into(),
+            Mode::Files => {
+                let crumbs = self.crumbs();
+                let last = crumbs.last().map(|c| c.1.clone()).unwrap_or_else(|| "EchoFiles".into());
+                format!("{last} — EchoFiles")
+            }
+        }
     }
+
+    // ------------------------------------------------------------------ loading
 
     /// Start listing `dir` on the rayon pool: names first, then metadata (build plan §2.2).
-    fn load(&mut self, dir: PathBuf) -> Task<Message> {
+    pub(crate) fn load(&mut self, dir: PathBuf) -> Task<Message> {
         self.generation += 1;
         self.nav_started = Instant::now();
         let generation = self.generation;
@@ -167,6 +327,9 @@ impl App {
         let spec = self.sort;
         self.pending = true;
         self.fs = volume::fs_info(&dir);
+        if let Some(w) = &self.watcher {
+            w.watch_current(&dir);
+        }
         let (tx, rx) = mpsc::unbounded();
         let timer_tx = tx.clone();
         std::thread::spawn(move || {
@@ -187,6 +350,7 @@ impl App {
                 Err(e) => return send(Message::LoadFailed { generation, error: describe(&dir, &e) }),
             };
             let names_ms = ms(t0);
+            let hidden = (0..names.len()).filter(|&i| names.is_hidden(i)).count();
             let t1 = Instant::now();
             let keys = Arc::new(NameKeys::build(&names));
             let order = Arc::new(sort::order(&names, &keys, spec, show_hidden));
@@ -194,55 +358,54 @@ impl App {
             let mut full = names.clone();
             send(Message::Loaded {
                 generation,
-                loaded: Arc::new(Loaded { listing: names, keys: keys.clone(), metadata_ready: false, names_ms, meta_ms: 0.0, sort_ms }),
+                loaded: Arc::new(Loaded { listing: names, keys: keys.clone(), metadata_ready: false, hidden, names_ms, meta_ms: 0.0, sort_ms }),
                 order: order.clone(),
             });
             let t2 = Instant::now();
             listing::fill_metadata(&mut full, &fd);
             let meta_ms = ms(t2);
-            let order = if matches!(spec.by, SortBy::Size | SortBy::Modified) {
-                Arc::new(sort::order(&full, &keys, spec, show_hidden))
-            } else {
-                order
-            };
-            send(Message::Loaded {
-                generation,
-                loaded: Arc::new(Loaded { listing: full, keys, metadata_ready: true, names_ms, meta_ms, sort_ms }),
-                order,
-            });
+            let order = if matches!(spec.by, SortBy::Size | SortBy::Modified) { Arc::new(sort::order(&full, &keys, spec, show_hidden)) } else { order };
+            send(Message::Loaded { generation, loaded: Arc::new(Loaded { listing: full, keys, metadata_ready: true, hidden, names_ms, meta_ms, sort_ms }), order });
         });
         Task::run(rx, |m| m)
     }
 
-    fn navigate(&mut self, dir: PathBuf, record: bool) -> Task<Message> {
-        if dir == self.location {
+    /// Go somewhere new: clears the search, which belonged to the old folder.
+    fn go(&mut self, dir: PathBuf, record: bool) -> Task<Message> {
+        if dir == self.location && self.results.is_none() {
             return Task::none();
         }
-        if record {
+        if record && dir != self.location {
             self.back.push(std::mem::replace(&mut self.location, dir.clone()));
             self.forward.clear();
         } else {
             self.location = dir.clone();
         }
         self.notice = None;
-        self.query.clear();
+        self.clear_search();
+        let d = dir.clone();
+        std::thread::spawn(move || system::save_last_folder(&d));
         self.load(dir)
     }
 
-    fn reorder(&self) -> Task<Message> {
+    fn clear_search(&mut self) {
+        self.query.clear();
+        self.results = None;
+        self.result_cursor = None;
+        self.searching = false;
+        self.search_cancel.store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn reorder(&self) -> Task<Message> {
         let Some(loaded) = self.loaded.clone() else { return Task::none() };
         let generation = self.generation;
         let show_hidden = self.show_hidden;
         let spec = self.sort;
-        let query = self.query.clone();
-        Task::perform(
-            async move {
-                let (tx, rx) = iced::futures::channel::oneshot::channel();
-                rayon::spawn(move || {
-                    let order = sort::order(&loaded.listing, &loaded.keys, spec, show_hidden);
-                    let _ = tx.send(filter(&loaded.listing, order, &query));
-                });
-                rx.await.unwrap_or_default()
+        let query = if self.scope == Scope::Folder { self.query.clone() } else { String::new() };
+        background(
+            move || {
+                let order = sort::order(&loaded.listing, &loaded.keys, spec, show_hidden);
+                filter(&loaded.listing, order, &query)
             },
             move |order| Message::Reordered { generation, order: Arc::new(order) },
         )
@@ -262,35 +425,39 @@ impl App {
         self.selected.iter_mut().for_each(|w| *w = 0);
     }
 
-    fn selection_stats(&self) -> (usize, u64) {
-        let Some(l) = self.loaded.as_ref().map(|l| &l.listing) else { return (0, 0) };
-        let mut count = 0;
-        let mut bytes = 0;
+    /// (files, folders, bytes of the files) selected.
+    pub(crate) fn selection_stats(&self) -> (usize, usize, u64) {
+        let Some(l) = self.loaded.as_ref().map(|l| &l.listing) else { return (0, 0, 0) };
+        let (mut files, mut dirs, mut bytes) = (0, 0, 0);
         for (wi, &w) in self.selected.iter().enumerate() {
             let mut bits = w;
             while bits != 0 {
                 let i = wi * 64 + bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                count += 1;
-                if !l.is_dir(i) {
+                if l.is_dir(i) {
+                    dirs += 1;
+                } else {
+                    files += 1;
                     bytes += l.size[i];
                 }
             }
         }
-        (count, bytes)
+        (files, dirs, bytes)
+    }
+
+    fn open_path(&mut self, path: PathBuf) -> Task<Message> {
+        if path.is_dir() {
+            return self.go(path, true);
+        }
+        if let Err(e) = std::process::Command::new("xdg-open").arg(&path).spawn() {
+            self.notice = Some(format!("Couldn't open {}: {e}", config::tilde(&path)));
+        }
+        Task::none()
     }
 
     fn open(&mut self, pos: usize) -> Task<Message> {
         let (Some(i), Some(l)) = (self.entry_at(pos), self.loaded.clone()) else { return Task::none() };
-        let path = l.listing.path(i);
-        if path.is_dir() {
-            return self.navigate(path, true);
-        }
-        match std::process::Command::new("xdg-open").arg(&path).spawn() {
-            Ok(_) => {}
-            Err(e) => self.notice = Some(format!("Couldn't open “{}”: {e}", l.listing.name(i).to_string_lossy())),
-        }
-        Task::none()
+        self.open_path(l.listing.path(i))
     }
 
     fn jump_to_prefix(&mut self, c: &str) {
@@ -319,6 +486,84 @@ impl App {
         self.anchor = Some(pos);
     }
 
+    // ------------------------------------------------------------------ search
+
+    pub(crate) fn everywhere(&self) -> bool {
+        self.scope == Scope::Everywhere && !self.query.trim().is_empty()
+    }
+
+    fn run_search(&mut self) -> Task<Message> {
+        self.search_cancel.store(true, Ordering::Relaxed);
+        self.search_generation += 1;
+        let generation = self.search_generation;
+        let text = self.query.trim().to_string();
+        if text.is_empty() {
+            self.results = None;
+            self.searching = false;
+            return Task::none();
+        }
+        self.searching = true;
+        let hidden = self.show_hidden;
+        if self.settings.search.index && self.roots.iter().any(|r| r.map.is_some()) {
+            let roots = self.roots.clone();
+            return background(move || search::from_index(&roots, &text, hidden), move |results| Message::SearchDone { generation, results });
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.search_cancel = cancel.clone();
+        let cfg = self.settings.search.clone();
+        let roots = cfg.roots();
+        background(move || search::live(&roots, &cfg, &text, hidden, &cancel), move |results| Message::SearchDone { generation, results })
+    }
+
+    // ------------------------------------------------------------------ index
+
+    pub(crate) fn build_index(&mut self) -> Task<Message> {
+        if !self.settings.search.index || self.index_state == IndexState::Building {
+            return Task::none();
+        }
+        self.index_state = IndexState::Building;
+        self.index_dirty = None;
+        let cfg = self.settings.search.clone();
+        background(move || indexer::build_all(&cfg), Message::IndexBuilt)
+    }
+
+    /// Settings that change what's indexed: rebuild soon (debounced).
+    pub(crate) fn index_settings_changed(&mut self) {
+        if self.settings.search.index {
+            self.index_dirty = Some(Instant::now());
+        }
+    }
+
+    pub(crate) fn set_index_enabled(&mut self, on: bool) -> Task<Message> {
+        self.settings.search.index = on;
+        if on {
+            self.index_state = IndexState::Opening;
+            let cfg = self.settings.search.clone();
+            background(move || indexer::open_existing(&cfg), Message::IndexOpened)
+        } else {
+            self.index_state = IndexState::Off;
+            self.roots.clear();
+            self.index_error = None;
+            let cfg = self.settings.search.clone();
+            std::thread::spawn(move || indexer::remove_files(&cfg));
+            Task::none()
+        }
+    }
+
+    // ------------------------------------------------------------------ windows
+
+    pub(crate) fn show_window(&mut self) -> Task<Message> {
+        match self.window {
+            Some(id) => window::gain_focus(id),
+            None => {
+                let (_, open) = window::open(window_settings());
+                open.map(Message::WindowOpened)
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ update
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Loaded { generation, loaded, order } if generation == self.generation => {
@@ -327,16 +572,45 @@ impl App {
                     self.pending = false;
                     self.skeleton = false;
                     self.first_paint_ms = ms(self.nav_started);
+                    // Keep the cursor on the same name across a refresh of the same folder.
+                    let keep = self.loaded.as_ref().filter(|l| l.listing.dir == loaded.listing.dir).and_then(|l| {
+                        let pos = self.cursor?;
+                        let i = *self.order.get(pos)? as usize;
+                        Some(l.listing.name(i).to_os_string())
+                    });
                     self.selected = vec![0; loaded.listing.len().div_ceil(64)];
                     self.cursor = None;
                     self.anchor = None;
-                } else if std::env::var_os("ECHOFILES_TIMING").is_some() || self.bench.is_some() {
+                    let want = self.reveal.take().or(keep);
+                    self.loaded = Some(loaded);
+                    self.order = order;
+                    if let Some(name) = want {
+                        let l = &self.loaded.as_ref().unwrap().listing;
+                        if let Some(pos) = self.order.iter().position(|&i| l.name(i as usize) == name) {
+                            self.select_only(pos);
+                        }
+                    }
+                    if self.scope == Scope::Folder && !self.query.is_empty() {
+                        return self.reorder();
+                    }
+                    return Task::none();
+                }
+                if std::env::var_os("ECHOFILES_TIMING").is_some() || self.bench.is_some() {
                     eprintln!(
                         "listing {}: {} entries · names {:.1} ms · sort {:.1} ms · metadata {:.1} ms · first paint {:.1} ms after navigation",
-                        loaded.listing.dir.display(), loaded.listing.len(), loaded.names_ms, loaded.sort_ms, loaded.meta_ms, self.first_paint_ms
+                        loaded.listing.dir.display(),
+                        loaded.listing.len(),
+                        loaded.names_ms,
+                        loaded.sort_ms,
+                        loaded.meta_ms,
+                        self.first_paint_ms
                     );
                 }
+                let keep_order = self.scope == Scope::Folder && !self.query.is_empty();
                 self.loaded = Some(loaded);
+                if keep_order {
+                    return self.reorder();
+                }
                 self.order = order;
                 Task::none()
             }
@@ -349,6 +623,8 @@ impl App {
             Message::LoadFailed { generation, error } => {
                 if generation == self.generation {
                     self.notice = Some(error);
+                    self.pending = false;
+                    self.skeleton = false;
                     if let Some(prev) = self.back.pop() {
                         self.location = prev;
                     }
@@ -395,37 +671,101 @@ impl App {
             }
             Message::Search(q) => {
                 self.query = q;
-                self.reorder()
+                match self.scope {
+                    Scope::Folder => self.reorder(),
+                    Scope::Everywhere => self.run_search(),
+                }
+            }
+            Message::SearchSubmit => match (self.everywhere(), self.result_cursor) {
+                (true, Some(i)) => self.update(Message::ResultOpen(i)),
+                _ => Task::none(),
+            },
+            Message::SetScope(s) => {
+                self.scope = s;
+                self.results = None;
+                self.result_cursor = None;
+                let t = self.reorder();
+                if s == Scope::Everywhere { Task::batch([t, self.run_search()]) } else { t }
+            }
+            Message::SearchDone { generation, results } => {
+                if generation == self.search_generation {
+                    self.searching = false;
+                    if let Some(r) = results {
+                        self.result_cursor = (!r.hits.is_empty()).then_some(0);
+                        self.results = Some(r);
+                    }
+                }
+                Task::none()
+            }
+            Message::ResultClick(i) => {
+                self.result_cursor = Some(i);
+                Task::none()
+            }
+            Message::ResultOpen(i) => match self.results.as_ref().and_then(|r| r.hits.get(i)).map(|h| h.path.clone()) {
+                Some(p) => self.open_path(p),
+                None => Task::none(),
+            },
+            Message::ResultReveal(i) => {
+                let Some(h) = self.results.as_ref().and_then(|r| r.hits.get(i)) else { return Task::none() };
+                let (Some(parent), Some(name)) = (h.path.parent().map(Path::to_path_buf), h.path.file_name().map(|n| n.to_os_string())) else { return Task::none() };
+                self.reveal = Some(name);
+                self.scope = Scope::Folder;
+                self.go(parent, true)
             }
             Message::FocusSearch => iced::widget::operation::focus(SEARCH_ID),
+            Message::DismissNotice => {
+                self.notice = None;
+                Task::none()
+            }
+            Message::Escape => {
+                if self.mode == Mode::Settings {
+                    self.mode = Mode::Files;
+                    return Task::none();
+                }
+                if !self.query.is_empty() {
+                    self.clear_search();
+                    return self.reorder();
+                }
+                self.clear_selection();
+                Task::none()
+            }
+            Message::Settings(m) => self.settings_update(m),
             Message::ShowSkeleton(generation) => {
                 if generation == self.generation && self.pending {
                     self.skeleton = true;
                 }
                 Task::none()
             }
-            Message::Navigate(dir) => self.navigate(dir, true),
+            Message::Navigate(dir) => {
+                self.mode = Mode::Files;
+                self.go(dir, true)
+            }
             Message::Back => match self.back.pop() {
                 Some(prev) => {
-                    self.forward.push(std::mem::replace(&mut self.location, prev.clone()));
-                    self.load(prev)
+                    self.forward.push(self.location.clone());
+                    self.go(prev, false)
                 }
                 None => Task::none(),
             },
             Message::Forward => match self.forward.pop() {
                 Some(next) => {
-                    self.back.push(std::mem::replace(&mut self.location, next.clone()));
-                    self.load(next)
+                    self.back.push(self.location.clone());
+                    self.go(next, false)
                 }
                 None => Task::none(),
             },
             Message::Up => match self.location.parent() {
-                Some(parent) => self.navigate(parent.to_path_buf(), true),
+                Some(parent) => self.go(parent.to_path_buf(), true),
                 None => Task::none(),
             },
+            Message::Reload => {
+                let dir = self.location.clone();
+                self.load(dir)
+            }
             Message::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
-                self.reorder()
+                let t = self.reorder();
+                if self.everywhere() { Task::batch([t, self.run_search()]) } else { t }
             }
             Message::Volumes(result) => {
                 match result {
@@ -439,58 +779,154 @@ impl App {
             }
             Message::DriveClicked(i) => {
                 let Some(v) = self.volumes.get(i) else { return Task::none() };
+                self.mode = Mode::Files;
                 match v.mount_points.first() {
                     Some(mp) => {
                         let mp = PathBuf::from(mp);
-                        self.navigate(mp, true)
+                        self.go(mp, true)
                     }
                     None => {
                         self.notice = Some(format!(
-                            "{} isn't mounted yet. Mounting from EchoFiles arrives in M2 — for now run: udisksctl mount -b {}",
-                            drive_name(v, &self.volumes),
+                            "{} isn't mounted yet. Mounting from EchoFiles is coming next — for now, run: udisksctl mount -b {}",
+                            crate::view::drive_name(v, &self.volumes),
                             v.device
                         ));
                         Task::none()
                     }
                 }
             }
-            Message::Key(keyboard::Event::KeyPressed { key, modifiers, text, .. }) => match key.as_ref() {
-                Key::Named(Named::Backspace) => self.update(Message::Up),
-                Key::Named(Named::ArrowLeft) if modifiers.alt() => self.update(Message::Back),
-                Key::Named(Named::ArrowRight) if modifiers.alt() => self.update(Message::Forward),
-                Key::Named(Named::ArrowUp) if modifiers.alt() => self.update(Message::Up),
-                Key::Named(Named::F5) => {
-                    let dir = self.location.clone();
-                    self.load(dir)
+            Message::Key(keyboard::Event::KeyPressed { key, modifiers, text, .. }) => {
+                if self.mode == Mode::Settings {
+                    return match key.as_ref() {
+                        Key::Character("q") if modifiers.control() => iced::exit(),
+                        _ => Task::none(),
+                    };
                 }
-                Key::Named(Named::Escape) => {
-                    if !self.query.is_empty() {
-                        return self.update(Message::Search(String::new()));
-                    }
-                    self.clear_selection();
-                    Task::none()
-                }
-                Key::Character("f") if modifiers.control() => self.update(Message::FocusSearch),
-                Key::Character("l") if modifiers.control() => self.update(Message::FocusSearch),
-                Key::Character("/") => self.update(Message::FocusSearch),
-                Key::Character("h") if modifiers.control() => self.update(Message::ToggleHidden),
-                Key::Character("q") if modifiers.control() => iced::exit(),
-                _ => {
-                    if !modifiers.control() && !modifiers.alt() {
-                        if let Some(t) = text.as_ref().filter(|t| t.chars().all(|c| !c.is_control())) {
-                            self.jump_to_prefix(t);
+                if self.everywhere() {
+                    let n = self.results.as_ref().map_or(0, |r| r.hits.len());
+                    match key.as_ref() {
+                        Key::Named(Named::ArrowDown) if n > 0 => {
+                            self.result_cursor = Some(self.result_cursor.map_or(0, |c| (c + 1).min(n - 1)));
+                            return Task::none();
                         }
+                        Key::Named(Named::ArrowUp) if n > 0 => {
+                            self.result_cursor = Some(self.result_cursor.map_or(0, |c| c.saturating_sub(1)));
+                            return Task::none();
+                        }
+                        Key::Named(Named::Enter) => {
+                            return match self.result_cursor {
+                                Some(i) if modifiers.alt() => self.update(Message::ResultReveal(i)),
+                                Some(i) => self.update(Message::ResultOpen(i)),
+                                None => Task::none(),
+                            };
+                        }
+                        _ => {}
                     }
-                    Task::none()
                 }
-            },
+                match key.as_ref() {
+                    Key::Named(Named::Backspace) => self.update(Message::Up),
+                    Key::Named(Named::ArrowLeft) if modifiers.alt() => self.update(Message::Back),
+                    Key::Named(Named::ArrowRight) if modifiers.alt() => self.update(Message::Forward),
+                    Key::Named(Named::ArrowUp) if modifiers.alt() => self.update(Message::Up),
+                    Key::Named(Named::F5) => self.update(Message::Reload),
+                    Key::Character(",") if modifiers.control() => self.update(Message::Settings(SettingsMsg::Open)),
+                    Key::Character("f") | Key::Character("l") if modifiers.control() => self.update(Message::FocusSearch),
+                    Key::Character("/") => self.update(Message::FocusSearch),
+                    Key::Character("h") if modifiers.control() => self.update(Message::ToggleHidden),
+                    Key::Character("q") if modifiers.control() => iced::exit(),
+                    Key::Character("e") if modifiers.control() => {
+                        let s = if self.scope == Scope::Folder { Scope::Everywhere } else { Scope::Folder };
+                        self.update(Message::SetScope(s))
+                    }
+                    _ => {
+                        if !modifiers.control() && !modifiers.alt() {
+                            if let Some(t) = text.as_ref().filter(|t| t.chars().all(|c| !c.is_control())) {
+                                self.jump_to_prefix(t);
+                            }
+                        }
+                        Task::none()
+                    }
+                }
+            }
             Message::Key(_) => Task::none(),
-            Message::ThemeTick => {
+            Message::Tick => {
                 let stamp = theme_stamp();
                 if stamp != self.theme_stamp {
                     self.theme_stamp = stamp;
                     self.palette = ef_theme::load_active();
                     self.icons = Icons::new(&self.palette);
+                }
+                if indexer::settled(self.index_dirty, 1500) && self.index_state != IndexState::Building {
+                    return self.build_index();
+                }
+                Task::none()
+            }
+            Message::IndexOpened(roots) => {
+                if !self.settings.search.index {
+                    return Task::none();
+                }
+                let stale = roots.iter().any(|r| r.map.is_none() || r.updated.is_none_or(|t| t.elapsed().map_or(true, |d| d > Duration::from_secs(60))));
+                self.roots = roots;
+                self.index_state = if self.roots.iter().any(|r| r.map.is_some()) { IndexState::Ready } else { IndexState::Building };
+                if stale {
+                    self.index_state = IndexState::Ready;
+                    return self.build_index();
+                }
+                Task::none()
+            }
+            Message::IndexBuilt(roots) => {
+                if !self.settings.search.index {
+                    return Task::none();
+                }
+                self.index_error = roots.iter().find_map(|r| r.error.clone());
+                self.roots = roots;
+                self.index_state = IndexState::Ready;
+                if self.everywhere() {
+                    return self.run_search();
+                }
+                Task::none()
+            }
+            Message::IndexTick => self.build_index(),
+            Message::FsChanged(change) => {
+                if change.names_changed && change.visible {
+                    self.index_settings_changed();
+                }
+                if change.folder == self.location && (change.visible || self.show_hidden) && self.mode == Mode::Files {
+                    let dir = self.location.clone();
+                    return self.load(dir);
+                }
+                Task::none()
+            }
+            Message::Request(req) => {
+                if let Request::Open(Some(p)) = &req {
+                    self.mode = Mode::Files;
+                    let t = self.go(p.clone(), true);
+                    return Task::batch([t, self.show_window()]);
+                }
+                if matches!(req, Request::Settings) {
+                    self.mode = Mode::Settings;
+                }
+                self.show_window()
+            }
+            Message::WindowOpened(id) => {
+                self.window = Some(id);
+                Task::none()
+            }
+            Message::CloseRequested(id) => {
+                if self.settings.general.background {
+                    // Stay running: index fresh, next window instant.
+                    self.window = None;
+                    window::close(id)
+                } else {
+                    iced::exit()
+                }
+            }
+            Message::WindowClosed(id) => {
+                if self.window == Some(id) {
+                    self.window = None;
+                }
+                if self.window.is_none() && !self.settings.general.background {
+                    return iced::exit();
                 }
                 Task::none()
             }
@@ -521,7 +957,6 @@ impl App {
             b.frames.push(now.duration_since(last).as_secs_f64() * 1000.0);
         }
         b.last = Some(now);
-        // Scroll three rows per frame by moving the keyboard cursor, like holding ↓.
         self.cursor = Some((self.cursor.unwrap_or(0) + 3) % n);
         if b.frames.len() >= 600 {
             let mut f = b.frames.clone();
@@ -530,7 +965,13 @@ impl App {
             let over = f.iter().filter(|&&x| x > 17.5).count();
             eprintln!(
                 "scroll bench: {} frames over {} rows · p50 {:.2} ms · p95 {:.2} ms · p99 {:.2} ms · max {:.2} ms · {} frames > 17.5 ms",
-                f.len(), n, pct(0.5), pct(0.95), pct(0.99), f[f.len() - 1], over
+                f.len(),
+                n,
+                pct(0.5),
+                pct(0.95),
+                pct(0.99),
+                f[f.len() - 1],
+                over
             );
             return iced::exit();
         }
@@ -538,462 +979,32 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let mut subs = vec![keyboard::listen().map(Message::Key), iced::time::every(Duration::from_secs(1)).map(|_| Message::ThemeTick)];
+        let mut subs = vec![
+            keyboard::listen().map(Message::Key),
+            // Esc works even while the search field has focus (it captures other keys).
+            iced::event::listen_with(|event, _status, _window| match event {
+                iced::Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(Named::Escape), .. }) => Some(Message::Escape),
+                _ => None,
+            }),
+            iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick),
+            window::close_requests().map(Message::CloseRequested),
+            window::close_events().map(Message::WindowClosed),
+            Subscription::run(system::requests).map(Message::Request),
+            Subscription::run(changes).map(Message::FsChanged),
+        ];
+        if self.settings.search.index {
+            subs.push(iced::time::every(Duration::from_secs(60)).map(|_| Message::IndexTick));
+        }
         if self.bench.is_some() || !self.first_frame_logged {
-            subs.push(iced::window::frames().map(Message::Frame));
+            subs.push(window::frames().map(Message::Frame));
         }
         Subscription::batch(subs)
     }
 
-    // ------------------------------------------------------------------ view
-
-    pub fn view(&self) -> Element<'_, Message> {
-        let p = &self.palette;
-        let list: Element<'_, Message> = match &self.loaded {
-            Some(loaded) => {
-                let empty = (!self.skeleton && self.order.is_empty()).then(|| {
-                    if !self.query.is_empty() {
-                        (format!("No matches for “{}”", self.query), "Nothing in this folder matches. Press Esc to clear the search.".to_string())
-                    } else if loaded.listing.is_empty() {
-                        ("This folder is empty".to_string(), "Drop files here, or paste with Ctrl+V.".to_string())
-                    } else {
-                        ("Only hidden files here".to_string(), "Press Ctrl+H to show them.".to_string())
-                    }
-                });
-                FileList::new(
-                    file_list::Model {
-                        listing: &loaded.listing,
-                        order: &self.order,
-                        selected: &self.selected,
-                        cursor: self.cursor,
-                        generation: self.generation,
-                        metadata_ready: loaded.metadata_ready,
-                        sort: self.sort,
-                        skeleton: self.skeleton,
-                        empty,
-                    },
-                    p,
-                    &self.icons,
-                    &self.dates,
-                    Message::List,
-                )
-                .into()
-            }
-            None => container(Space::new()).width(Length::Fill).height(Length::Fill).into(),
-        };
-
-        let mut center = column![].width(Length::Fill).height(Length::Fill);
-        if let Some(n) = &self.notice {
-            center = center.push(self.banner(n));
+    pub fn view(&self, _window: window::Id) -> iced::Element<'_, Message> {
+        match self.mode {
+            Mode::Files => self.files_view(),
+            Mode::Settings => self.settings_view(),
         }
-        center = center.push(list);
-
-        let body = row![self.sidebar(), vline(p.line), center].height(Length::Fill);
-        let root = column![self.toolbar(), hline(p.line), body, hline(p.line), self.status_bar()];
-        container(root)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .style(move |_| container::Style { background: Some(Background::Color(color(p.bg))), ..Default::default() })
-            .into()
-    }
-
-    fn glyph<'a>(&self, name: &str, size: f32, tint: Color) -> Element<'a, Message> {
-        svg(self.icons.glyph(name)).width(size).height(size).style(move |_, _| svg::Style { color: Some(tint) }).into()
-    }
-
-    fn glyph_button<'a>(&'a self, name: &str, label: &str, msg: Option<Message>, active: bool) -> Element<'a, Message> {
-        let p = self.palette.clone();
-        let enabled = msg.is_some();
-        let tint = if active {
-            color(p.accent_ink)
-        } else if enabled {
-            color(p.ink_muted)
-        } else {
-            Color { a: 0.45, ..color(p.ink_muted) }
-        };
-        let b = button(container(self.glyph(name, style::GLYPH, tint)).center(28.0))
-            .padding(0)
-            .on_press_maybe(msg)
-            .style(move |_, status| {
-                let bg = match status {
-                    button::Status::Hovered => Some(Background::Color(color(p.state_hover))),
-                    button::Status::Pressed => Some(Background::Color(color(p.state_press))),
-                    _ if active => Some(Background::Color(color(p.state_active))),
-                    _ => None,
-                };
-                button::Style { background: bg, text_color: color(p.ink), border: Border { radius: 4.0.into(), ..Border::default() }, ..Default::default() }
-            });
-        iced::widget::tooltip(b, self.tooltip(label), iced::widget::tooltip::Position::Bottom).gap(6).into()
-    }
-
-    fn tooltip<'a>(&self, label: &str) -> Element<'a, Message> {
-        let p = self.palette.clone();
-        container(text(label.to_string()).size(style::LABEL).font(style::FONT).color(color(p.ink)))
-            .padding([3, 8])
-            .style(move |_| container::Style {
-                background: Some(Background::Color(color(p.bg_raised))),
-                border: Border { color: color(p.line_strong), width: 1.0, radius: 0.0.into() },
-                ..Default::default()
-            })
-            .into()
-    }
-
-    /// Breadcrumb segments: Home or the drive's name first, never raw mount paths.
-    fn crumbs(&self) -> Vec<(Option<&'static str>, String, PathBuf)> {
-        let home = home();
-        let (mut base, mut out) = if let Ok(rest) = self.location.strip_prefix(&home) {
-            (rest.to_path_buf(), vec![(Some("home"), "Home".to_string(), home.clone())])
-        } else if let Some((v, mp)) = self.volumes.iter().find_map(|v| {
-            v.mount_points.iter().find(|m| self.location.starts_with(m.as_str())).map(|m| (v, m.clone()))
-        }) {
-            let rest = self.location.strip_prefix(&mp).unwrap_or(Path::new("")).to_path_buf();
-            (rest, vec![(Some("drive"), drive_name(v, &self.volumes), PathBuf::from(mp))])
-        } else {
-            (self.location.strip_prefix("/").unwrap_or(&self.location).to_path_buf(), vec![(Some("drive"), "Computer".to_string(), PathBuf::from("/"))])
-        };
-        let mut acc = out[0].2.clone();
-        for c in base.components() {
-            acc.push(c);
-            out.push((None, c.as_os_str().to_string_lossy().into_owned(), acc.clone()));
-        }
-        base.clear();
-        out
-    }
-
-    fn toolbar(&self) -> Element<'_, Message> {
-        let p = &self.palette;
-        let crumbs = self.crumbs();
-        let n = crumbs.len();
-        let mut trail = row![].spacing(0).align_y(Alignment::Center);
-        for (idx, (icon, label, target)) in crumbs.into_iter().enumerate() {
-            if idx > 0 {
-                trail = trail.push(self.glyph("chevron-right", 12.0, color(p.ink_faint)));
-            }
-            let last = idx == n - 1;
-            let ink = if last { color(p.ink_strong) } else { color(p.ink_muted) };
-            let mut content = row![].spacing(style::SPACE_1 + 2.0).align_y(Alignment::Center);
-            if let Some(icon) = icon {
-                content = content.push(self.glyph(icon, 14.0, ink));
-            }
-            content = content.push(text(label).size(style::BODY).font(if last { style::FONT_BOLD } else { style::FONT }).color(ink).wrapping(text::Wrapping::None));
-            let pal = p.clone();
-            trail = trail.push(
-                button(content)
-                    .padding([3, 6])
-                    .on_press_maybe((!last).then_some(Message::Navigate(target)))
-                    .style(move |_, status| button::Style {
-                        background: matches!(status, button::Status::Hovered | button::Status::Pressed).then(|| Background::Color(color(pal.state_hover))),
-                        text_color: ink,
-                        border: Border { radius: 2.0.into(), ..Border::default() },
-                        ..Default::default()
-                    }),
-            );
-        }
-        let crumb_box = container(trail).width(Length::Fill).clip(true);
-
-        let pal = p.clone();
-        let search = text_input("Search this folder", &self.query)
-            .id(SEARCH_ID)
-            .on_input(Message::Search)
-            .size(style::BODY)
-            .font(style::FONT)
-            .padding([5, 10])
-            .width(240)
-            .style(move |_, status| {
-                let focused = matches!(status, text_input::Status::Focused { .. });
-                text_input::Style {
-                    background: Background::Color(color(pal.bg_deep)),
-                    border: Border { color: if focused { color(pal.focus_ring) } else { color(pal.line_strong) }, width: 1.0, radius: 4.0.into() },
-                    icon: color(pal.ink_muted),
-                    placeholder: color(pal.ink_muted),
-                    value: color(pal.ink),
-                    selection: color(pal.accent_soft),
-                }
-            });
-
-        let row = row![
-            self.glyph_button("arrow-left", "Back  Alt+←", (!self.back.is_empty()).then_some(Message::Back), false),
-            self.glyph_button("arrow-right", "Forward  Alt+→", (!self.forward.is_empty()).then_some(Message::Forward), false),
-            self.glyph_button("arrow-up", "Parent folder  Alt+↑", self.location.parent().map(|_| Message::Up), false),
-            container(Space::new()).width(1).height(18).style({
-                let c = color(p.line);
-                move |_| container::Style { background: Some(Background::Color(c)), ..Default::default() }
-            }),
-            crumb_box,
-            search,
-            self.glyph_button(
-                if self.show_hidden { "eye" } else { "eye-off" },
-                if self.show_hidden { "Hide hidden files  Ctrl+H" } else { "Show hidden files  Ctrl+H" },
-                Some(Message::ToggleHidden),
-                self.show_hidden,
-            ),
-        ]
-        .spacing(style::SPACE_1)
-        .align_y(Alignment::Center);
-        container(row).height(style::TOOLBAR).padding([0, 12]).align_y(Alignment::Center).width(Length::Fill).into()
-    }
-
-    fn section<'a>(&self, title: &str, mark: Option<Color>, count: Option<usize>) -> Element<'a, Message> {
-        let p = &self.palette;
-        let mut r = row![].spacing(style::SPACE_3).align_y(Alignment::Center);
-        if let Some(c) = mark {
-            r = r.push(container(Space::new()).width(6).height(6).style(move |_| container::Style { background: Some(Background::Color(c)), ..Default::default() }));
-        }
-        r = r.push(text(title.to_uppercase()).size(style::LABEL).font(style::FONT_BOLD).color(color(p.ink_muted)).width(Length::Fill));
-        if let Some(n) = count {
-            r = r.push(text(n.to_string()).size(style::LABEL).font(style::FONT).color(color(p.ink_muted)));
-        }
-        container(r).padding([4, 12]).into()
-    }
-
-    fn sidebar(&self) -> Element<'_, Message> {
-        let p = &self.palette;
-        let home = home();
-        let places = [
-            ("home", "Home", home.clone()),
-            ("file", "Documents", home.join("Documents")),
-            ("download", "Downloads", home.join("Downloads")),
-            ("image", "Pictures", home.join("Pictures")),
-            ("music", "Music", home.join("Music")),
-            ("video", "Videos", home.join("Videos")),
-            ("trash", "Trash", home.join(".local/share/Trash/files")),
-        ];
-        let mut col = column![self.section("Linux", Some(color(p.world_linux)), None)].spacing(1);
-        for (icon, label, path) in places {
-            if path.is_dir() {
-                let active = self.location == path;
-                col = col.push(self.side_item(icon, label.to_string(), active, Message::Navigate(path)));
-            }
-        }
-        col = col.push(Space::new().height(style::SPACE_5));
-        col = col.push(self.section("Windows", Some(color(p.world_windows)), (!self.volumes.is_empty()).then_some(self.volumes.len())));
-        if self.volumes.is_empty() {
-            col = col.push(container(text("Looking for drives…").size(style::META).font(style::FONT).color(color(p.ink_muted))).padding([4, 12]));
-        }
-        for (i, v) in self.volumes.iter().enumerate() {
-            col = col.push(self.drive_item(i, v));
-        }
-        container(col)
-            .width(style::SIDEBAR)
-            .height(Length::Fill)
-            .padding([12, 8])
-            .style(move |_| container::Style { background: Some(Background::Color(color(p.bg_sunken))), ..Default::default() })
-            .into()
-    }
-
-    fn row_button<'a>(&self, content: Element<'a, Message>, active: bool, msg: Message) -> Element<'a, Message> {
-        let p = self.palette.clone();
-        button(content)
-            .width(Length::Fill)
-            .padding([0, 12])
-            .on_press(msg)
-            .style(move |_, status| {
-                let bg = match status {
-                    button::Status::Hovered => Some(Background::Color(color(p.state_hover))),
-                    button::Status::Pressed => Some(Background::Color(color(p.state_press))),
-                    _ if active => Some(Background::Color(color(p.state_active))),
-                    _ => None,
-                };
-                button::Style { background: bg, text_color: color(p.ink), border: Border { radius: 2.0.into(), ..Border::default() }, ..Default::default() }
-            })
-            .into()
-    }
-
-    fn side_item<'a>(&'a self, icon: &str, label: String, active: bool, msg: Message) -> Element<'a, Message> {
-        let p = &self.palette;
-        let tint = if active { color(p.accent_ink) } else { color(p.ink_muted) };
-        let ink = if active { color(p.ink_strong) } else { color(p.ink) };
-        let r = row![
-            self.glyph(icon, 16.0, tint),
-            text(label).size(style::BODY).font(if active { style::FONT_BOLD } else { style::FONT }).color(ink).width(Length::Fill).wrapping(text::Wrapping::None)
-        ]
-        .spacing(style::SPACE_4)
-        .align_y(Alignment::Center);
-        self.row_button(container(r).height(style::ROW).align_y(Alignment::Center).into(), active, msg)
-    }
-
-    fn pill<'a>(&self, label: &str, tone: Option<ef_theme::Semantic>) -> Element<'a, Message> {
-        let p = &self.palette;
-        let (bg, fg) = match tone {
-            Some(t) => (color(t.soft), color(t.ink)),
-            None => (color(p.state_hover), color(p.ink_muted)),
-        };
-        container(
-            row![
-                container(Space::new()).width(6).height(6).style(move |_| container::Style { background: Some(Background::Color(fg)), ..Default::default() }),
-                text(label.to_string()).size(style::LABEL).font(style::FONT).color(fg).wrapping(text::Wrapping::None),
-            ]
-            .spacing(5)
-            .align_y(Alignment::Center),
-        )
-        .padding([1, 6])
-        .style(move |_| container::Style { background: Some(Background::Color(bg)), border: Border { radius: 2.0.into(), ..Border::default() }, ..Default::default() })
-        .into()
-    }
-
-    fn usage_bar<'a>(&self, used: f32) -> Element<'a, Message> {
-        let p = &self.palette;
-        let fill = if used >= 0.97 { color(p.danger.base) } else if used >= 0.9 { color(p.warning.base) } else { color(p.world_windows) };
-        let track = color(p.line);
-        let used = (used.clamp(0.0, 1.0) * 1000.0) as u16;
-        row![
-            container(Space::new()).width(Length::FillPortion(used.max(1))).height(3).style(move |_| container::Style { background: Some(Background::Color(fill)), border: Border { radius: 1.0.into(), ..Border::default() }, ..Default::default() }),
-            container(Space::new()).width(Length::FillPortion((1000 - used).max(1))).height(3).style(move |_| container::Style { background: Some(Background::Color(track)), ..Default::default() }),
-        ]
-        .into()
-    }
-
-    fn drive_item<'a>(&'a self, i: usize, v: &Volume) -> Element<'a, Message> {
-        let p = &self.palette;
-        let active = v.mount_points.iter().any(|m| self.location.starts_with(m.as_str()));
-        let fs = self.volume_fs.get(i).cloned().flatten();
-        let ink = if active { color(p.ink_strong) } else if v.is_mounted() { color(p.ink) } else { color(p.ink_muted) };
-        let head = row![
-            text(drive_name(v, &self.volumes)).size(style::BODY).font(if active { style::FONT_BOLD } else { style::FONT }).color(ink).width(Length::Fill).wrapping(text::Wrapping::None)
-        ]
-        .align_y(Alignment::Center);
-        let mut meta = String::new();
-        match &fs {
-            Some(f) => {
-                fmt::size(f.free, &mut meta);
-                meta.push_str(" free of ");
-                fmt::size(f.total, &mut meta);
-            }
-            None => {
-                meta.push_str("NTFS");
-            }
-        }
-        let mut lines = column![head].spacing(3);
-        if let Some(f) = &fs {
-            lines = lines.push(self.usage_bar(f.used_fraction()));
-        }
-        let mut meta_row = row![text(meta).size(style::LABEL).font(style::FONT).color(color(p.ink_muted)).wrapping(text::Wrapping::None).width(Length::Fill)]
-            .align_y(Alignment::Center);
-        if !v.is_mounted() {
-            meta_row = meta_row.push(self.pill("Not mounted", None));
-        }
-        lines = lines.push(meta_row);
-        let tint = if active { color(p.accent_ink) } else { color(p.ink_muted) };
-        let r = row![container(self.glyph("drive", 16.0, tint)).padding([2, 0]), lines].spacing(style::SPACE_4).align_y(Alignment::Start);
-        self.row_button(container(r).padding([6, 0]).into(), active, Message::DriveClicked(i))
-    }
-
-    fn banner<'a>(&'a self, message: &'a str) -> Element<'a, Message> {
-        let p = &self.palette;
-        let w = p.warning;
-        let icon = self.glyph("alert", 16.0, color(w.ink));
-        container(
-            row![icon, text(message).size(style::META).font(style::FONT).color(color(p.ink)).width(Length::Fill)]
-                .spacing(style::SPACE_4)
-                .align_y(Alignment::Center),
-        )
-        .width(Length::Fill)
-        .padding([10, 16])
-        .style(move |_| container::Style { background: Some(Background::Color(color(w.soft))), ..Default::default() })
-        .into()
-    }
-
-    fn status_bar(&self) -> Element<'_, Message> {
-        let p = &self.palette;
-        let mut left = String::new();
-        fmt::count(self.order.len(), &mut left);
-        left.push_str(if self.order.len() == 1 { " item" } else { " items" });
-        let (sel, bytes) = self.selection_stats();
-        if sel > 0 {
-            left.push_str("  ·  ");
-            fmt::count(sel, &mut left);
-            left.push_str(" selected · ");
-            fmt::size(bytes, &mut left);
-        }
-        if !self.show_hidden {
-            if let Some(l) = &self.loaded {
-                let hidden = (0..l.listing.len()).filter(|&i| l.listing.is_hidden(i)).count();
-                if hidden > 0 && self.query.is_empty() {
-                    left.push_str("  ·  ");
-                    fmt::count(hidden, &mut left);
-                    left.push_str(" hidden");
-                }
-            }
-        }
-        let mut right = String::new();
-        if self.loaded.as_ref().is_some_and(|l| !l.metadata_ready) {
-            right.push_str("Reading details…  ·  ");
-        }
-        if std::env::var_os("ECHOFILES_TIMING").is_some() {
-            if let Some(l) = self.loaded.as_ref().filter(|l| l.metadata_ready) {
-                right.push_str(&format!("names {:.1} · sort {:.1} · details {:.1} · paint {:.1} ms  ·  ", l.names_ms, l.sort_ms, l.meta_ms, self.first_paint_ms));
-            }
-        }
-        if let Some(f) = &self.fs {
-            right.push_str(f.fs_type);
-            right.push_str(" · ");
-            fmt::size(f.free, &mut right);
-            right.push_str(" free");
-        }
-        let row = row![
-            text(left).size(style::META).font(style::FONT).color(color(p.ink_muted)).wrapping(text::Wrapping::None),
-            Space::new().width(Length::Fill),
-            text(right).size(style::META).font(style::FONT).color(color(p.ink_muted)).wrapping(text::Wrapping::None),
-        ]
-        .align_y(Alignment::Center);
-        container(row)
-            .height(style::STATUSBAR)
-            .padding([0, 16])
-            .align_y(Alignment::Center)
-            .width(Length::Fill)
-            .style(move |_| container::Style { background: Some(Background::Color(color(p.bg_deep))), ..Default::default() })
-            .into()
     }
 }
-
-/// Windows' own name for a volume: its label, or "Local Disk" when it has none. Duplicate
-/// labels get their size so the two `AVS` partitions can be told apart (drive letters: M2).
-pub fn drive_name(v: &Volume, all: &[Volume]) -> String {
-    let base = if v.label.is_empty() { "Local Disk".to_string() } else { v.label.clone() };
-    let dup = all.iter().filter(|o| o.label == v.label).count() > 1;
-    if dup {
-        let mut s = format!("{base} · ");
-        fmt::size(v.size, &mut s);
-        s
-    } else {
-        base
-    }
-}
-
-/// Keep entries whose name contains `query`, ignoring ASCII case.
-fn filter(l: &Listing, order: Vec<u32>, query: &str) -> Vec<u32> {
-    if query.is_empty() {
-        return order;
-    }
-    let q = query.as_bytes();
-    order
-        .into_iter()
-        .filter(|&i| {
-            let n = l.name_bytes(i as usize);
-            n.len() >= q.len() && n.windows(q.len()).any(|w| w.eq_ignore_ascii_case(q))
-        })
-        .collect()
-}
-
-fn hline<'a>(c: ef_theme::Rgb) -> Element<'a, Message> {
-    container(Space::new()).width(Length::Fill).height(1).style(move |_| container::Style { background: Some(Background::Color(color(c))), ..Default::default() }).into()
-}
-
-fn vline<'a>(c: ef_theme::Rgb) -> Element<'a, Message> {
-    container(Space::new()).width(1).height(Length::Fill).style(move |_| container::Style { background: Some(Background::Color(color(c))), ..Default::default() }).into()
-}
-
-fn ms(t: Instant) -> f64 {
-    t.elapsed().as_secs_f64() * 1000.0
-}
-
-/// Error text per the design system: name the thing, the reason, and the fix.
-fn describe(dir: &Path, e: &std::io::Error) -> String {
-    let name = dir.display();
-    match e.kind() {
-        std::io::ErrorKind::PermissionDenied => format!("Couldn't open “{name}” — you don't have permission to read it."),
-        std::io::ErrorKind::NotFound => format!("“{name}” no longer exists."),
-        _ => format!("Couldn't open “{name}”: {e}"),
-    }
-}
-
