@@ -1,6 +1,12 @@
 # Faster still, default file manager, and AI agents
 
-Status: discussion draft, 2026-09-26. Decisions needed are marked **Decide**.
+> **OLD / SUPERSEDED:** This is a historical discussion draft. For current performance
+> architecture and AI agent access, use [speed-architecture-and-agent-index.md](speed-architecture-and-agent-index.md).
+> That document supersedes this one where recommendations differ, including the agent
+> interface (commands + skill, no MCP). Default file manager notes below remain background
+> proposals and have not been revalidated.
+
+Status: historical discussion draft, 2026-09-26. Decisions needed are marked **Decide**.
 
 This document covers three things you asked about:
 
