@@ -171,20 +171,25 @@
   }
 
   function Toolbar(p) {
+    var scope = p.scope || "folder";
     return h("div", { className: "ef-toolbar", role: "toolbar", "aria-label": "Navigation" },
       h(IconButton, { icon: "arrow-left", label: "Back (Alt+Left)" }),
       h(IconButton, { icon: "arrow-right", label: "Forward (Alt+Right)", disabled: true }),
       h(IconButton, { icon: "arrow-up", label: "Parent folder (Alt+Up)" }),
+      h(IconButton, { icon: "refresh", label: "Reload (F5)" }),
       h("span", { className: "ef-toolbar-sep" }),
       h(PathBar, { segments: p.segments || [], animateLast: true }),
-      h("span", { className: "ef-toolbar-sep" }),
-      h(SearchField, { scope: p.scope }),
-      h(SegmentedControl, { label: "View", value: p.view || "list", options: [
-        { value: "list", icon: "list", label: "List view (Ctrl+1)" },
-        { value: "grid", icon: "grid", label: "Grid view (Ctrl+2)" },
-        { value: "columns", icon: "columns", label: "Dual pane (F3)" }] }),
-      h(IconButton, { icon: "sidebar", label: "Preview pane (Space)", pressed: !!p.preview }),
-      h(IconButton, { icon: "more-vertical", label: "More" }));
+      h(SearchScope, { value: scope }),
+      h(SearchField, { placeholder: scope === "everywhere" ? "Search everywhere" : "Search this folder", defaultValue: p.query }),
+      h(IconButton, { icon: p.hidden ? "eye" : "eye-off", label: p.hidden ? "Hide hidden files (Ctrl+H)" : "Show hidden files (Ctrl+H)", pressed: !!p.hidden }),
+      h(IconButton, { icon: "settings", label: "Settings (Ctrl+,)", pressed: !!p.settings }));
+  }
+
+  /** Where the search box looks: this folder, or everything the index covers (Ctrl+E). */
+  function SearchScope(p) {
+    return h(SegmentedControl, { label: "Search in", value: p.value || "folder", onChange: p.onChange, options: [
+      { value: "folder", text: "Folder", title: "Search this folder (Ctrl+E)" },
+      { value: "everywhere", text: "Everywhere", title: "Search everywhere (Ctrl+E)" }] });
   }
 
   function Sidebar(p) {
@@ -231,7 +236,7 @@
         (p.state === "locked" ? h(Icon, { name: "lock", size: 14, className: "ef-drive-lock" }) : h("span")),
       !off && p.used !== undefined ? h(UsageBar, { value: p.used, world: p.world }) : null,
       h("span", { className: "ef-drive-meta" },
-        h("span", { className: "ef-drive-meta-l" }, p.meta, p.state && p.state !== "mounted" && p.state !== "mounting" ? h(StatePill, { state: p.state }) : null),
+        h("span", { className: "ef-drive-meta-l" }, p.state && p.state !== "mounted" && p.state !== "mounting" ? h(StatePill, { state: p.state }) : null, p.meta),
         p.free ? h("span", null, p.free) : null));
   }
 
@@ -582,6 +587,214 @@
       h(MotionCell, { title: "Progress", note: "Linear fill; turns success and draws a tick at 100%.", stage: h("div", { className: "ef-motion-mini" }, h(TransferToast, { title: "Copying 3 files", detail: "To AVS (D:)", value: 70, animate: true, meta: "", eta: "" })) }));
   }
 
+  // ------------------------------------------------------------ settings
+  // ------------------------------------------------------------ settings
+  /** Uppercase label above a bordered box of rows separated by hairlines. */
+  function SettingsGroup(p) {
+    return h("section", { className: "ef-setg" },
+      h("h3", { className: "ef-setg-label" }, p.title),
+      h("div", { className: "ef-setbox" }, p.children));
+  }
+
+  /** One setting: what it does on the left, its control on the right. */
+  function SettingRow(p) {
+    return h("div", { className: cx("ef-setrow", p.disabled && "ef-setrow-off") },
+      h("div", { className: "ef-setrow-text" },
+        h("span", { className: "ef-setrow-label" }, p.label),
+        p.description ? h("span", { className: "ef-setrow-desc" }, p.description) : null),
+      h("div", { className: "ef-setrow-control" }, p.children));
+  }
+
+  /** A full-width row inside a group: notes, lists, code. */
+  function SettingBlock(p) {
+    return h("div", { className: cx("ef-setblock", p.muted && "ef-setrow-desc") }, p.children);
+  }
+
+  function PathListEditor(p) {
+    var st = useState(p.paths || []);
+    var input = useState(p.draft || "");
+    var paths = st[0];
+    return h(React.Fragment, null,
+      paths.length === 0 ? h(SettingBlock, { muted: true }, p.empty || "Nothing here yet.") :
+        paths.map(function (path, i) {
+          return h("div", { key: path, className: "ef-plist-row" },
+            h(Icon, { name: p.icon || "folder", size: 16 }),
+            h("span", { className: "ef-plist-path", title: path }, path),
+            p.note && p.note[i] ? h(StatePill, { tone: "warning" }, p.note[i]) : null,
+            h(IconButton, { icon: "close", label: "Remove " + path, onClick: function () { st[1](paths.filter(function (_, k) { return k !== i; })); } }));
+        }),
+      h("div", { className: "ef-setblock" },
+        h("div", { className: "ef-plist-add" },
+          h("div", { className: cx("ef-field", p.error && "ef-field-invalid"), style: { flex: 1 } },
+            h("input", { id: p.id, value: input[0], placeholder: p.placeholder || "Folder path, like ~/Projects", "aria-label": "Folder to add", "aria-invalid": p.error ? "true" : undefined, onChange: function (e) { input[1](e.target.value); } })),
+          h(Button, { icon: "plus", onClick: function () { if (input[0].trim()) { st[1](paths.concat([input[0].trim()])); input[1](""); } } }, "Add"),
+          p.current ? h(Button, { variant: "ghost", icon: "folder-plus", onClick: function () { st[1](paths.concat([p.current])); } }, "Add current folder") : null),
+        p.error ? h("div", { className: "ef-field-msg", role: "alert" }, h(Icon, { name: "error", size: 14 }), p.error) : null));
+  }
+
+  function NameChips(p) {
+    var st = useState(p.names || []);
+    var input = useState("");
+    var names = st[0];
+    function add() { if (input[0].trim()) { st[1](names.concat([input[0].trim()])); input[1](""); } }
+    return h(React.Fragment, null,
+      h(SettingBlock, null, h("div", { className: "ef-chips" },
+        names.map(function (n, i) {
+          return h("span", { key: n, className: "ef-namechip" }, n,
+            h("button", { type: "button", "aria-label": "Stop skipping " + n, onClick: function () { st[1](names.filter(function (_, k) { return k !== i; })); } }, h(Icon, { name: "close", size: 12 })));
+        }))),
+      h(SettingBlock, null, h("div", { className: "ef-plist-add" },
+        h("div", { className: "ef-field", style: { flex: 1 } },
+          h("input", { id: p.id, value: input[0], placeholder: "Folder name, like node_modules", "aria-label": "Folder name to skip", onChange: function (e) { input[1](e.target.value); }, onKeyDown: function (e) { if (e.key === "Enter") add(); } })),
+        h(Button, { icon: "plus", onClick: add }, "Add"),
+        h(Button, { variant: "ghost", icon: "undo" }, "Reset to recommended"))));
+  }
+
+  var INDEX = {
+    off: [null, "Off", "Everywhere search walks your folders live instead — slower on big folders."],
+    opening: ["info", "Opening", "Loading the saved index…"],
+    building: ["info", "Indexing", "Building the index for the first time. Search works live meanwhile."],
+    updating: ["info", "Updating", "179,581 items · 13 MB · updating now"],
+    ready: ["success", "Ready", "179,581 items · 13 MB on disk · updated 21 s ago"],
+    problem: ["warning", "Problem", "Couldn't index ~/Work: permission denied."]
+  };
+  /** Health of the search index, with the one action that helps. */
+  function IndexStatus(p) {
+    var s = INDEX[p.state || "ready"];
+    var busy = p.state === "building" || p.state === "updating";
+    return h("div", { className: "ef-idx" },
+      h(StatePill, { tone: s[0] }, s[1]),
+      h("span", { className: "ef-idx-detail" }, p.detail || s[2]),
+      h(Button, { icon: "refresh", disabled: busy || p.state === "off" }, busy ? "Indexing…" : "Rebuild now"));
+  }
+
+  /** Commands or shortcuts with what they do, on the bg-deep well. */
+  function CommandList(p) {
+    return h("div", { className: "ef-cmds" }, (p.items || []).map(function (it, i) {
+      return h("div", { key: i, className: "ef-cmd" }, h("code", null, it[0]), h("span", null, it[1]));
+    }));
+  }
+
+  var SETTINGS_PAGES = [
+    { id: "general", icon: "sliders", label: "General" },
+    { id: "search", icon: "search", label: "Search & index" },
+    { id: "agents", icon: "terminal", label: "AI agents" },
+    { id: "appearance", icon: "image", label: "Appearance" },
+    { id: "about", icon: "info", label: "About" }];
+
+  function SettingsNav(p) {
+    return h("nav", { className: "ef-sidebar ef-setnav", "aria-label": "Settings pages" },
+      SETTINGS_PAGES.map(function (pg) {
+        return h("button", { key: pg.id, type: "button", className: "ef-side-item ef-setnav-item", "aria-current": pg.id === p.page ? "true" : undefined, onClick: function () { p.onChange && p.onChange(pg.id); } },
+          h(Icon, { name: pg.icon, size: 16 }), h("span", { className: "ef-side-name" }, pg.label));
+      }));
+  }
+
+  /** Settings as its own screen: top bar back to Files, page nav, one page of groups. */
+  function SettingsShell(p) {
+    var saved = p.saved !== false;
+    return h("div", { className: "ef ef-settings", style: { height: p.height } },
+      h("div", { className: "ef-toolbar ef-settings-bar" },
+        h(Button, { variant: "ghost", icon: "arrow-left", kbd: ["Esc"] }, "Files"),
+        h("span", { className: "ef-toolbar-sep" }),
+        h("strong", { className: "ef-settings-title" }, "Settings"),
+        h("span", { className: "ef-status-grow" }),
+        h("span", { className: saved ? "ef-saved" : "ef-muted" }, h(Icon, { name: saved ? "check" : "clock", size: 14 }), saved ? "Saved" : "Saving…")),
+      h("div", { className: "ef-settings-body" },
+        h(SettingsNav, { page: p.page, onChange: p.onPage }),
+        h("div", { className: "ef-settings-scroll" }, h("div", { className: "ef-settings-inner" }, p.children))));
+  }
+
+  function PageHead(p) {
+    return h("header", { className: "ef-settings-head" }, h("h2", null, p.title), h("p", null, p.children));
+  }
+
+  function settingsPage(page) {
+    if (page === "general") return [
+      h(PageHead, { key: "h", title: "General" }, "How EchoFiles starts, runs and opens."),
+      h(SettingsGroup, { key: "a", title: "Running" },
+        h(SettingRow, { label: "Keep running in the background", description: "Closing the window hides EchoFiles instead of quitting. The next window opens instantly and search stays up to date." }, h(Switch, { defaultChecked: true, label: "Keep running in the background" })),
+        h(SettingRow, { label: "Start at login", description: "Starts hidden when you log in, so even the first window is instant." }, h(Switch, { label: "Start at login" }))),
+      h(SettingsGroup, { key: "b", title: "Windows" },
+        h(SettingRow, { label: "New windows open at", description: "Where EchoFiles starts when you open it without a folder." }, h(SegmentedControl, { label: "Open at", value: "home", options: [{ value: "home", text: "Home" }, { value: "last", text: "Last folder" }] })),
+        h(SettingRow, { label: "Show hidden files", description: "Dotfiles and dot-folders. Ctrl+H switches it for the open window." }, h(Switch, { label: "Show hidden files" })))];
+    if (page === "agents") return [
+      h(PageHead, { key: "h", title: "AI agents" }, "Let AI agents on this computer use EchoFiles' index. Nothing leaves your computer."),
+      h(SettingsGroup, { key: "a", title: "Command line" },
+        h(SettingRow, { label: "Allow EchoFiles commands", description: "Lets AI agents and scripts search your files with ef find — milliseconds instead of walking the disk. When off, ef refuses and says it's turned off." }, h(Switch, { defaultChecked: true, label: "Allow EchoFiles commands" })),
+        h(SettingRow, { label: "ef command", description: "Installed on your PATH." }, h("span", { className: "ef-muted" }, "~/.local/bin/ef"))),
+      h(SettingsGroup, { key: "b", title: "Skill" },
+        h(SettingRow, { label: "Teach AI agents about ef", description: "Links the EchoFiles skill into ~/.claude/skills so agents like Claude Code reach for ef before find. Turning it off removes only that link." }, h(Switch, { label: "Teach AI agents about ef" }))),
+      h(SettingsGroup, { key: "c", title: "Commands" }, h(SettingBlock, null, h(CommandList, { items: [
+        ["ef find report", "names containing “report”"], ["ef find '*' --ext pdf --limit 50", "every PDF, first 50"],
+        ["ef find invoice --in ~/Documents", "only inside a folder"], ["ef status", "what's indexed, how fresh"], ["ef index", "update the index now"]] })))];
+    if (page === "appearance") return [
+      h(PageHead, { key: "h", title: "Appearance" }, "EchoFiles looks like the rest of your desktop."),
+      h(SettingsGroup, { key: "a", title: "Theme" },
+        h(SettingRow, { label: "Omarchy theme · tokyo-night", description: "EchoFiles follows your Omarchy theme and font and switches with them. Change the theme from the Omarchy menu." },
+          h("span", { className: "ef-swatches" }, ["--bg", "--bg-raised", "--ink", "--accent", "--world-linux", "--world-windows", "--success", "--warning", "--danger"].map(function (v) { return h("i", { key: v, style: { background: "var(" + v + ")" } }); })))),
+      h(SettingsGroup, { key: "b", title: "Layout" },
+        h(SettingRow, { label: "Row height", description: "How tightly the file list is packed." }, h(SegmentedControl, { label: "Row height", value: "default", options: [{ value: "compact", text: "Compact" }, { value: "default", text: "Default" }, { value: "comfortable", text: "Comfortable" }] })))];
+    if (page === "about") return [
+      h(PageHead, { key: "h", title: "About" }, "Where EchoFiles keeps things, and how to drive it from the keyboard."),
+      h(SettingsGroup, { key: "a", title: "EchoFiles" },
+        h(SettingRow, { label: "Version", description: "EchoFiles 0.1.0 · Linux" }),
+        h(SettingRow, { label: "Settings file", description: "~/.config/echofiles/settings.toml" }, h(Button, { variant: "ghost", icon: "folder" }, "Show")),
+        h(SettingRow, { label: "Index files", description: "~/.cache/echofiles/index" }, h(Button, { variant: "ghost", icon: "folder" }, "Show"))),
+      h(SettingsGroup, { key: "b", title: "Keyboard" }, h(SettingBlock, null, h(CommandList, { items: [
+        ["Ctrl+F  /", "search"], ["Ctrl+E", "search this folder ↔ everywhere"], ["Esc", "clear search · leave Settings"],
+        ["Alt+← Alt+→ Alt+↑", "back · forward · parent"], ["Ctrl+H", "show hidden files"], ["F5", "reload"], ["Ctrl+,", "settings"]] })))];
+    return [
+      h(PageHead, { key: "h", title: "Search & index" }, "What search covers, and the index that makes it instant."),
+      h(SettingsGroup, { key: "a", title: "Index" },
+        h(SettingRow, { label: "Search index", description: "A list of file names kept on disk so Everywhere search answers instantly and AI agents can use ef. Updates within seconds in Downloads, Desktop and Documents and every minute elsewhere. Turning it off deletes the index." }, h(Switch, { defaultChecked: true, label: "Search index" })),
+        h(IndexStatus, { state: "ready" })),
+      h(SettingsGroup, { key: "b", title: "Search box" },
+        h(SettingRow, { label: "Search looks in", description: "What the search box searches when a window opens. Ctrl+E switches it any time." }, h(SegmentedControl, { label: "Default scope", value: "folder", options: [{ value: "folder", text: "This folder" }, { value: "everywhere", text: "Everywhere" }] }))),
+      h(SettingsGroup, { key: "c", title: "Indexed folders" },
+        h(SettingBlock, { muted: true }, "Everywhere search and ef cover these folders and everything inside them."),
+        h(PathListEditor, { id: "roots", paths: ["~"], current: "~/Projects/EchoFiles_Linux" })),
+      h(SettingsGroup, { key: "d", title: "Never show in search" },
+        h(SettingBlock, { muted: true }, "Folders that never appear in search results — private or noisy places. Their contents aren't indexed at all."),
+        h(PathListEditor, { id: "excl", paths: [], empty: "Nothing excluded.", placeholder: "Folder path, like ~/Private", current: "~/Projects/EchoFiles_Linux" })),
+      h(SettingsGroup, { key: "e", title: "Skip contents of" },
+        h(SettingRow, { label: "Skip cache folders", description: "Folders marked with CACHEDIR.TAG (browser, build and package caches). They're still listed by name." }, h(Switch, { defaultChecked: true, label: "Skip cache folders" })),
+        h(SettingBlock, { muted: true }, "Folders with these names are listed but their contents aren't indexed — package stores, build output, version control internals."),
+        h(NameChips, { id: "names", names: ["node_modules", ".git", ".hg", ".svn", "__pycache__", ".cache", ".npm", ".pnpm-store", ".yarn", ".gradle", ".m2", ".cargo", ".rustup", ".venv", ".tox", ".mypy_cache", ".pytest_cache", ".next", ".nuxt"] }))];
+  }
+
+  function SettingsPage(p) {
+    var st = useState(p.page || "search");
+    return h(SettingsShell, { height: p.height, saved: p.saved, page: st[0], onPage: st[1] }, settingsPage(st[0]));
+  }
+
+  // ------------------------------------------------------------ search results
+  var DEMO_HITS = [
+    { name: "Cargo.toml", kind: "file", location: "~/Projects/EchoFiles_Linux", size: "1.3 KB", date: "Today 00:02" },
+    { name: "Cargo.toml", kind: "file", location: "~/Projects/EchoFiles_Linux/crates/core", size: "352 B", date: "Yesterday" },
+    { name: "Cargo.toml", kind: "file", location: "~/Projects/EchoFiles_Linux/crates/index", size: "460 B", date: "Yesterday" },
+    { name: "Cargo.toml", kind: "file", location: "~/Downloads/t3code-0.0.39-nightly.20260902.1260/native/resource-monitor", size: "298 B", date: "2 Sep" },
+    { name: "cargo", kind: "folder", location: "~/.local/share", size: "—", date: "9 Sep" }];
+
+  /** "Everywhere" results: name, where it lives, size, date — answered from the index. */
+  function SearchResults(p) {
+    var hits = p.hits || DEMO_HITS;
+    var st = useState(0);
+    return h("div", { className: "ef-results", role: "grid", "aria-label": "Search results" },
+      h("div", { className: "ef-results-row ef-results-head", role: "row" }, h("span"), h("span", null, "Name"), h("span", null, "Location"), h("span", { className: "ef-num" }, "Size"), h("span", null, "Modified")),
+      h("div", { className: "ef-results-body" }, hits.map(function (f, i) {
+        return h("div", { key: i, role: "row", className: "ef-results-row", "aria-selected": String(i === st[0]), onClick: function () { st[1](i); } },
+          h(FileIcon, { name: iconFor(f.name, f.kind), size: 18 }),
+          h("span", { className: "ef-results-name" }, f.name),
+          h("span", { className: "ef-results-loc", title: f.location }, f.location),
+          h("span", { className: "ef-num" }, f.size), h("span", null, f.date));
+      })),
+      h("div", { className: "ef-results-foot" },
+        h(Kbd, { keys: ["Enter"] }), h("span", null, "open"), h(Kbd, { keys: ["Alt", "Enter"] }), h("span", null, "show in folder"),
+        h("span", { className: "ef-status-grow" }),
+        h(Button, { icon: "folder" }, "Show in folder")));
+  }
+
   window.Echo = {
     Icon: Icon, FileIcon: FileIcon, Button: Button, IconButton: IconButton, SegmentedControl: SegmentedControl,
     Switch: Switch, Checkbox: Checkbox, Kbd: Kbd, TextField: TextField, SearchField: SearchField, PathBar: PathBar,
@@ -591,6 +804,7 @@
     EmptyState: EmptyState, DriveCard: DriveCard, Spinner: Spinner, Banner: Banner, Toast: Toast,
     TransferToast: TransferToast, Dialog: Dialog, ConflictDialog: ConflictDialog, Tooltip: Tooltip,
     ContextMenu: ContextMenu, CommandPalette: CommandPalette, PreviewPane: PreviewPane, AppWindow: AppWindow,
-    DualPane: DualPane, MotionSpec: MotionSpec, iconFor: iconFor, DEMO_FILES: DEMO_FILES
+    DualPane: DualPane, MotionSpec: MotionSpec, SettingsGroup: SettingsGroup, PathListEditor: PathListEditor, NameChips: NameChips, SettingRow: SettingRow, SettingBlock: SettingBlock, SettingsPage: SettingsPage,
+    SettingsShell: SettingsShell, SettingsNav: SettingsNav, IndexStatus: IndexStatus, CommandList: CommandList, SearchResults: SearchResults, SearchScope: SearchScope, iconFor: iconFor, DEMO_FILES: DEMO_FILES
   };
 })();

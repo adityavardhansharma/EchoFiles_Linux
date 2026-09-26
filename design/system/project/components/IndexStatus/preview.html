@@ -1,0 +1,18 @@
+<!-- @dsCard group="Settings" height=260 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>IndexStatus</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef ef-stack", style:{maxWidth:720}}, h("div", {className:"ef-setbox"},
+  ["ready","updating","building","problem","off"].map(function(s){ return h(E.IndexStatus, {key:s, state:s}); })));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

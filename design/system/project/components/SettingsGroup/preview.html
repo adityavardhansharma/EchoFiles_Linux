@@ -1,0 +1,20 @@
+<!-- @dsCard group="Settings" height=200 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>SettingsGroup</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef ef-stack", style:{maxWidth:720}},
+  h(E.SettingsGroup, {title:"Running"},
+    h(E.SettingRow, {label:"Keep running in the background", description:"Closing the window hides EchoFiles instead of quitting. The next window opens instantly and search stays up to date."}, h(E.Switch, {defaultChecked:true, label:"Keep running"})),
+    h(E.SettingRow, {label:"Start at login", description:"Needs Keep running in the background.", disabled:true}, h(E.Switch, {label:"Start at login"}))));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

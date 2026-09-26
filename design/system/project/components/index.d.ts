@@ -38,7 +38,7 @@ export declare function PathBar(props: PathBarProps): React.ReactElement;
 
 export interface TabStripProps { tabs: { label: string; icon?: GlyphName }[]; active?: number }
 export declare function TabStrip(props: TabStripProps): React.ReactElement;
-export interface ToolbarProps { segments?: PathSegment[]; scope?: string; view?: 'list' | 'grid' | 'columns'; preview?: boolean }
+export interface ToolbarProps { segments?: PathSegment[]; scope?: string; view?: 'list' | 'grid' | 'columns'; preview?: boolean; settings?: boolean }
 export declare function Toolbar(props: ToolbarProps): React.ReactElement;
 export declare function Sidebar(props: { children?: React.ReactNode }): React.ReactElement;
 export interface SidebarSectionProps { title: string; world?: World; count?: number; children?: React.ReactNode }
@@ -92,6 +92,25 @@ export interface PaletteGroup { heading: string; items: { icon: GlyphName; label
 export declare function CommandPalette(props: { groups: PaletteGroup[]; query?: string; id?: string }): React.ReactElement;
 export interface PreviewPaneProps { file: FileEntry; props?: [string, string][]; attrs?: string[]; windowsPath?: boolean }
 export declare function PreviewPane(props: PreviewPaneProps): React.ReactElement;
+
+export interface SettingsGroupProps { title: string; children?: React.ReactNode }
+export declare function SettingsGroup(props: SettingsGroupProps): React.ReactElement;
+export interface SettingRowProps { label: string; description?: string; disabled?: boolean; children?: React.ReactNode }
+export declare function SettingRow(props: SettingRowProps): React.ReactElement;
+export declare function SettingBlock(props: { muted?: boolean; children?: React.ReactNode }): React.ReactElement;
+export interface PathListEditorProps { id?: string; paths?: string[]; icon?: GlyphName; empty?: string; placeholder?: string; current?: string; error?: string; note?: (string | null)[]; draft?: string }
+export declare function PathListEditor(props: PathListEditorProps): React.ReactElement;
+export declare function NameChips(props: { id?: string; names?: string[] }): React.ReactElement;
+export type IndexState = 'off' | 'opening' | 'building' | 'updating' | 'ready' | 'problem';
+export declare function IndexStatus(props: { state?: IndexState; detail?: string }): React.ReactElement;
+export declare function CommandList(props: { items: [string, string][] }): React.ReactElement;
+export type SettingsPageId = 'general' | 'search' | 'agents' | 'appearance' | 'about';
+export declare function SettingsNav(props: { page: SettingsPageId; onChange?: (p: SettingsPageId) => void }): React.ReactElement;
+export declare function SettingsShell(props: { page: SettingsPageId; onPage?: (p: SettingsPageId) => void; saved?: boolean; height?: number; children?: React.ReactNode }): React.ReactElement;
+export declare function SettingsPage(props: { height?: number; saved?: boolean; page?: SettingsPageId }): React.ReactElement;
+export interface SearchHit { name: string; kind: 'file' | 'folder'; location: string; size: string; date: string }
+export declare function SearchResults(props: { hits?: SearchHit[] }): React.ReactElement;
+export declare function SearchScope(props: { value?: 'folder' | 'everywhere'; onChange?: (v: 'folder' | 'everywhere') => void }): React.ReactElement;
 
 export declare function AppWindow(props: { height?: number; banner?: boolean; animate?: boolean }): React.ReactElement;
 export declare function DualPane(props: { height?: number }): React.ReactElement;
