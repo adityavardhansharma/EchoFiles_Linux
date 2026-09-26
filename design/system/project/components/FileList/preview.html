@@ -1,0 +1,17 @@
+<!-- @dsCard group="Files" height=400 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>FileList</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef"}, h(E.FileList, {files:E.DEMO_FILES, cursor:4}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

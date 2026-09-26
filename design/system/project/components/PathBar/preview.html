@@ -1,0 +1,19 @@
+<!-- @dsCard group="Inputs" height=110 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>PathBar</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef ef-stack"},
+  h(E.PathBar, {segments:[{label:"AVS (D:)",icon:"drive"},{label:"Work"},{label:"2026"},{label:"Invoices"}]}),
+  h(E.PathBar, {id:"pb", editing:true, path:"/run/media/aditya/AVS/Work/2026/Invoices"}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

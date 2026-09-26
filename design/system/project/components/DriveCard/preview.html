@@ -1,0 +1,20 @@
+<!-- @dsCard group="Drives & status" height=180 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>DriveCard</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef ef-row-flex", style:{alignItems:"stretch"}},
+  h(E.DriveCard, {name:"Windows (C:)", icon:"drive", fs:"NTFS · ntfs3 · Windows 11", used:76, world:"windows", free:"88 GB free", total:"376 GB", state:"readonly"}),
+  h(E.DriveCard, {name:"AVS (D:)", icon:"drive", fs:"NTFS · ntfs3", used:58, world:"windows", free:"66 GB free", total:"156 GB"}),
+  h(E.DriveCard, {name:"Home", icon:"home", fs:"btrfs · zstd:3", used:41, world:"linux", free:"312 GB free", total:"530 GB"}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

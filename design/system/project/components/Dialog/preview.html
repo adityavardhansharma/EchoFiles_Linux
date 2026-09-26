@@ -1,0 +1,20 @@
+<!-- @dsCard group="Overlays" height=330 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Dialog</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef"}, h(E.Dialog, {tone:"danger", title:"Delete 3 items permanently?", icon:"trash-full",
+  footer:[h(E.Button, {key:1}, "Cancel"), h(E.Button, {key:2, variant:"danger", icon:"trash"}, "Delete permanently")]},
+  h("p", null, "“Report-Q3.xlsx”, “IMG_20260914_182233.jpg” and 1 more will be erased from AVS (D:). This can't be undone."),
+  h("p", null, "To keep a way back, press Del instead — it moves them to Trash.")));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

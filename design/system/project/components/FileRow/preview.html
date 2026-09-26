@@ -1,0 +1,25 @@
+<!-- @dsCard group="Files" height=250 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>FileRow</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+var f = function(o){ return h(E.FileRow, {file:o}); };
+return h("div", {className:"ef", style:{padding:"8px 0"}},
+  f({name:"Invoices", kind:"folder", items:57, type:"Folder", modified:"Today", drop:true}),
+  h(E.FileRow, {file:{name:"Report-Q3.xlsx", size:"84 KB", type:"Spreadsheet", modified:"Today 18:22", selected:true, cursor:true}, renaming:true}),
+  f({name:"draft-old.md", size:"3 KB", type:"Markdown", modified:"2 Sep", cut:true}),
+  f({name:".bashrc", size:"4 KB", type:"Shell script", modified:"12 Jan", hidden:true}),
+  f({name:"Taxes-2025.pdf", size:"1.1 MB", type:"PDF", modified:"2 Sep", badge:"cloud"}),
+  f({name:"Old Launcher.lnk", size:"1 KB", type:"Shortcut", modified:"4 Mar", badge:"broken"}),
+  f({name:"old-notes.txt", size:"2 KB", type:"Text", modified:"1 Jan", removing:true}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

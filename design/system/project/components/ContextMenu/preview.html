@@ -1,0 +1,22 @@
+<!-- @dsCard group="Overlays" height=430 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>ContextMenu</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef", style:{padding:16}}, h(E.ContextMenu, {items:[
+  {icon:"external", label:"Open", kbd:["Enter"], active:true}, {icon:"columns", label:"Open in other pane", kbd:["F3"]}, {icon:"plus", label:"Open in new tab", kbd:["Ctrl","Enter"]},
+  "-", {icon:"copy", label:"Copy", kbd:["Ctrl","C"]}, {icon:"cut", label:"Cut", kbd:["Ctrl","X"]}, {icon:"move", label:"Move to AVS (D:)", submenu:true},
+  {icon:"rename", label:"Rename", kbd:["F2"]}, {icon:"link", label:"Copy as Windows path", hint:"D:\\Work"},
+  "-", {icon:"trash", label:"Move to Trash", kbd:["Del"]}, {icon:"trash", label:"Delete permanently", kbd:["Shift","Del"], danger:true},
+  "-", {icon:"info", label:"Properties", kbd:["Alt","Enter"]}]}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+<!-- @dsCard height=288 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Cover</title>
+<style>
+  html, body { margin: 0; background: var(--bg); }
+  .cover { position: relative; width: 960px; height: 288px; overflow: hidden; background: var(--bg); font-family: var(--font-mono); }
+  .cover svg { position: absolute; inset: 0; }
+  .ember { fill: var(--brand-ember); }
+  .violet { fill: var(--brand-violet); }
+  .sky { fill: var(--brand-sky); }
+  .slab { fill: var(--bg-raised); }
+  .mark { fill: var(--line-strong); }
+  .sheet { rx: var(--radius-3); ry: var(--radius-3); }
+  .name { position: absolute; left: 48px; bottom: 56px; max-width: 440px; margin: 0; font-size: 76px; line-height: 0.95; font-weight: 800; letter-spacing: -0.03em; color: var(--ink-strong); }
+  .tag { position: absolute; left: 48px; bottom: 28px; max-width: 440px; margin: 0; font-size: 13px; line-height: 18px; color: var(--ink-muted); }
+</style></head>
+<body>
+<div class="cover">
+  <svg width="960" height="288" viewBox="0 0 960 288" aria-hidden="true">
+    <!-- blocks: brand-ember, brand-violet, brand-sky sheets (150–176 wide, radius-3) + bg-raised slab 80 wide bleeding off the right edge
+         arrangement: a staggered stack stepping down-right by space-6 + space-7, exactly the logo's layered sheets
+         pattern: 6px square world marks at a 24px (space-6) pitch — the sidebar's section mark, repeated as a grid on the slab; chosen because the system is mono, square-cornered and grid-bound
+         scales: space-6 24px pitch, space-7 32px offsets, radius-3 on sheets, radius-0 slab (Hyprland rounding) -->
+    <rect class="slab" x="880" y="0" width="80" height="288"/>
+    <g class="mark">
+      <rect x="893" y="21" width="6" height="6"/><rect x="917" y="21" width="6" height="6"/><rect x="941" y="21" width="6" height="6"/>
+      <rect x="893" y="45" width="6" height="6"/><rect x="917" y="45" width="6" height="6"/><rect x="941" y="45" width="6" height="6"/>
+      <rect x="893" y="69" width="6" height="6"/><rect x="917" y="69" width="6" height="6"/><rect x="941" y="69" width="6" height="6"/>
+      <rect x="893" y="93" width="6" height="6"/><rect x="917" y="93" width="6" height="6"/><rect x="941" y="93" width="6" height="6"/>
+      <rect x="893" y="117" width="6" height="6"/><rect x="917" y="117" width="6" height="6"/><rect x="941" y="117" width="6" height="6"/>
+      <rect x="893" y="141" width="6" height="6"/><rect x="917" y="141" width="6" height="6"/><rect x="941" y="141" width="6" height="6"/>
+      <rect x="893" y="165" width="6" height="6"/><rect x="917" y="165" width="6" height="6"/><rect x="941" y="165" width="6" height="6"/>
+      <rect x="893" y="189" width="6" height="6"/><rect x="917" y="189" width="6" height="6"/><rect x="941" y="189" width="6" height="6"/>
+      <rect x="893" y="213" width="6" height="6"/><rect x="917" y="213" width="6" height="6"/><rect x="941" y="213" width="6" height="6"/>
+      <rect x="893" y="237" width="6" height="6"/><rect x="917" y="237" width="6" height="6"/><rect x="941" y="237" width="6" height="6"/>
+      <rect x="893" y="261" width="6" height="6"/><rect x="917" y="261" width="6" height="6"/><rect x="941" y="261" width="6" height="6"/>
+    </g>
+    <rect class="ember sheet" x="560" y="24" width="150" height="200"/>
+    <rect class="violet sheet" x="616" y="56" width="150" height="200"/>
+    <rect class="sky sheet" x="672" y="88" width="176" height="224"/>
+    <rect class="slab" x="672" y="88" width="72" height="24"/>
+  </svg>
+  <h1 class="name">EchoFiles</h1>
+  <p class="tag">Linux and Windows files in one fast, Omarchy-native window.</p>
+</div>
+</body>
+</html>

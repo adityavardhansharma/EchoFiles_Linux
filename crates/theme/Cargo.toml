@@ -1,0 +1,11 @@
+[package]
+name = "echofiles-theme"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "ef_theme"
+
+[dependencies]
+toml.workspace = true

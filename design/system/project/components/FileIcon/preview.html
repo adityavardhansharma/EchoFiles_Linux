@@ -1,0 +1,22 @@
+<!-- @dsCard group="Iconography" height=300 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>FileIcon</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+var names = ["folder","folder-open","folder-image","folder-music","folder-video","folder-download","folder-lock","folder-link","folder-share","folder-users","home","trash","trash-full","drive","drive-external","usb","sd-card","phone","network","server","cloud","file","file-text","file-doc","file-sheet","file-slides","file-pdf","file-code","file-config","file-script","file-image","file-video","file-audio","file-vector","file-font","file-archive","file-archive-alt","file-package","file-verified","file-error","file-new","lock","shield","star","tag","info","alert","sync","send","eye"];
+return h("div", {className:"ef"},
+  h("div", {style:{display:"grid", gridTemplateColumns:"repeat(auto-fill, 44px)", gap:6, padding:"16px 16px 8px"}},
+    names.map(function(n){ return h("span", {key:n, title:n, style:{width:44,height:44,display:"grid",placeItems:"center"}}, h(E.FileIcon, {name:n, size:36})); })),
+  h("div", {className:"ef-row-flex", style:{paddingTop:4}},
+    ["link","cloud","lock","broken","ads"].map(function(b){ return h("span", {key:b, style:{display:"inline-flex",gap:8,alignItems:"center",marginRight:12}}, h(E.FileIcon, {name: b==="link" ? "folder" : "file-doc", size:32, badge:b}), h("span", {className:"ef-muted", style:{fontSize:11}}, b)); })));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

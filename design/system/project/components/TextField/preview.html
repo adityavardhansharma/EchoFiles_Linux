@@ -1,0 +1,19 @@
+<!-- @dsCard group="Inputs" height=176 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>TextField</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef ef-stack", style:{maxWidth:380}},
+  h(E.TextField, {id:"t1", label:"Folder name", defaultValue:"Invoices 2026"}),
+  h(E.TextField, {id:"t2", label:"Name on AVS (D:)", defaultValue:"notes: draft?.md", error:"Windows can't store “:” or “?”. Rename to “notes- draft-.md”?"}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

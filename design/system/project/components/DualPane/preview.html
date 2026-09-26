@@ -1,0 +1,17 @@
+<!-- @dsCard group="Pages" height=460 width=1100 page -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>DualPane</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h(E.DualPane, {height:450});
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

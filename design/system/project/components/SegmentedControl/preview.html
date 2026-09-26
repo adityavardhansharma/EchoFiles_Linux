@@ -1,0 +1,19 @@
+<!-- @dsCard group="Actions" height=76 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>SegmentedControl</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef ef-row-flex"},
+  h(E.SegmentedControl, {label:"View", options:[{value:"list",icon:"list",label:"List"},{value:"grid",icon:"grid",label:"Grid"},{value:"columns",icon:"columns",label:"Dual pane"}]}),
+  h(E.SegmentedControl, {label:"Density", options:[{value:"c",text:"Compact"},{value:"d",text:"Default"},{value:"f",text:"Comfy"}], value:"d"}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

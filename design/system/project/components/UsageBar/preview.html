@@ -1,0 +1,19 @@
+<!-- @dsCard group="Drives & status" height=116 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>UsageBar</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef ef-stack", style:{maxWidth:320}},
+  h(E.UsageBar, {value:41, world:"linux"}), h(E.UsageBar, {value:58, world:"windows"}),
+  h(E.UsageBar, {value:92, world:"windows"}), h(E.UsageBar, {value:98, world:"windows", large:true}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

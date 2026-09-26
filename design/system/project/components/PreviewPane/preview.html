@@ -1,0 +1,18 @@
+<!-- @dsCard group="Panels" height=560 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>PreviewPane</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef", style:{display:"flex", justifyContent:"flex-end", height:550}},
+  h(E.PreviewPane, {file:{name:"Report-Q3.xlsx"}, props:[["Kind","Spreadsheet"],["Size","84 KB"],["Modified","Today 18:22"],["Created","2 Sep 2026"],["Where","D:\\Work\\2026"],["Driver","ntfs3"]], attrs:["Archive","Hidden"], windowsPath:true}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

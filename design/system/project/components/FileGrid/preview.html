@@ -1,0 +1,25 @@
+<!-- @dsCard group="Files" height=330 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>FileGrid</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+var files = [
+ {name:"Screenshots", kind:"folder", icon:"folder-image", sub:"382 items"},
+ {name:"IMG_20260914_182233.jpg", selected:true, cursor:true, sub:"4.2 MB", thumb:"data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 88 66\"><rect width=\"88\" height=\"66\" fill=\"#1f3b64\"/><circle cx=\"66\" cy=\"18\" r=\"8\" fill=\"#ffc857\"/><path d=\"M0 66 30 30l18 20 12-12 28 28z\" fill=\"#2e7d5b\"/></svg>')},
+ {name:"Taxes-2025.pdf", sub:"1.1 MB", badge:"cloud"},
+ {name:"main.rs", sub:"12 KB"},
+ {name:"Backup.7z", sub:"2.4 GB"},
+ {name:"song.flac", sub:"31 MB"},
+ {name:"clip.mp4", sub:"88 MB"}];
+return h("div", {className:"ef"}, h(E.FileGrid, {files:files}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

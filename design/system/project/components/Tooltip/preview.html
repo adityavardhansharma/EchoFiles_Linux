@@ -1,0 +1,17 @@
+<!-- @dsCard group="Feedback" height=64 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Tooltip</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef ef-row-flex"}, h(E.Tooltip, {kbd:["Alt","Left"]}, "Back"), h(E.Tooltip, null, "D:\\Work\\2026\\Invoices"), h(E.Tooltip, {kbd:["Ctrl","Shift","."]}, "Show hidden files"));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

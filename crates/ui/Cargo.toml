@@ -1,0 +1,15 @@
+[package]
+name = "echofiles"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+ef-core.workspace = true
+ef-disks.workspace = true
+ef-theme.workspace = true
+ef-vfs.workspace = true
+iced = { workspace = true, features = ["wayland", "x11", "smol", "crisp"] }
+mimalloc.workspace = true
+rayon.workspace = true

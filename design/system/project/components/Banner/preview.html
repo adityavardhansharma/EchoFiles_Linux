@@ -1,0 +1,20 @@
+<!-- @dsCard group="Feedback" height=170 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Banner</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef"},
+  h(E.Banner, {tone:"warning", actions:[h(E.Button, {key:1, size:"sm"}, "How to fix"), h(E.Button, {key:2, size:"sm", variant:"ghost"}, "Keep read-only")]}, h("strong", null, "Windows (C:) was not shut down fully."), " Opened read-only to protect your files. Restart Windows, or turn off Fast Startup."),
+  h(E.Banner, {tone:"info", icon:"cloud"}, h("strong", null, "2 files are OneDrive placeholders."), " They open once Windows has synced them."),
+  h(E.Banner, {tone:"danger", icon:"lock", actions:h(E.Button, {size:"sm"}, "Unlock…")}, h("strong", null, "Backup is locked with BitLocker."), " Unlocking arrives in v0.2."));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

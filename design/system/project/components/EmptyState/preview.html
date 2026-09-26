@@ -1,0 +1,17 @@
+<!-- @dsCard group="Files" height=330 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>EmptyState</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef"}, h(E.EmptyState, {title:"This folder is empty", body:"Drop files here, paste with Ctrl+V, or make a folder to get started.", actions:[h(E.Button, {key:1, icon:"folder-plus", kbd:["Ctrl","Shift","N"]}, "New folder"), h(E.Button, {key:2, icon:"paste", variant:"ghost"}, "Paste")]}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

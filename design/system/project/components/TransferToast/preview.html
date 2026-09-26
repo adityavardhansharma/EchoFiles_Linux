@@ -1,0 +1,18 @@
+<!-- @dsCard group="Feedback" height=170 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>TransferToast</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef ef-stack", style:{alignItems:"flex-end"}},
+  h(E.TransferToast, {title:"Copying 1,204 files to AVS (D:)", detail:"From ~/Pictures/2026 · IMG_4471.HEIC", value:42, animate:true, meta:"812 MB of 2.4 GB · 94 MB/s", eta:"17 s left", doneTitle:"Copied 1,204 files to AVS (D:)", doneMeta:"Flushed to disk"}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

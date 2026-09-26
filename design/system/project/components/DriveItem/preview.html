@@ -1,0 +1,22 @@
+<!-- @dsCard group="Navigation" height=250 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>DriveItem</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef", style:{width:236, padding:8, background:"var(--bg-sunken)"}},
+  h(E.DriveItem, {name:"Windows (C:)", state:"readonly", used:76, world:"windows", meta:"NTFS", free:"88 GB free"}),
+  h(E.DriveItem, {name:"AVS (D:)", state:"mounted", used:93, world:"windows", meta:"NTFS", free:"11 GB free", active:true}),
+  h(E.DriveItem, {name:"AVS (E:)", state:"mounting", meta:"295 GB"}),
+  h(E.DriveItem, {name:"Backup", state:"locked", meta:"BitLocker · unlock in v0.2"}),
+  h(E.DriveItem, {name:"AVS (F:)", state:"dirty", used:40, world:"windows", meta:"Fast Startup on", free:"Read-only"}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+<!-- @dsCard group="Iconography" height=196 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Icon</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+var names = ["arrow-left","arrow-right","arrow-up","home","history","grid","list","columns","sidebar","sort","filter","more-vertical","search","eye","eye-off","copy","cut","paste","rename","trash","undo","redo","plus","close","check","folder-plus","file-plus","download","upload","move","swap","external","link","share","sync","refresh","cloud","star","tag","pin","info","alert","error","clock","lock","key","shield","settings","sliders","terminal","keyboard","drive","usb","sd-card","phone","network","image","music","video","play","pause","cancel","archive","code"];
+return h("div", {className:"ef", style:{display:"grid", gridTemplateColumns:"repeat(auto-fill, 36px)", gap:4, padding:16, color:"var(--ink-muted)"}},
+  names.map(function(n){ return h("span", {key:n, title:n, style:{width:36,height:36,display:"grid",placeItems:"center"}}, h(E.Icon, {name:n, size:18})); }));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

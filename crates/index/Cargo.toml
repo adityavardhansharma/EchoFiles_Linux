@@ -1,0 +1,17 @@
+[package]
+name = "echofiles-index"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "ef_index"
+
+[dependencies]
+rustix.workspace = true
+rayon.workspace = true
+memchr = "2.8"
+
+[[bin]]
+name = "ef"
+path = "src/bin/ef.rs"

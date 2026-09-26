@@ -1,0 +1,18 @@
+<!-- @dsCard group="Drives & status" height=76 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>StatePill</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef ef-row-flex"},
+  ["mounted","readonly","dirty","locked","unmounted","mounting","cloud","ads","hidden","system"].map(function(s){ return h(E.StatePill, {key:s, state:s}); }));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>
