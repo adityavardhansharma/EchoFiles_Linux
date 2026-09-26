@@ -1,13 +1,15 @@
-//! Index results must equal a brute-force walk of the same folders, for every query shape,
-//! on folders of 100 to 100k files full of near-identical and special-character names.
+//! Indexed and live search results must both equal a brute-force walk of the same folders,
+//! for every query shape, on folders of 100 to 100k files full of near-identical and
+//! special-character names.
 
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 use ef_index::corpus::{self, Layout};
-use ef_index::{Index, Kind, KindFilter, Query, fold};
+use ef_index::{Index, Kind, KindFilter, Query, fold, live};
 
 /// Every entry below the root, found with `std::fs` alone.
 struct Entry {
@@ -112,6 +114,17 @@ const TEXTS: &[&str] = &[
     "reports",
 ];
 
+fn live_results(scope: &Path, q: &Query) -> Vec<PathBuf> {
+    let streamed = std::sync::Mutex::new(Vec::new());
+    let mut v = live::search(scope, q, &AtomicBool::new(false), &|batch| streamed.lock().unwrap().extend_from_slice(batch)).unwrap();
+    v.sort();
+    // Everything returned was also streamed, and nothing else (without a limit).
+    let mut s = streamed.into_inner().unwrap();
+    s.sort();
+    assert_eq!(s, v, "streamed hits differ from the final result for {q:?}");
+    v
+}
+
 fn check_corpus(root: &Path, scopes: &[PathBuf]) {
     let idx = Index::build(root).unwrap();
     idx.check();
@@ -136,11 +149,15 @@ fn check_corpus(root: &Path, scopes: &[PathBuf]) {
                 (true, KindFilter::Dirs, None),
             ] {
                 let q = Query { within, hidden, kind, ext, ..Query::new(text) };
-                assert_eq!(results(&idx, &q), oracle(&all, &scope, &q), "query {q:?} in {}", scope.display());
+                let want = oracle(&all, &scope, &q);
+                assert_eq!(results(&idx, &q), want, "indexed {q:?} in {}", scope.display());
+                assert_eq!(live_results(&scope, &q), want, "live {q:?} in {}", scope.display());
             }
         }
         let q = Query { within, ext: Some("TAR.GZ"), ..Query::new("") };
-        assert_eq!(results(&idx, &q), oracle(&all, &scope, &Query { ext: Some("tar.gz"), ..q.clone() }));
+        let want = oracle(&all, &scope, &Query { ext: Some("tar.gz"), ..q.clone() });
+        assert_eq!(results(&idx, &q), want);
+        assert_eq!(live_results(&scope, &q), want);
     }
 }
 
@@ -338,4 +355,49 @@ fn save_and_load_give_the_same_answers() {
     assert!(Index::load(&file).is_err());
     fs::write(&file, b"EFIDX001 old prototype format").unwrap();
     assert!(Index::load(&file).is_err());
+}
+
+#[test]
+fn parallel_search_with_limit_equals_the_top_of_the_full_ranking() {
+    // 100k entries is above the parallel threshold, so chunks rank separately.
+    let tmp = tempfile::tempdir().unwrap();
+    corpus::generate(tmp.path(), 100_000, Layout::Flat).unwrap();
+    let idx = Index::build(tmp.path()).unwrap();
+    for text in ["e", "report", "résumé"] {
+        let all = idx.search(&Query { hidden: true, ..Query::new(text) });
+        assert!(all.len() > 100, "{text}");
+        for k in [1, 50, 1000] {
+            let top = idx.search(&Query { hidden: true, limit: Some(k), ..Query::new(text) });
+            assert_eq!(top, all[..k], "{text} top {k}");
+        }
+    }
+}
+
+#[test]
+fn live_search_ranks_like_the_index() {
+    let tmp = tempfile::tempdir().unwrap();
+    for f in ["myreport.txt", "annual report.pdf", "reportage.txt", "report.pdf", "Report Final.pdf", "a/report"] {
+        touch(tmp.path(), f);
+    }
+    let q = Query::new("report");
+    let got: Vec<String> = live::search(tmp.path(), &q, &AtomicBool::new(false), &|_| {})
+        .unwrap()
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(got, ["report", "report.pdf", "reportage.txt", "Report Final.pdf", "annual report.pdf", "myreport.txt"]);
+    let top = live::search(tmp.path(), &Query { limit: Some(2), ..q }, &AtomicBool::new(false), &|_| {}).unwrap();
+    assert_eq!(top.len(), 2);
+}
+
+#[test]
+fn live_search_can_be_cancelled_and_needs_a_real_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    touch(tmp.path(), "a/report.txt");
+    let err = live::search(tmp.path(), &Query::new("report"), &AtomicBool::new(true), &|_| {}).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
+    assert!(live::search(Path::new("/definitely/not/here"), &Query::new("x"), &AtomicBool::new(false), &|_| {}).is_err());
+    // Symlink loops don't hang it.
+    std::os::unix::fs::symlink(tmp.path(), tmp.path().join("a/loop")).unwrap();
+    assert_eq!(live::search(tmp.path(), &Query::new("report"), &AtomicBool::new(false), &|_| {}).unwrap().len(), 1);
 }

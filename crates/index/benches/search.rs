@@ -11,6 +11,10 @@ use ef_index::{Index, KindFilter, Query};
 
 const SIZES: &[usize] = &[100, 1_000, 10_000, 100_000];
 
+// Same allocator as the app (crates/ui/src/main.rs).
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     divan::main();
 }
@@ -19,7 +23,7 @@ fn index(n: usize, layout: Layout) -> Index {
     Index::build(&corpus::cached(n, layout)).unwrap()
 }
 
-fn search(b: divan::Bencher, n: usize, layout: Layout, make: impl Fn(&Index) -> Query<'static>) {
+fn search<'q>(b: divan::Bencher, n: usize, layout: Layout, make: impl Fn(&Index) -> Query<'q>) {
     let idx = index(n, layout);
     let q = make(&idx);
     b.bench_local(|| idx.search(divan::black_box(&q)));
@@ -153,4 +157,48 @@ fn walk_tree_no_index(n: usize) -> usize {
     let mut hits = 0;
     walk(&corpus::cached(n, Layout::Tree), b"report", &mut hits);
     hits
+}
+
+// --- Live search (no index, parallel walk) ------------------------------------------------
+
+fn live(n: usize, layout: Layout, q: Query) -> Vec<std::path::PathBuf> {
+    let never = std::sync::atomic::AtomicBool::new(false);
+    ef_index::live::search(&corpus::cached(n, layout), &q, &never, &|_| {}).unwrap()
+}
+
+#[divan::bench(args = SIZES)]
+fn live_flat_report(n: usize) -> Vec<std::path::PathBuf> {
+    live(n, Layout::Flat, Query { hidden: true, ..Query::new("report") })
+}
+
+#[divan::bench(args = SIZES)]
+fn live_tree_report(n: usize) -> Vec<std::path::PathBuf> {
+    live(n, Layout::Tree, Query { hidden: true, ..Query::new("report") })
+}
+
+#[divan::bench(args = ["zqxj", "report", "e"])]
+fn live_flat_100k(text: &str) -> Vec<std::path::PathBuf> {
+    live(100_000, Layout::Flat, Query { hidden: true, ..Query::new(text) })
+}
+
+#[divan::bench(args = ["zqxj", "report", "e"])]
+fn live_tree_100k(text: &str) -> Vec<std::path::PathBuf> {
+    live(100_000, Layout::Tree, Query { hidden: true, ..Query::new(text) })
+}
+
+// --- Indexed, 100k, the same three queries (parallel above 50k entries) -------------------
+
+#[divan::bench(args = ["zqxj", "report", "e"])]
+fn indexed_flat_100k(b: divan::Bencher, text: &str) {
+    search(b, 100_000, Layout::Flat, |_| Query { hidden: true, ..Query::new(text) });
+}
+
+#[divan::bench(args = ["zqxj", "report", "e"])]
+fn indexed_tree_100k(b: divan::Bencher, text: &str) {
+    search(b, 100_000, Layout::Tree, |_| Query { hidden: true, ..Query::new(text) });
+}
+
+#[divan::bench(args = ["zqxj", "report", "e"])]
+fn indexed_tree_100k_top50(b: divan::Bencher, text: &str) {
+    search(b, 100_000, Layout::Tree, |_| Query { hidden: true, limit: Some(50), ..Query::new(text) });
 }

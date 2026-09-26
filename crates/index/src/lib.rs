@@ -16,6 +16,8 @@
 
 pub mod corpus;
 pub mod fold;
+pub mod live;
+mod matcher;
 mod store;
 
 use std::ffi::OsStr;
@@ -26,7 +28,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use memchr::memmem;
+use matcher::Matcher;
 use rustix::fs::{AtFlags, FileType, Mode, OFlags, RawDir};
 
 /// Id of the indexed root folder. Its subtree is the whole index.
@@ -381,59 +383,60 @@ impl Index {
 // Search
 // ---------------------------------------------------------------------------------------
 
-/// Whitespace-separated terms, `"quoted phrases"` kept whole, each folded.
-fn terms(text: &str) -> Vec<Vec<u8>> {
-    let mut out = Vec::new();
-    for (i, part) in text.split('"').enumerate() {
-        if i % 2 == 1 {
-            if !part.is_empty() {
-                out.push(fold::fold(part));
-            }
-        } else {
-            out.extend(part.split_whitespace().map(fold::fold));
-        }
-    }
-    out.retain(|t| !t.is_empty());
-    out
-}
-
-fn is_word_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b >= 0x80
-}
+/// Folders with at least this many entries below them are searched on all cores.
+const PARALLEL_MIN: usize = 50_000;
 
 impl Index {
     /// Ids of matching entries, best first. An empty query (no terms, no extension) matches
-    /// nothing.
+    /// nothing. Large scopes are split into chunks searched in parallel, each keeping only
+    /// its best `limit` hits.
     pub fn search(&self, q: &Query) -> Vec<u32> {
-        let terms = terms(q.text);
-        let ext = q.ext.map(|e| {
-            let mut n = vec![b'.'];
-            n.extend(fold::fold(e.trim_start_matches('.')));
-            n
-        });
-        // The longest needle is the most selective one to scan the arena with.
-        let Some(scan) = terms.iter().chain(ext.as_ref()).max_by_key(|t| t.len()) else {
+        let Some(m) = Matcher::new(q) else {
             return Vec::new();
         };
-        if terms.iter().chain(ext.as_ref()).any(|t| t.contains(&0)) {
-            return Vec::new();
-        }
         let within = q.within as usize;
         if within >= self.len() {
             return Vec::new();
         }
-
         let (first, last) = (within + 1, self.end[within] as usize);
         if first >= last {
             return Vec::new();
         }
+        let mut keys = if last - first < PARALLEL_MIN {
+            let mut v = self.scan(first, last, &m, q);
+            matcher::keep_best(&mut v, q.limit);
+            v
+        } else {
+            use rayon::prelude::*;
+            let chunks = rayon::current_num_threads() * 4;
+            let step = (last - first).div_ceil(chunks);
+            (first..last)
+                .step_by(step)
+                .collect::<Vec<_>>()
+                .into_par_iter()
+                .map(|a| {
+                    let mut v = self.scan(a, (a + step).min(last), &m, q);
+                    matcher::keep_best(&mut v, q.limit);
+                    v
+                })
+                .reduce(Vec::new, |mut a, mut b| {
+                    a.append(&mut b);
+                    a
+                })
+        };
+        matcher::keep_best(&mut keys, q.limit);
+        keys.sort_unstable();
+        keys.into_iter().map(|k| k as u32).collect()
+    }
+
+    /// Rank keys (`Matcher::rank` | id) of the hits among entries `first..last`.
+    fn scan(&self, first: usize, last: usize, m: &Matcher, q: &Query) -> Vec<u64> {
         let lo = self.foff[first] as usize;
         let hay = &self.folded[lo..self.foff[last] as usize];
-        let finder = memmem::Finder::new(scan);
-        let mut hits = Vec::new();
+        let mut keys = Vec::new();
         let mut cur = first;
         let mut prev = usize::MAX;
-        for pos in finder.find_iter(hay) {
+        for pos in m.scan_finder().find_iter(hay) {
             let abs = (lo + pos) as u32;
             if abs >= self.foff[cur + 1] {
                 cur += self.foff[cur + 1..=last].partition_point(|&o| o <= abs);
@@ -442,78 +445,24 @@ impl Index {
                 continue;
             }
             prev = cur;
-            if self.matches(cur, &terms, ext.as_deref(), q) {
-                hits.push(cur as u32);
+            let name = self.folded_name(cur);
+            if m.accepts(name, Kind::from_bits(self.flags[cur])) && (q.hidden || !self.hidden_below(cur, q.within)) {
+                keys.push(m.rank(name) | cur as u64);
             }
         }
-        self.rank(&mut hits, &terms, q.limit);
-        hits
+        keys
     }
 
-    fn matches(&self, i: usize, terms: &[Vec<u8>], ext: Option<&[u8]>, q: &Query) -> bool {
-        let flags = self.flags[i];
-        let ok_kind = match q.kind {
-            KindFilter::Any => true,
-            KindFilter::Files => flags & KIND_MASK != Kind::Dir as u8,
-            KindFilter::Dirs => flags & KIND_MASK == Kind::Dir as u8,
-        };
-        if !ok_kind {
-            return false;
-        }
-        let name = self.folded_name(i);
-        if let Some(ext) = ext {
-            // A name that is only the extension (".pdf") is a dotfile, not a PDF.
-            if name.len() <= ext.len() || !name.ends_with(ext) {
-                return false;
+    /// Whether `i` or any of its ancestors below `within` is dot-named.
+    fn hidden_below(&self, i: usize, within: u32) -> bool {
+        let mut a = i as u32;
+        while a != within && a != NONE {
+            if self.flags[a as usize] & HIDDEN != 0 {
+                return true;
             }
+            a = self.parent[a as usize];
         }
-        if !terms.iter().all(|t| memmem::find(name, t).is_some()) {
-            return false;
-        }
-        if !q.hidden {
-            let mut a = i as u32;
-            while a != q.within && a != NONE {
-                if self.flags[a as usize] & HIDDEN != 0 {
-                    return false;
-                }
-                a = self.parent[a as usize];
-            }
-        }
-        true
-    }
-
-    /// Sort hits by (match quality, name length, tree order), keeping the best `limit`.
-    fn rank(&self, hits: &mut Vec<u32>, terms: &[Vec<u8>], limit: Option<usize>) {
-        let phrase = terms.join(&b' ');
-        let lead = terms.first().map(Vec::as_slice).unwrap_or(b"");
-        let key = |&id: &u32| -> u64 {
-            let name = self.folded_name(id as usize);
-            let stem = memchr::memrchr(b'.', name).map_or(name, |p| &name[..p]);
-            let class: u64 = if lead.is_empty() {
-                3
-            } else if name == phrase.as_slice() || stem == phrase.as_slice() {
-                0
-            } else if name.starts_with(lead) {
-                1
-            } else if memmem::find_iter(name, lead).any(|p| !is_word_byte(name[p - 1])) {
-                2
-            } else {
-                3
-            };
-            class << 56 | (name.len().min(0xFF_FFFF) as u64) << 32 | id as u64
-        };
-        let mut keyed: Vec<u64> = hits.iter().map(key).collect();
-        if let Some(k) = limit.filter(|&k| k < keyed.len()) {
-            if k == 0 {
-                hits.clear();
-                return;
-            }
-            keyed.select_nth_unstable(k - 1);
-            keyed.truncate(k);
-        }
-        keyed.sort_unstable();
-        hits.clear();
-        hits.extend(keyed.iter().map(|&k| k as u32));
+        false
     }
 }
 

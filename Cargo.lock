@@ -831,6 +831,7 @@ version = "0.1.0"
 dependencies = [
  "divan",
  "memchr",
+ "mimalloc",
  "rayon",
  "rustix 1.1.5",
  "tempfile",
