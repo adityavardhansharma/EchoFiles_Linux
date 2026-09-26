@@ -4,6 +4,8 @@ index numbers from `cargo bench -p echofiles-index` (run that first: it generate
 corpora under ~/.cache/echofiles-bench/index/).
 
 Usage: python3 bench/index_compare.py [runs]   (default 7; median, after one warm-up)
+
+Second table: the match-everything case (`zqxj`, `report`, `e`) on the 100k corpora.
 """
 
 import os
@@ -42,6 +44,22 @@ def main():
                 d_ms, d_hits = median_ms([fd, "-H", "-I", "-i", "-F", "-0", "report", root])
                 cell = f"{d_ms:.1f} ms ({d_hits} hits)"
             print(f"| {layout} {n:,} | {f_ms:.1f} ms ({f_hits} hits) | {cell} |")
+
+    # The match-everything weak spot: no match vs ~27% vs ~70% of files matching.
+    print()
+    print("| Corpus | Query | `find` | `fd` |")
+    print("|---|---|---|---|")
+    for layout in ("flat", "tree"):
+        root = os.path.join(BASE, f"{layout}-100000")
+        if not os.path.isdir(root):
+            continue
+        for q in ("zqxj", "report", "e"):
+            f_ms, f_hits = median_ms(["find", root, "-iname", f"*{q}*", "-print0"])
+            cell = "not installed"
+            if fd:
+                d_ms, d_hits = median_ms([fd, "-H", "-I", "-i", "-F", "-0", q, root])
+                cell = f"{d_ms:.1f} ms ({d_hits} hits)"
+            print(f"| {layout} 100,000 | `{q}` | {f_ms:.1f} ms ({f_hits} hits) | {cell} |")
 
 
 if __name__ == "__main__":

@@ -31,8 +31,9 @@ Related: [speed-architecture-and-agent-index.md](speed-architecture-and-agent-in
 6. **It's small.** 100k entries take 5.9 MB in memory and 3.4 MB on disk, and load in
    10 ms.
 7. **Weak spot: queries that match almost everything.** A one-letter query at 100k takes
-   ~9–10 ms, because every hit gets ranked. It's still fine for search-as-you-type, and
-   there's an improvement listed at the end.
+   ~10–11 ms, because every hit gets ranked. `fd` and `find` also slow down on that query,
+   and there it's still ~5× faster than `fd` in a tree and ~10× in a flat folder (see
+   "The match-everything weak spot" below). There's an improvement listed at the end.
 
 ---
 
@@ -303,7 +304,7 @@ Both were restored afterwards.
 |---|---|---|
 | a leaf folder (`Documents/reports 0/batch 0`) | ~100 | **2.3 µs** |
 | `Documents` (files only) | ~12,500 | 410 µs |
-| whole tree (compare: `common_word` 100k) | 100,000 | 3.1 ms |
+| whole tree | 100,000 | 4.0 ms |
 
 A search in a 100-file folder costs the same whether the index holds 100 or 100,000
 entries.
@@ -319,12 +320,12 @@ entries.
 | tree 100 | — | 34 µs | 2.0 ms | 4.7 ms |
 | tree 1,000 | — | 420 µs | 2.6 ms | 5.3 ms |
 | tree 10,000 | — | 4.6 ms | 10.8 ms | 9.6 ms |
-| tree 100,000 | 3.1 ms (whole tree) | 45.0 ms | 87.9 ms | 52.4 ms |
+| tree 100,000 | **4.0 ms** | 45.0 ms | 87.9 ms | 52.4 ms |
 
 - `find` and `fd` times include starting a process (~1–4 ms), which the app never pays;
   that's why the fair in-app comparison is the "walk, no index" column.
 - **Index vs no-index walk: ~12–22× faster at every size.** Against `find`: ~45× at 100k.
-  Against `fd`: ~17–31× at 100k.
+  Against `fd`: ~13–31× at 100k.
 
 **Result parity** (100k flat, "report", hidden included):
 
@@ -337,6 +338,46 @@ entries.
 - All 26,182 `find` hits are in the index result.
 - The 1,218 extra are all `Ｒｅｐｏｒｔ N` (fullwidth letters), which only the index's
   folding matches.
+
+### The match-everything weak spot: index vs `fd` / `find`
+
+Same three queries on both 100k corpora, hidden files included.
+- Index: 101 runs, median, in-process.
+- `fd` / `find`: 7 runs after a warm-up, median, whole process.
+
+**Flat folder, 100,000 files**
+
+| Query | Index hits | Index, all ranked | Index, top 50 | `fd` hits | `fd` | `find` |
+|---|---|---|---|---|---|---|
+| `zqxj` (no match) | 0 | **0.08 ms** | 0.08 ms | 0 | 110 ms | 142 ms |
+| `report` | 27,400 | **3.4 ms** | 3.0 ms | 26,182 | 112 ms | 149 ms |
+| `e` (nearly everything) | 69,759 | **10.0 ms** | 9.2 ms | 67,374 | 105 ms | 160 ms |
+
+**Tree, 100,000 files**
+
+| Query | Index hits | Index, all ranked | Index, top 50 | `fd` hits | `fd` | `find` |
+|---|---|---|---|---|---|---|
+| `zqxj` (no match) | 0 | **0.08 ms** | 0.12 ms | 0 | 34 ms | 80 ms |
+| `report` | 27,433 | **4.0 ms** | 3.2 ms | 26,215 | 41 ms | 86 ms |
+| `e` (nearly everything) | 69,797 | **10.8 ms** | 9.2 ms | 67,412 | 52 ms | 91 ms |
+
+**What this shows:**
+
+- **`fd` has the weak spot too, but it hides behind its walk.** `fd` and `find` read the
+  disk on every search, so even a query that matches nothing costs 34–142 ms. Many matches
+  add some cost on top, mostly writing the results: `fd` in the tree goes 34 → 41 → 52 ms.
+- **The index has almost no fixed cost** (0.08 ms for no match). So the per-hit work,
+  checking each hit and ranking it, is nearly all of its time. That's why its worst case
+  looks large next to its own best case, not next to `fd`.
+- **Even the index's worst case beats `fd`'s best case.** `e` at 10–11 ms is still ~3× faster
+  than `fd` matching *nothing* in the tree, and ~10× faster in the flat folder.
+- **`fd` does less work per hit.** It prints hits in the order it finds them and doesn't
+  rank. The index sorts ~70k hits best-first, and that sorting is most of its 10 ms.
+- **`limit: 50` barely helps today** (10.0 → 9.2 ms). The index still computes a rank key
+  for every hit before selecting the best 50. That's the fix in "Known limits" item 1.
+- **The index finds more.** Its extra `e` hits are names where `e` only appears after
+  folding: `é` in `Résumé` and `café`, and fullwidth `ｅ` in `Ｒｅｐｏｒｔ`. The extra
+  `report` hits are the fullwidth `Ｒｅｐｏｒｔ` names.
 
 ### Build, load, update, size
 
@@ -360,9 +401,10 @@ entries.
 
 ## Known limits and next steps
 
-1. **Ranking many hits costs more than scanning.** 100k hits take ~9 ms. Fix: score while
-   scanning, and keep a bounded heap when `limit` is set, instead of scoring every hit and
-   then selecting.
+1. **Ranking many hits costs more than scanning.** ~70k hits take ~10 ms, and `limit: 50`
+   only saves ~1 ms. Fix: score while scanning, and keep a bounded heap of the best N when
+   `limit` is set, instead of scoring every hit and then selecting. Target: under 3 ms for
+   a one-letter query at 100k, with the search box always using a limit.
 2. **Memory:** names are stored twice (original + folded). For ASCII-only names the folded
    copy could be skipped with a per-entry flag, roughly halving the arena.
 3. **Load time:** memory-map the file instead of reading it; only the folded arena then
