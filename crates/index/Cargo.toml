@@ -11,7 +11,16 @@ name = "ef_index"
 rustix.workspace = true
 rayon.workspace = true
 memchr = "2.8"
+unicode-normalization = "0.1.25"
+
+[dev-dependencies]
+divan.workspace = true
+tempfile = "3"
 
 [[bin]]
 name = "ef"
 path = "src/bin/ef.rs"
+
+[[bench]]
+name = "search"
+harness = false
