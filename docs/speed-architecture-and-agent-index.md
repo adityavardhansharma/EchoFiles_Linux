@@ -274,6 +274,8 @@ Every read command prints `# index age: 12s` on stderr and accepts `--fresh`.
   - The prototype already beats `fd` by 4.5× with ~350 lines of code.
   - It shares data structures with the UI listing (SoA, name arena, `u32` ids).
   - It can take NTFS MFT input, where no existing Linux indexer goes.
+- **Status:** the app-side index is implemented and tested; design, tests and benchmark
+  results are in [search-index.md](search-index.md).
 - **Next steps for the real one (`crates/index`):**
   1. Memory-mapped file format; drop the stored lowercase copy (49 MB → ~33 MB, then
      front-coding → ~20–25 MB).
