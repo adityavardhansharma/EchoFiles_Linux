@@ -304,6 +304,7 @@ impl App {
                     e.push(Entry::Sep);
                     e.push(item("cut", "Cut", Some("Ctrl+X"), f(FileMsg::Cut)));
                     e.push(item("copy", "Copy", Some("Ctrl+C"), f(FileMsg::Copy)));
+                    e.push(item("paste", "Paste", Some("Ctrl+V"), f(FileMsg::Paste)));
                     if one_dir && self.clip.is_some() {
                         e.push(item("paste", "Paste into folder", None, f(FileMsg::PasteInto(targets[0].clone()))));
                     }

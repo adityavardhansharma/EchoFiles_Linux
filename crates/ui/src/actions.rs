@@ -747,7 +747,7 @@ impl App {
             }
             FileMsg::MenuAtCursor => {
                 let id = self.pane().id;
-                let on_item = self.pane().cursor.is_some();
+                let on_item = !self.pane().targets().is_empty();
                 let at = if self.mouse == iced::Point::ORIGIN { iced::Point::new(400.0, 200.0) } else { self.mouse };
                 self.open_menu(MenuFor::Files { pane: id, on_item }, at);
                 Task::none()
