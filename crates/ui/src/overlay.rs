@@ -38,10 +38,12 @@ pub struct MenuItem {
     pub msg: Option<Message>,
     pub danger: bool,
     pub submenu: Vec<MenuItem>,
+    /// A toggle that is on: a trailing check (View menu).
+    pub checked: bool,
 }
 
 fn item(icon: &'static str, label: impl Into<String>, kbd: Option<&'static str>, msg: Message) -> Entry {
-    Entry::Item(MenuItem { icon, label: label.into(), kbd, hint: None, msg: Some(msg), danger: false, submenu: Vec::new() })
+    Entry::Item(MenuItem { icon, label: label.into(), kbd, hint: None, msg: Some(msg), danger: false, submenu: Vec::new(), checked: false })
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +82,8 @@ pub enum MenuFor {
     Tab(usize),
     /// Path segments folded into "…".
     Crumbs(Vec<(String, PathBuf)>),
+    /// The toolbar's View dropdown.
+    View,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,6 +270,7 @@ impl App {
                 msg: Some(Message::File(FileMsg::Start { kind, sources: sources.to_vec(), dest: p })),
                 danger: false,
                 submenu: Vec::new(),
+                checked: false,
             })
             .collect()
     }
@@ -284,7 +289,7 @@ impl App {
                     if in_trash {
                         e.push(item("undo", "Restore", None, f(FileMsg::Restore)));
                         e.push(Entry::Sep);
-                        e.push(Entry::Item(MenuItem { icon: "trash", label: "Delete permanently".into(), kbd: Some("Shift+Del"), hint: None, msg: Some(f(FileMsg::AskDelete)), danger: true, submenu: Vec::new() }));
+                        e.push(Entry::Item(MenuItem { icon: "trash", label: "Delete permanently".into(), kbd: Some("Shift+Del"), hint: None, msg: Some(f(FileMsg::AskDelete)), danger: true, submenu: Vec::new(), checked: false }));
                         e.push(Entry::Sep);
                         e.push(item("info", "Properties", Some("Alt+Enter"), f(FileMsg::Properties)));
                         return e;
@@ -304,8 +309,8 @@ impl App {
                     }
                     let moves = self.destinations(Kind::Move, &targets);
                     if !moves.is_empty() {
-                        e.push(Entry::Item(MenuItem { icon: "move", label: "Move to".into(), kbd: None, hint: None, msg: None, danger: false, submenu: moves }));
-                        e.push(Entry::Item(MenuItem { icon: "copy", label: "Copy to".into(), kbd: None, hint: None, msg: None, danger: false, submenu: self.destinations(Kind::Copy, &targets) }));
+                        e.push(Entry::Item(MenuItem { icon: "move", label: "Move to".into(), kbd: None, hint: None, msg: None, danger: false, submenu: moves, checked: false }));
+                        e.push(Entry::Item(MenuItem { icon: "copy", label: "Copy to".into(), kbd: None, hint: None, msg: None, danger: false, submenu: self.destinations(Kind::Copy, &targets), checked: false }));
                     }
                     if targets.len() == 1 {
                         e.push(item("rename", "Rename", Some("F2"), f(FileMsg::StartRename)));
@@ -313,7 +318,7 @@ impl App {
                     e.push(item("link", "Copy path", Some("Ctrl+Shift+C"), f(FileMsg::CopyPath)));
                     if windows {
                         let hint = targets.first().and_then(|t| self.windows_path(t));
-                        e.push(Entry::Item(MenuItem { icon: "link", label: "Copy as Windows path".into(), kbd: None, hint, msg: Some(f(FileMsg::CopyWindowsPath)), danger: false, submenu: Vec::new() }));
+                        e.push(Entry::Item(MenuItem { icon: "link", label: "Copy as Windows path".into(), kbd: None, hint, msg: Some(f(FileMsg::CopyWindowsPath)), danger: false, submenu: Vec::new(), checked: false }));
                     }
                     if one_dir {
                         let pinned = self.settings.sidebar.pinned.iter().any(|s| config::expand(s) == targets[0]);
@@ -321,12 +326,12 @@ impl App {
                     }
                     e.push(Entry::Sep);
                     e.push(item("trash", "Move to Trash", Some("Del"), f(FileMsg::Trash)));
-                    e.push(Entry::Item(MenuItem { icon: "trash", label: "Delete permanently".into(), kbd: Some("Shift+Del"), hint: None, msg: Some(f(FileMsg::AskDelete)), danger: true, submenu: Vec::new() }));
+                    e.push(Entry::Item(MenuItem { icon: "trash", label: "Delete permanently".into(), kbd: Some("Shift+Del"), hint: None, msg: Some(f(FileMsg::AskDelete)), danger: true, submenu: Vec::new(), checked: false }));
                     e.push(Entry::Sep);
                     e.push(item("info", "Properties", Some("Alt+Enter"), f(FileMsg::Properties)));
                 } else {
                     if in_trash {
-                        e.push(Entry::Item(MenuItem { icon: "trash", label: "Empty Trash".into(), kbd: None, hint: None, msg: Some(f(FileMsg::AskEmptyTrash)), danger: true, submenu: Vec::new() }));
+                        e.push(Entry::Item(MenuItem { icon: "trash", label: "Empty Trash".into(), kbd: None, hint: None, msg: Some(f(FileMsg::AskEmptyTrash)), danger: true, submenu: Vec::new(), checked: false }));
                         return e;
                     }
                     e.push(item("folder-plus", "New folder", Some("Ctrl+Shift+N"), f(FileMsg::NewFolder)));
@@ -352,7 +357,7 @@ impl App {
                 let mut e = vec![item("external", "Open", None, Message::Navigate(path.clone())), item("plus", "Open in new tab", None, Message::OpenTab(path.clone()))];
                 if path == trash::home_trash().join("files") {
                     e.push(Entry::Sep);
-                    e.push(Entry::Item(MenuItem { icon: "trash", label: "Empty Trash".into(), kbd: None, hint: None, msg: Some(f(FileMsg::AskEmptyTrash)), danger: true, submenu: Vec::new() }));
+                    e.push(Entry::Item(MenuItem { icon: "trash", label: "Empty Trash".into(), kbd: None, hint: None, msg: Some(f(FileMsg::AskEmptyTrash)), danger: true, submenu: Vec::new(), checked: false }));
                     return e;
                 }
                 if self.clip.is_some() {
@@ -376,7 +381,7 @@ impl App {
                         e.push(item("plus", "Open in new tab", None, Message::OpenTab(PathBuf::from(mp))));
                         if v.system && self.drive_state.get(&v.device).is_none_or(|s| s.read_only) {
                             e.push(Entry::Sep);
-                            e.push(Entry::Item(MenuItem { icon: "unlock", label: "Allow writing…".into(), kbd: None, hint: Some("unsafe".into()), msg: Some(d(DriveMsg::AskWrite(i))), danger: true, submenu: Vec::new() }));
+                            e.push(Entry::Item(MenuItem { icon: "unlock", label: "Allow writing…".into(), kbd: None, hint: Some("unsafe".into()), msg: Some(d(DriveMsg::AskWrite(i))), danger: true, submenu: Vec::new(), checked: false }));
                         }
                         e.push(Entry::Sep);
                         e.push(item("arrow-up", "Unmount", None, d(DriveMsg::Unmount(i))));
@@ -387,6 +392,20 @@ impl App {
                 e
             }
             MenuFor::Crumbs(segs) => segs.into_iter().map(|(label, p)| item("folder", label, None, Message::Navigate(p))).collect(),
+            MenuFor::View => {
+                let grid = self.pane().grid;
+                let toggle = |icon, label: &str, kbd, msg, on| Entry::Item(MenuItem { icon, label: label.into(), kbd: Some(kbd), hint: None, msg: Some(msg), danger: false, submenu: Vec::new(), checked: on });
+                vec![
+                    Entry::Heading("Layout".into()),
+                    toggle("list", "List", "Ctrl+1", Message::SetGrid(false), !grid),
+                    toggle("grid", "Grid", "Ctrl+2", Message::SetGrid(true), grid),
+                    Entry::Sep,
+                    Entry::Heading("Show".into()),
+                    toggle("columns", "Dual pane", "F3", Message::ToggleDual, self.dual()),
+                    toggle("sidebar", "Preview pane", "Space", Message::TogglePreview, self.settings.appearance.preview),
+                    toggle("eye", "Hidden files", "Ctrl+H", Message::ToggleHidden, self.show_hidden),
+                ]
+            }
             MenuFor::Tab(i) => {
                 let mut e = vec![item("plus", "New tab", Some("Ctrl+T"), Message::NewTab)];
                 if self.tabs.len() > 1 {
@@ -693,6 +712,11 @@ impl App {
                     }
                     if !it.submenu.is_empty() {
                         r = r.push(w::glyph(&self.icons, "chevron-right", 12.0, color(p.ink_muted)));
+                    }
+                    if it.checked {
+                        r = r.push(w::glyph(&self.icons, "check", 14.0, color(p.accent_ink)));
+                    } else if entries.iter().any(|e| matches!(e, Entry::Item(i) if i.checked)) {
+                        r = r.push(Space::new().width(14));
                     }
                     let pal = p.clone();
                     let msg = match (&it.msg, it.submenu.is_empty()) {

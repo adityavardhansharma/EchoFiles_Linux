@@ -119,7 +119,7 @@ GLYPHS = {
     # system
     "settings": GEAR,
     "terminal": '<path d="M5 7l5 5-5 5M12 18h7"/>',
-    "command": '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 10l2.5 2L7 14M12 14h5"/>',
+    "command": '<path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3z"/>',
     "keyboard": '<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M8 14h8"/>',
     "drive": '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 13h18M16.5 15.5h.01M13.5 15.5h.01"/>',
     "usb": '<path d="M8 10h8v9a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2zM9.5 10V3.5h5V10M11 6.5h.01M13 6.5h.01"/>',

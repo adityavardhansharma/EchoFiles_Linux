@@ -759,8 +759,8 @@
         },
         "command.svg": {
           "name": "command.svg",
-          "blob": "aeff90821c44ba30894434723ce97b2f",
-          "size": 279,
+          "blob": "b1264c418ee4f23cf22c7198241949cc",
+          "size": 272,
           "type": "image/svg+xml"
         },
         "compress.svg": {
@@ -1169,8 +1169,8 @@
   },
   "lastChange": {
     "by": "Aditya",
-    "at": "2026-09-27T14:38:37Z",
+    "at": "2026-09-27T15:20:00Z",
     "via": "Claude Code",
-    "note": "Toasts are for news and problems only: finished actions (trash, delete, copy, move, rename, undo, restore, unmount) no longer show a success toast, and a finished TransferToast leaves at once. Undo stays on Ctrl+Z."
+    "note": "Toolbar: List, Grid, Dual pane, Preview pane and Hidden files fold into one View ▾ dropdown (ViewButton + ViewMenu) that shows the current layout's glyph; menu items can carry a trailing check. Command palette glyph is now ⌘ instead of a terminal."
   }
 }

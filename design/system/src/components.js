@@ -182,13 +182,29 @@
       h(SearchScope, { value: scope }),
       h(SearchField, { placeholder: scope === "everywhere" ? "Search everywhere" : "Search this folder", defaultValue: p.query }),
       h("span", { className: "ef-toolbar-sep" }),
-      h(IconButton, { icon: "list", label: "List view (Ctrl+1)", pressed: !p.grid }),
-      h(IconButton, { icon: "grid", label: "Grid view (Ctrl+2)", pressed: !!p.grid }),
-      h(IconButton, { icon: "columns", label: p.dual ? "Single pane (F3)" : "Dual pane (F3)", pressed: !!p.dual }),
-      h(IconButton, { icon: "sidebar", label: "Preview pane (Space)", pressed: !!p.preview }),
-      h(IconButton, { icon: p.hidden ? "eye" : "eye-off", label: p.hidden ? "Hide hidden files (Ctrl+H)" : "Show hidden files (Ctrl+H)", pressed: !!p.hidden }),
+      h(ViewButton, { grid: !!p.grid, open: !!p.viewOpen }),
       h(IconButton, { icon: "command", label: "Command palette (Ctrl+K)" }),
       h(IconButton, { icon: "settings", label: "Settings (Ctrl+,)", pressed: !!p.settings }));
+  }
+
+  /** Toolbar View dropdown: the current layout's glyph plus a chevron; opens ViewMenu. */
+  function ViewButton(p) {
+    return h("button", { type: "button", className: "ef-ibtn ef-dropbtn", "aria-label": "View", title: "View", "aria-haspopup": "menu", "aria-expanded": String(!!p.open) },
+      h(Icon, { name: p.grid ? "grid" : "list", size: 16 }),
+      h(Icon, { name: "chevron-down", size: 12 }));
+  }
+
+  /** The View dropdown's menu: layout choice, then pane and hidden-file toggles; a check marks what's on. */
+  function ViewMenu(p) {
+    return h(ContextMenu, { label: "View", items: [
+      { heading: "Layout" },
+      { icon: "list", label: "List", kbd: ["Ctrl", "1"], checked: !p.grid },
+      { icon: "grid", label: "Grid", kbd: ["Ctrl", "2"], checked: !!p.grid },
+      "-",
+      { heading: "Show" },
+      { icon: "columns", label: "Dual pane", kbd: ["F3"], checked: !!p.dual },
+      { icon: "sidebar", label: "Preview pane", kbd: ["Space"], checked: !!p.preview },
+      { icon: "eye", label: "Hidden files", kbd: ["Ctrl", "H"], checked: !!p.hidden }] });
   }
 
   /** Where the search box looks: this folder, or everything the index covers (Ctrl+E). */
@@ -431,7 +447,8 @@
           h("span", { className: "ef-mi-label" }, it.label),
           it.hint ? h("span", { className: "ef-mi-hint" }, it.hint) : null,
           it.kbd ? h(Kbd, { keys: it.kbd }) : null,
-          it.submenu ? h(Icon, { name: "chevron-right", size: 12 }) : null);
+          it.submenu ? h(Icon, { name: "chevron-right", size: 12 }) : null,
+          it.checked !== undefined ? h("span", { className: "ef-mi-check" }, it.checked ? h(Icon, { name: "check", size: 14 }) : null) : null);
       }));
   }
 
@@ -807,7 +824,7 @@
   window.Echo = {
     Icon: Icon, FileIcon: FileIcon, Button: Button, IconButton: IconButton, SegmentedControl: SegmentedControl,
     Switch: Switch, Checkbox: Checkbox, Kbd: Kbd, TextField: TextField, SearchField: SearchField, PathBar: PathBar,
-    TabStrip: TabStrip, Toolbar: Toolbar, Sidebar: Sidebar, SidebarSection: SidebarSection, SidebarItem: SidebarItem,
+    TabStrip: TabStrip, Toolbar: Toolbar, ViewButton: ViewButton, ViewMenu: ViewMenu, Sidebar: Sidebar, SidebarSection: SidebarSection, SidebarItem: SidebarItem,
     DriveItem: DriveItem, UsageBar: UsageBar, StatePill: StatePill, FileRow: FileRow, ColumnHeader: ColumnHeader,
     FileList: FileList, Skeleton: Skeleton, FileTile: FileTile, FileGrid: FileGrid, StatusBar: StatusBar,
     EmptyState: EmptyState, DriveCard: DriveCard, Spinner: Spinner, Banner: Banner, Toast: Toast,

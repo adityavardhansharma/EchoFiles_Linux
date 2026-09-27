@@ -1,4 +1,4 @@
-<!-- @dsCard group="Navigation" height=64 -->
+<!-- @dsCard group="Navigation" height=330 -->
 <!doctype html>
 <html>
 <head><meta charset="utf-8"><title>Toolbar</title></head>
@@ -8,7 +8,9 @@
 (function(){
 var E = window.Echo, h = React.createElement;
 function App(){
-return h("div", {className:"ef"}, h(E.Toolbar, {segments:[{label:"Home",icon:"home"},{label:"Pictures"},{label:"2026"}], grid:true, preview:true}));
+return h("div", {className:"ef"}, React.createElement(React.Fragment, null,
+  h(E.Toolbar, {segments:[{label:"Home",icon:"home"},{label:"Pictures"},{label:"2026"}], grid:true, viewOpen:true}),
+  h("div", {style:{display:"flex", justifyContent:"flex-end", padding:"2px 76px 0 0"}}, h(E.ViewMenu, {grid:true, preview:true}))));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(h(App));
 })();

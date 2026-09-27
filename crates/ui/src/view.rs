@@ -283,17 +283,37 @@ impl App {
             self.tip(scope, "Where to search", Some("Ctrl+E")),
             search,
             sep(),
-            self.tool("list", "List view", Some("Ctrl+1"), Some(Message::SetGrid(false)), !pane.grid),
-            self.tool("grid", "Grid view", Some("Ctrl+2"), Some(Message::SetGrid(true)), pane.grid),
-            self.tool("columns", if self.dual() { "Single pane" } else { "Dual pane" }, Some("F3"), Some(Message::ToggleDual), self.dual()),
-            self.tool("sidebar", "Preview pane", Some("Space"), Some(Message::TogglePreview), self.settings.appearance.preview),
-            self.tool(if self.show_hidden { "eye" } else { "eye-off" }, if self.show_hidden { "Hide hidden files" } else { "Show hidden files" }, Some("Ctrl+H"), Some(Message::ToggleHidden), self.show_hidden),
+            self.view_menu_button(),
             self.tool("command", "Command palette", Some("Ctrl+K"), Some(Message::Ui(UiMsg::OpenCommand)), false),
             self.tool("settings", "Settings", Some("Ctrl+,"), Some(Message::Settings(SettingsMsg::Open)), false),
         ]
         .spacing(style::SPACE_1)
         .align_y(Alignment::Center);
         container(bar).height(style::TOOLBAR).padding([0, 12]).align_y(Alignment::Center).width(Length::Fill).into()
+    }
+
+    /// View dropdown: the current layout's glyph and a chevron; the menu holds the layout
+    /// choice and the pane/hidden-file toggles with a check on what's on.
+    fn view_menu_button(&self) -> Element<'_, Message> {
+        let p = &self.palette;
+        // Anchor under the button, right-aligned: the toolbar ends with this, Command, Settings.
+        let right = self.window_size.width - 12.0 - 2.0 * (28.0 + style::SPACE_1);
+        let at = iced::Point::new(right - 272.0, TABS_H + style::TOOLBAR - 2.0);
+        let open = Message::Ui(UiMsg::OpenMenu(MenuFor::View, at));
+        let ink = color(p.ink_muted);
+        let content = row![self.glyph(if self.pane().grid { "grid" } else { "list" }, style::GLYPH, ink), self.glyph("chevron-down", 12.0, ink)].spacing(2).align_y(Alignment::Center);
+        let pal = p.clone();
+        let b = button(container(content).height(28).padding([0, 6]).align_y(Alignment::Center)).padding(0).on_press(open).style(move |_, status| button::Style {
+            background: match status {
+                button::Status::Hovered => Some(Background::Color(color(pal.state_hover))),
+                button::Status::Pressed => Some(Background::Color(color(pal.state_press))),
+                _ => None,
+            },
+            text_color: color(pal.ink),
+            border: Border { radius: 4.0.into(), ..Border::default() },
+            ..Default::default()
+        });
+        self.tip(b, "View", None)
     }
 
     // ------------------------------------------------------------------ sidebar

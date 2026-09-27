@@ -38,7 +38,9 @@ export declare function PathBar(props: PathBarProps): React.ReactElement;
 
 export interface TabStripProps { tabs: { label: string; icon?: GlyphName }[]; active?: number }
 export declare function TabStrip(props: TabStripProps): React.ReactElement;
-export interface ToolbarProps { segments?: PathSegment[]; scope?: string; view?: 'list' | 'grid' | 'columns'; preview?: boolean; settings?: boolean }
+export interface ToolbarProps { segments?: PathSegment[]; scope?: string; query?: string; grid?: boolean; viewOpen?: boolean; settings?: boolean }
+export declare function ViewButton(props: { grid?: boolean; open?: boolean }): React.ReactElement;
+export declare function ViewMenu(props: { grid?: boolean; dual?: boolean; preview?: boolean; hidden?: boolean }): React.ReactElement;
 export declare function Toolbar(props: ToolbarProps): React.ReactElement;
 export declare function Sidebar(props: { children?: React.ReactNode }): React.ReactElement;
 export interface SidebarSectionProps { title: string; world?: World; count?: number; children?: React.ReactNode }
@@ -86,7 +88,7 @@ export declare function Tooltip(props: { kbd?: string[]; children?: React.ReactN
 export interface DialogProps { title: string; icon?: ColorIconName; tone?: 'danger'; footer?: React.ReactNode; height?: number; children?: React.ReactNode }
 export declare function Dialog(props: DialogProps): React.ReactElement;
 export declare function ConflictDialog(props: { title?: string; count?: number }): React.ReactElement;
-export type MenuItem = '-' | { heading: string } | { icon?: GlyphName; label: string; kbd?: string[]; hint?: string; submenu?: boolean; danger?: boolean; disabled?: boolean; active?: boolean };
+export type MenuItem = '-' | { heading: string } | { icon?: GlyphName; label: string; kbd?: string[]; hint?: string; submenu?: boolean; danger?: boolean; disabled?: boolean; active?: boolean; checked?: boolean };
 export declare function ContextMenu(props: { items: MenuItem[]; label?: string }): React.ReactElement;
 export interface PaletteGroup { heading: string; items: { icon: GlyphName; label: string; hint?: string; kbd?: string[] }[] }
 export declare function CommandPalette(props: { groups: PaletteGroup[]; query?: string; id?: string }): React.ReactElement;
