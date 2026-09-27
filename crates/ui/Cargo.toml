@@ -12,8 +12,11 @@ ef-theme.workspace = true
 ef-vfs.workspace = true
 ef-index.workspace = true
 ef-config.workspace = true
-iced = { workspace = true, features = ["wayland", "x11", "smol", "crisp"] }
+iced = { workspace = true, features = ["wayland", "x11", "smol", "crisp", "image-without-codecs"] }
 mimalloc.workspace = true
 rayon.workspace = true
 rustix.workspace = true
 libc = "0.2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+png = "0.17"
+md5 = "0.8.1"

@@ -9,15 +9,21 @@
 //! - `ECHOFILES_NO_FONT_PREWARM=1` restores Iced's synchronous font loading (for measurements).
 //! - `WGPU_POWER_PREF`, `WGPU_BACKEND`, `VK_LOADER_DRIVERS_SELECT` override `gpu::configure`.
 
+mod actions;
 mod app;
+mod drives;
 mod file_list;
 mod gpu;
 mod indexer;
 mod kinds;
+mod overlay;
+mod pane;
+mod preview;
 mod search;
 mod settings;
 mod style;
 mod system;
+mod thumbs;
 mod view;
 mod widgets;
 

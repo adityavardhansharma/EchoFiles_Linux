@@ -8,6 +8,8 @@ license.workspace = true
 name = "ef_disks"
 
 [dependencies]
+futures-channel = "0.3.34"
+nt-hive = "0.3.0"
 zbus.workspace = true
 
 [[example]]

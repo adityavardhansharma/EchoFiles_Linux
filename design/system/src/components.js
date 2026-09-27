@@ -181,8 +181,30 @@
       h(PathBar, { segments: p.segments || [], animateLast: true }),
       h(SearchScope, { value: scope }),
       h(SearchField, { placeholder: scope === "everywhere" ? "Search everywhere" : "Search this folder", defaultValue: p.query }),
-      h(IconButton, { icon: p.hidden ? "eye" : "eye-off", label: p.hidden ? "Hide hidden files (Ctrl+H)" : "Show hidden files (Ctrl+H)", pressed: !!p.hidden }),
+      h("span", { className: "ef-toolbar-sep" }),
+      h(ViewButton, { grid: !!p.grid, open: !!p.viewOpen }),
+      h(IconButton, { icon: "command", label: "Command palette (Ctrl+K)" }),
       h(IconButton, { icon: "settings", label: "Settings (Ctrl+,)", pressed: !!p.settings }));
+  }
+
+  /** Toolbar View dropdown: the current layout's glyph plus a chevron; opens ViewMenu. */
+  function ViewButton(p) {
+    return h("button", { type: "button", className: "ef-ibtn ef-dropbtn", "aria-label": "View", title: "View", "aria-haspopup": "menu", "aria-expanded": String(!!p.open) },
+      h(Icon, { name: p.grid ? "grid" : "list", size: 16 }),
+      h(Icon, { name: "chevron-down", size: 12 }));
+  }
+
+  /** The View dropdown's menu: layout choice, then pane and hidden-file toggles; a check marks what's on. */
+  function ViewMenu(p) {
+    return h(ContextMenu, { label: "View", items: [
+      { heading: "Layout" },
+      { icon: "list", label: "List", kbd: ["Ctrl", "1"], checked: !p.grid },
+      { icon: "grid", label: "Grid", kbd: ["Ctrl", "2"], checked: !!p.grid },
+      "-",
+      { heading: "Show" },
+      { icon: "columns", label: "Dual pane", kbd: ["F3"], checked: !!p.dual },
+      { icon: "sidebar", label: "Preview pane", kbd: ["Space"], checked: !!p.preview },
+      { icon: "eye", label: "Hidden files", kbd: ["Ctrl", "H"], checked: !!p.hidden }] });
   }
 
   /** Where the search box looks: this folder, or everything the index covers (Ctrl+E). */
@@ -203,7 +225,7 @@
       h("div", { className: "ef-sec-list" }, p.children));
   }
   function SidebarItem(p) {
-    return h("button", { type: "button", className: cx("ef-side-item", p.dropTarget && "ef-side-drop"), "aria-current": p.active ? "true" : undefined },
+    return h("button", { type: "button", className: cx("ef-side-item", p.dropTarget && "ef-side-drop", p.indent && "ef-side-indent"), "aria-current": p.active ? "true" : undefined },
       h(Icon, { name: p.icon || "folder", size: 16 }),
       h("span", { className: "ef-side-name" }, p.label),
       p.trail ? h("span", { className: "ef-side-trail" }, p.trail) : null);
@@ -399,10 +421,11 @@
     return h(Dialog, {
       title: p.title || "“Report-Q3.xlsx” already exists in AVS (D:)", icon: "file-sheet", height: 420,
       footer: [
-        h("span", { key: "all", className: "ef-grow" }, h(Checkbox, { id: "apply-all" }, "Apply to all " + (p.count || 12) + " conflicts")),
+        h("span", { key: "all", className: "ef-grow" }, h(Checkbox, { id: "apply-all" }, "Do this for all " + (p.count || 12) + " conflicts")),
+        h(Button, { key: "cancel", variant: "ghost", kbd: ["Esc"] }, "Cancel"),
         h(Button, { key: "skip" }, "Skip"),
-        h(Button, { key: "both" }, "Keep both"),
-        h(Button, { key: "rep", variant: "primary", kbd: ["Enter"] }, "Replace")]
+        h(Button, { key: "rep" }, p.folders ? "Merge" : "Replace"),
+        h(Button, { key: "both", variant: "primary", kbd: ["Enter"] }, "Keep both")]
     },
       h("div", { className: "ef-conflict" },
         h("div", { className: "ef-conflict-card" }, h(FileIcon, { name: "file-sheet", size: 32 }), h("b", null, "Copying"), h("span", { className: "ef-newer" }, "Modified today 18:22 · newer"), h("span", null, "84 KB · ~/Documents")),
@@ -424,7 +447,8 @@
           h("span", { className: "ef-mi-label" }, it.label),
           it.hint ? h("span", { className: "ef-mi-hint" }, it.hint) : null,
           it.kbd ? h(Kbd, { keys: it.kbd }) : null,
-          it.submenu ? h(Icon, { name: "chevron-right", size: 12 }) : null);
+          it.submenu ? h(Icon, { name: "chevron-right", size: 12 }) : null,
+          it.checked !== undefined ? h("span", { className: "ef-mi-check" }, it.checked ? h(Icon, { name: "check", size: 14 }) : null) : null);
       }));
   }
 
@@ -503,13 +527,14 @@
         h(SidebarItem, { icon: "download", label: "Downloads", trail: "3 new" }),
         h(SidebarItem, { icon: "image", label: "Pictures" }),
         h(SidebarItem, { icon: "trash", label: "Trash" })),
+      h(SidebarSection, { title: "Pinned" },
+        h(SidebarItem, { icon: "pin", label: "Work" }),
+        h(SidebarItem, { icon: "pin", label: "EchoFiles_Linux" })),
       h(SidebarSection, { title: "Windows", world: "windows", count: 3 },
         h(DriveItem, { name: "Windows (C:)", state: "readonly", used: 76, world: "windows", meta: "NTFS", free: "88 GB free", active: p.active === "c" }),
         h(DriveItem, { name: "AVS (D:)", state: "mounted", used: 58, world: "windows", meta: "NTFS", free: "66 GB free", active: p.active === "d" }),
         h(DriveItem, { name: "AVS (E:)", state: "unmounted", meta: "295 GB · click to mount" })),
-      h(SidebarSection, { title: "Pinned" },
-        h(SidebarItem, { icon: "star", label: "Work", trail: "D:" }),
-        h(SidebarItem, { icon: "folder", label: "EchoFiles_Linux" })));
+      h(SidebarItem, { icon: "sliders", label: "All drives" }));
   }
 
   function AppWindow(p) {
@@ -734,7 +759,8 @@
         h(SettingRow, { label: "Omarchy theme · tokyo-night", description: "EchoFiles follows your Omarchy theme and font and switches with them. Change the theme from the Omarchy menu." },
           h("span", { className: "ef-swatches" }, ["--bg", "--bg-raised", "--ink", "--accent", "--world-linux", "--world-windows", "--success", "--warning", "--danger"].map(function (v) { return h("i", { key: v, style: { background: "var(" + v + ")" } }); })))),
       h(SettingsGroup, { key: "b", title: "Layout" },
-        h(SettingRow, { label: "Row height", description: "How tightly the file list is packed." }, h(SegmentedControl, { label: "Row height", value: "default", options: [{ value: "compact", text: "Compact" }, { value: "default", text: "Default" }, { value: "comfortable", text: "Comfortable" }] })))];
+        h(SettingRow, { label: "Row height", description: "How tightly the file list is packed." }, h(SegmentedControl, { label: "Row height", value: "default", options: [{ value: "compact", text: "Compact" }, { value: "default", text: "Default" }, { value: "comfortable", text: "Comfortable" }] })),
+        h(SettingRow, { label: "Folders open as", description: "Automatic uses a grid in Pictures, Videos and camera folders and a list everywhere else. Changing this resets views you switched by hand (Ctrl+1 / Ctrl+2)." }, h(SegmentedControl, { label: "Folders open as", value: "auto", options: [{ value: "auto", text: "Automatic" }, { value: "list", text: "List" }, { value: "grid", text: "Grid" }] })))];
     if (page === "about") return [
       h(PageHead, { key: "h", title: "About" }, "Where EchoFiles keeps things, and how to drive it from the keyboard."),
       h(SettingsGroup, { key: "a", title: "EchoFiles" },
@@ -798,7 +824,7 @@
   window.Echo = {
     Icon: Icon, FileIcon: FileIcon, Button: Button, IconButton: IconButton, SegmentedControl: SegmentedControl,
     Switch: Switch, Checkbox: Checkbox, Kbd: Kbd, TextField: TextField, SearchField: SearchField, PathBar: PathBar,
-    TabStrip: TabStrip, Toolbar: Toolbar, Sidebar: Sidebar, SidebarSection: SidebarSection, SidebarItem: SidebarItem,
+    TabStrip: TabStrip, Toolbar: Toolbar, ViewButton: ViewButton, ViewMenu: ViewMenu, Sidebar: Sidebar, SidebarSection: SidebarSection, SidebarItem: SidebarItem,
     DriveItem: DriveItem, UsageBar: UsageBar, StatePill: StatePill, FileRow: FileRow, ColumnHeader: ColumnHeader,
     FileList: FileList, Skeleton: Skeleton, FileTile: FileTile, FileGrid: FileGrid, StatusBar: StatusBar,
     EmptyState: EmptyState, DriveCard: DriveCard, Spinner: Spinner, Banner: Banner, Toast: Toast,

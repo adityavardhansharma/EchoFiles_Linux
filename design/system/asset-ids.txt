@@ -90,7 +90,7 @@ Glyphs/cloud-upload.svg 327 b9e8a896ef1c63e0bd61ab50e7a133a8
 Glyphs/cloud.svg 268 96a2a8be5163a01abf465e96a1fd9cc8
 Glyphs/code.svg 241 fe9934f7a5c312513d77a122a7dc5ecc
 Glyphs/columns.svg 263 5ba93d75415d5ead3acb31c486f0bf79
-Glyphs/command.svg 279 aeff90821c44ba30894434723ce97b2f
+Glyphs/command.svg 272 b1264c418ee4f23cf22c7198241949cc
 Glyphs/compress.svg 276 6c76f2819e6cf18b8f226e4605c7e4a5
 Glyphs/copy.svg 310 9a6ed06b912635e4c9105536ae0ec489
 Glyphs/crop.svg 248 6b05b3ce9b36de5e8a6c1153c5825dfd
@@ -148,7 +148,7 @@ Glyphs/star.svg 276 a393d1a8aec1ca951adf3d92f7728d1f
 Glyphs/swap.svg 242 351e443ddbcb0402dcf6aef6cf56782c
 Glyphs/sync.svg 291 5bad100080b155c0632a74e0d305ca43
 Glyphs/tag.svg 366 1d15d0e484629b5653193dc0c611d7ed
-Glyphs/terminal.svg 275 fe4936fea4762525a54c01f6322ddd33
+Glyphs/terminal.svg 220 1dbf01bd22c6f6d976a9f22b7f1d8b81
 Glyphs/trash.svg 305 1a14778814e62347e5b439f0de0f7264
 Glyphs/undo.svg 245 b438080c8caf9bb5ce699ed034299db6
 Glyphs/unlock.svg 297 c987e15d3963a2b1be6914184708fd95

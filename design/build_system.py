@@ -90,7 +90,7 @@ A 28px square glyph button for the toolbar, tab strip, toasts and panes.
 **Provide** `icon`, `label` (becomes the tooltip and accessible name; include the shortcut: "Back (Alt+Left)"), optional `pressed` for toggles (preview pane, show hidden, dual pane).
 
 - Rest `ink-muted`, hover `ink-strong` on `state-hover`, pressed toggle `accent-ink` on `state-active`.
-- Toolbar order is fixed: Back, Forward, Up · PathBar · Search · View · Preview · More.
+- Toolbar order is fixed: Back, Forward, Up, Reload · PathBar · Search · View ▾ · Command palette · Settings.
 - Never use for destructive actions without a confirm step or undo toast.
 """)
 
@@ -190,6 +190,8 @@ The breadcrumb: clickable segments that turn into a typed path on Ctrl+L or doub
 - Windows volumes show their drive-letter name ("AVS (D:)"), never `/run/media/…`; the typed mode shows the real path and accepts Windows paths (`D:\\Work`) too.
 - Only the newest segment animates (slides 6px in `dur-base`); navigation itself is instant.
 - Last segment is `ink-strong` bold; the rest `ink-muted` with hover layers. Overflow collapses middle segments into a `…` menu.
+- Ctrl+L or a double-click on the empty part of the bar switches to the typed path (text selected); Enter goes there — a file's path opens its folder with the file selected — and Esc goes back. `D:\\Work` works once EchoFiles knows the letters (they're read from Windows the first time C: is mounted).
+- During a drag, segments are drop targets like sidebar places.
 """)
 
 # ------------------------------------------------------------------ Navigation
@@ -202,18 +204,22 @@ Tabs across the top of the window on the `bg-deep` strip.
 **Provide** `tabs` (`{label, icon}`), `active`.
 
 - The active tab joins the toolbar (`bg`) and carries a 2px `accent` top bar — the same signal as Hyprland's active border. Close buttons appear on hover and on the active tab.
-- Ctrl+T new, Ctrl+W close, Ctrl+Tab cycle, middle-click a folder to open it in a tab. Tabs never animate position.
+- Ctrl+T new, Ctrl+W close, Ctrl+Tab / Ctrl+Shift+Tab cycle, middle-click a folder (or a sidebar place) to open it in a tab; middle-click a tab to close it; right-click a tab for New tab / Close tab. Tabs never animate position.
+- A tab split into two panes carries a small `columns` glyph after its name. Switching to a tab refreshes its folders.
 """)
 
-comp("Toolbar", "Navigation", 64, """
-return h("div", {className:"ef"}, h(E.Toolbar, {segments:[{label:"Home",icon:"home"},{label:"Pictures"},{label:"2026"}]}));
+comp("Toolbar", "Navigation", 330, """
+return h("div", {className:"ef"}, React.createElement(React.Fragment, null,
+  h(E.Toolbar, {segments:[{label:"Home",icon:"home"},{label:"Pictures"},{label:"2026"}], grid:true, viewOpen:true}),
+  h("div", {style:{display:"flex", justifyContent:"flex-end", padding:"2px 76px 0 0"}}, h(E.ViewMenu, {grid:true, preview:true}))));
 """, """# Toolbar
 
-The 40px navigation row: history, reload, path, search and settings.
+The 40px navigation row: history, reload, path, search, the View dropdown, command palette and settings.
 
-**Provide** `segments` for the PathBar, optional `scope` (`folder` | `everywhere`), `query`, `hidden`, `settings`.
+**Provide** `segments` for the PathBar, optional `scope` (`folder` | `everywhere`), `query`, `grid`, `viewOpen`, `settings`.
 
-- Fixed order: Back, Forward, Up, Reload · PathBar · `SearchScope` · Search · Hidden files (eye) · Settings (gear, Ctrl+,). Grid view, dual pane and preview join when they ship — never as dead buttons.
+- Fixed order: Back, Forward, Up, Reload · PathBar · `SearchScope` · Search · View ▾ · Command palette (⌘ glyph, Ctrl+K) · Settings (gear, Ctrl+,).
+- **View ▾** (`ViewButton`) shows only the current layout's glyph (list or grid) and a chevron. It opens `ViewMenu`, right-aligned under it: **Layout** — List (Ctrl+1), Grid (Ctrl+2); **Show** — Dual pane (F3), Preview pane (Space), Hidden files (Ctrl+H). A trailing `accent-ink` check marks what's on; picking an item applies it and closes the menu. The keys keep working without the menu.
 - Every button is an `IconButton`: same 28px square, `state-hover` layer and `ink-strong` glyph on hover, `state-press` when pressed, 45% and no hover when disabled (Forward with no history). Every one has a tooltip with its key as a `Kbd`. PathBar segments use the same hover.
 - While Everywhere results are showing, the PathBar ends with a bold **Search results** segment; clicking any earlier segment leaves the results.
 - No window controls: EchoFiles is tiled by Hyprland and never draws client-side decorations.
@@ -229,23 +235,27 @@ return h("div", {className:"ef", style:{display:"flex", height:590}},
       h(E.SidebarItem, {icon:"image", label:"Pictures", dropTarget:true}),
       h(E.SidebarItem, {icon:"music", label:"Music"}),
       h(E.SidebarItem, {icon:"trash", label:"Trash"})),
+    h(E.SidebarSection, {title:"Pinned"},
+      h(E.SidebarItem, {icon:"pin", label:"Work"}),
+      h(E.SidebarItem, {icon:"pin", label:"EchoFiles_Linux"})),
     h(E.SidebarSection, {title:"Windows", world:"windows", count:3},
       h(E.DriveItem, {name:"Windows (C:)", state:"readonly", used:76, world:"windows", meta:"NTFS", free:"88 GB free"}),
       h(E.DriveItem, {name:"AVS (D:)", state:"mounted", used:58, world:"windows", meta:"NTFS", free:"66 GB free"}),
-      h(E.DriveItem, {name:"AVS (E:)", state:"unmounted", meta:"295 GB · click to mount"}),
-      h(E.SidebarItem, {icon:"user", label:"Aditya (C:\\\\Users)"})),
-    h(E.SidebarSection, {title:"Pinned"},
-      h(E.SidebarItem, {icon:"star", label:"Work", trail:"D:"}))));
+      h(E.DriveItem, {name:"AVS (E:)", state:"unmounted", meta:"295 GB · click to mount"})),
+    h(E.SidebarItem, {icon:"sliders", label:"All drives"})));
 """, """# Sidebar
 
-The place list on `bg-sunken`, grouped into worlds: Linux, Windows, later Phone, then Pinned.
+The place list on `bg-sunken`: Linux, Pinned (when anything is pinned), Windows, later Phone, and **All drives** at the end.
 
 **Provide** `Sidebar` > `SidebarSection` (`title`, optional `world`: `linux`, `windows`, `phone`, optional `count`) > `SidebarItem` (`icon`, `label`, `active`, `trail`, `dropTarget`) or `DriveItem`.
 
 - A world is marked by a 6px square in `world-linux`, `world-windows` or `world-phone` — the only place world colours appear besides drive usage bars.
 - Active item: `state-active` ground, `ink-strong` bold label, `accent-ink` glyph. No side rail.
 - Sections are data-driven (the phone section plugs in later). Drag a file onto an item → `accent-soft` with a 1px `accent` inset.
-- Width `sidebar-width` (236px), resizable 180–360, collapses with Ctrl+B in `dur-base`.
+- Width `sidebar-width` (236px), resizable 180–360 by dragging its right edge (the edge turns `accent` while dragged), hidden with Ctrl+B; both are remembered in settings.
+- **Pinned** folders come from *Pin to sidebar* in any folder's menu and show a `pin` glyph; right-click to unpin.
+- Drives are listed on their own — no Windows user folders under them (a PC with several accounts would bury the list). A thin scrollbar sits beside the rows, never over them.
+- Every place: click opens, middle-click opens in a new tab, right-click for Open / Open in new tab / Paste into folder / Pin, and files dragged onto it move or copy there. Trash's menu has **Empty Trash**.
 """)
 
 comp("DriveItem", "Navigation", 250, """
@@ -265,6 +275,9 @@ A drive in the sidebar: name, state, usage bar and free space in two lines.
 - Mounted drives show no pill (it is the normal state). Read-only and Needs check use `warning`, Locked `danger`, Not mounted is neutral and dims the name.
 - Clicking an unmounted drive mounts it and opens it; a spinner replaces the pill while udisks works. Usage bars grow once on mount (400ms).
 - Usage above 90% turns the bar `warning`, above 97% `danger`.
+- With a pill, the second line shows only the free space ("38 GB free"); without one, "61 GB free of 295 GB". The total is always in the tooltip.
+- Pills: **Mounting…** (`info`) while udisks works — the password dialog appears if Linux asks for one; **Read-only** (`warning`) for C: and anything mounted read-only; **Needs check** (`warning`) when Windows didn't shut down fully and the drive fell back to read-only; **Locked** (`danger`) for BitLocker; **Not mounted** (neutral).
+- Tooltip: the mount path and driver (`/run/media/…/AVS · ntfs3`), or the device when unmounted. Right-click: Open, Open in new tab, **Allow writing…** (C: only, `danger`), **Unmount**, All drives.
 """)
 
 # ------------------------------------------------------------------ Files
@@ -298,6 +311,9 @@ return h("div", {className:"ef", style:{padding:"8px 0"}},
 One row of `FileList`, shown here in every state it can take.
 
 **Provide** `file` (see FileList), `renaming`.
+
+- While renaming, a problem with the name (empty, `/`, already exists, or a character Windows can't store on NTFS) shows in a `danger-soft` strip at the bottom of the pane, naming the fix: "Windows doesn't allow ? in names. Press Enter to use “Q3_final.xlsx”." Enter then applies the fixed name.
+- Clicking anywhere else in the list commits the rename; Esc cancels it.
 
 - Drop target: `accent-soft` + 1px `accent` inset, the icon pops (`ease-spring`), and a 2px bar fills over 700ms — when full, the folder opens (spring-loading).
 - Rename: inline field on `bg-deep` with the stem pre-selected and the extension left out; Enter commits, Esc cancels, Tab moves to the next row.
@@ -335,6 +351,7 @@ The 24px footer: counts, selection size, background task and volume facts.
 
 - Numbers in `ink` bold, words in `ink-muted`. The volume's state pill repeats here so read-only is never a surprise.
 - Selection size for folders is computed in the background and fills in when ready ("12.4 MB+" until done).
+- Also says what's on the clipboard ("3 cut on the clipboard") and how many transfers are running. The right side names the volume: "AVS (D:) · ntfs3 · 66 GB free", or "Linux · btrfs · …".
 """)
 
 comp("EmptyState", "Files", 330, """
@@ -419,17 +436,18 @@ A full-width strip at the top of a folder view for facts about the whole locatio
 
 comp("Toast", "Feedback", 230, """
 return h("div", {className:"ef ef-stack", style:{alignItems:"flex-end"}},
-  h(E.Toast, {title:"Moved 3 items to Trash", tone:"success", actions:[h(E.Button, {key:1, size:"sm", kbd:["Ctrl","Z"]}, "Undo")]}),
+  h(E.Toast, {title:"AVS (D:) opened read-only"}, "Windows didn't shut down fully (Fast Startup or hibernation)."),
   h(E.Toast, {title:"Couldn't copy “Q3:final.xlsx”", tone:"danger", actions:[h(E.Button, {key:1, size:"sm"}, "Rename to “Q3-final.xlsx”"), h(E.Button, {key:2, size:"sm", variant:"ghost"}, "Skip")]}, "Windows names can't contain “:”."));
 """, """# Toast
 
 A floating notice in the bottom-right corner for results of actions.
 
-**Provide** `title` (what happened, past tense), `tone` (`success`, `danger`, or default accent), `children` (why, for errors), `actions`.
+**Provide** `title` (what happened, past tense), `tone` (`danger`, or default accent), `children` (why), `actions`.
 
 - Border is 2px — `accent`, `success` or `danger` — the Omarchy notification look (Hyprland's active border). Radius follows Hyprland `rounding` (0).
 - Enter: rise 12px with `ease-spring` in `dur-slow`; exit: fade at 70%. Stack newest at the bottom, at most three; older collapse into "+2 more".
-- Success toasts auto-dismiss after 4s (paused on hover); error toasts stay until dismissed. Every destructive action gets an Undo toast.
+- Toasts are for news and problems only. A finished action — trash, delete, copy, move, rename, undo, restore, unmount — never announces itself: the files on screen already show it, and Ctrl+Z walks back through rename, move, copy, trash and new folder in order.
+- Accent toasts (news: a drive opened read-only, nothing to paste, a cancelled transfer) leave after 4s, paused on hover; error toasts stay until dismissed.
 """)
 
 comp("TransferToast", "Feedback", 170, """
@@ -441,8 +459,8 @@ Progress for copy, move, delete and extraction: title, current file, bar, throug
 
 **Provide** `title`, `detail` (source and current file), `value` (0–100) or `indeterminate` (during planning), `meta` (bytes done · speed), `eta`.
 
-- The bar is linear and fed from the engine's atomic counters at frame rate — never a message per chunk. At 100% it turns `success` and the tick draws.
-- "Flushed to disk" appears only after the batch `syncfs` completes, so people know when it's safe to reboot into Windows.
+- The bar is linear and fed from the engine's atomic counters at frame rate — never a message per chunk. It appears only for work that takes longer than ~0.4s.
+- It leaves the moment the batch `syncfs` completes — the drive is then safe to unplug or reboot from. Only a transfer with failures stays, turned `danger`, until dismissed.
 - Pause and Cancel (Esc) are always there; cancel undoes a partial move.
 """)
 
@@ -469,11 +487,18 @@ A one-line label with its shortcut, after 500ms hover (instant when moving betwe
 """)
 
 # ------------------------------------------------------------------ Overlays
-comp("Dialog", "Overlays", 330, """
-return h("div", {className:"ef"}, h(E.Dialog, {tone:"danger", title:"Delete 3 items permanently?", icon:"trash-full",
-  footer:[h(E.Button, {key:1}, "Cancel"), h(E.Button, {key:2, variant:"danger", icon:"trash"}, "Delete permanently")]},
-  h("p", null, "“Report-Q3.xlsx”, “IMG_20260914_182233.jpg” and 1 more will be erased from AVS (D:). This can't be undone."),
-  h("p", null, "To keep a way back, press Del instead — it moves them to Trash.")));
+comp("Dialog", "Overlays", 980, """
+return h("div", {className:"ef ef-stack"},
+  h(E.Dialog, {tone:"danger", title:"Delete 3 items permanently?", icon:"trash-full",
+    footer:[h(E.Button, {key:1, variant:"ghost", kbd:["Esc"]}, "Cancel"), h(E.Button, {key:2, icon:"trash"}, "Move to Trash"), h(E.Button, {key:3, variant:"danger", icon:"trash"}, "Delete permanently")]},
+    h("p", null, "“Report-Q3.xlsx”, “IMG_20260914_182233.jpg” and 1 more will be erased from AVS (D:). Deleting permanently can't be undone.")),
+  h(E.Dialog, {title:"Password needed", icon:"lock", height:260,
+    footer:[h(E.Button, {key:1, variant:"ghost", kbd:["Esc"]}, "Cancel"), h(E.Button, {key:2, variant:"primary", icon:"key", kbd:["Enter"]}, "Authenticate")]},
+    h("p", null, "Authentication is required to mount AVS (/dev/nvme0n1p6). Enter the password for aditya."),
+    h(E.TextField, {id:"pw", type:"password", placeholder:"Password"})),
+  h(E.Dialog, {tone:"danger", title:"Allow writing to Windows (C:)?", icon:"shield", height:280,
+    footer:[h(E.Button, {key:1, variant:"ghost", kbd:["Esc"]}, "Cancel"), h(E.Button, {key:2, variant:"danger", icon:"unlock"}, "Allow writing")]},
+    h("p", null, "This is the drive Windows runs from. Changing files here while Windows is hibernated or using Fast Startup can corrupt it — only continue if Windows was shut down with Restart. EchoFiles goes back to read-only the next time it mounts the drive.")));
 """, """# Dialog
 
 A modal for decisions that can't wait: permanent delete, conflicts, unsafe writes, unlocking.
@@ -482,10 +507,11 @@ A modal for decisions that can't wait: permanent delete, conflicts, unsafe write
 
 - `bg-raised` panel with a 2px `accent` border (Omarchy popup style; `danger` border when destructive), square corners, `shadow-float`, over `scrim`.
 - Enters with scale .98 → 1 in `dur-slow`. Esc cancels. The dangerous button is never the Enter default.
+- The dialogs EchoFiles has: **Delete permanently** (Shift+Del; offers Move to Trash; if a drive has no trash it says why and offers only permanent delete), **Empty the Trash?**, **Password needed** (EchoFiles' own polkit prompt for mounting internal drives; a wrong password turns the field `danger` with "That password didn't work"), **Allow writing to Windows (C:)?**, **Properties** (Alt+Enter or the menu: the item's facts only — size, dates, location, permissions or Windows attributes — with a × in the corner, Close and Esc; for several items, how many, their total size counted live and where), `ConflictDialog`, and **Some names won't work on Windows** (lists "a:b.txt → a_b.txt", Enter renames and continues).
 """)
 
 comp("ConflictDialog", "Overlays", 440, """
-return h("div", {className:"ef"}, h(E.ConflictDialog, {count:12}));
+return h("div", {className:"ef"}, h(E.ConflictDialog, {count:12, title:"“Report-Q3.xlsx” already exists"}));
 """, """# ConflictDialog
 
 Resolves name collisions during copy and move, side by side, once for all or file by file.
@@ -494,23 +520,32 @@ Resolves name collisions during copy and move, side by side, once for all or fil
 
 - The two files are compared by modified date and size; the newer one is marked in `success-ink`.
 - The pre-flight check finds every conflict before any byte is written, so this appears once at the start, never mid-copy.
-- Windows-name problems (`:`, `?`, case-only duplicates on NTFS) get the same dialog with a rename rule instead of Replace.
+- Windows-name problems (`:`, `?`, reserved names, trailing dots on NTFS) get their own dialog right after, with the fixed names listed.
+- **Keep both** is the Enter default (it loses nothing): the copy becomes "Report-Q3 (2).xlsx". Replace becomes **Merge** when both are folders. Cancel drops the whole transfer. "Do this for all N conflicts" applies the choice to the rest.
 """)
 
 comp("ContextMenu", "Overlays", 430, """
-return h("div", {className:"ef", style:{padding:16}}, h(E.ContextMenu, {items:[
-  {icon:"external", label:"Open", kbd:["Enter"], active:true}, {icon:"columns", label:"Open in other pane", kbd:["F3"]}, {icon:"plus", label:"Open in new tab", kbd:["Ctrl","Enter"]},
-  "-", {icon:"copy", label:"Copy", kbd:["Ctrl","C"]}, {icon:"cut", label:"Cut", kbd:["Ctrl","X"]}, {icon:"move", label:"Move to AVS (D:)", submenu:true},
-  {icon:"rename", label:"Rename", kbd:["F2"]}, {icon:"link", label:"Copy as Windows path", hint:"D:\\\\Work"},
-  "-", {icon:"trash", label:"Move to Trash", kbd:["Del"]}, {icon:"trash", label:"Delete permanently", kbd:["Shift","Del"], danger:true},
-  "-", {icon:"info", label:"Properties", kbd:["Alt","Enter"]}]}));
+return h("div", {className:"ef", style:{padding:16, display:"flex", gap:16, alignItems:"flex-start"}},
+  h(E.ContextMenu, {label:"On a folder", items:[
+    {icon:"external", label:"Open", kbd:["Enter"], active:true}, {icon:"plus", label:"Open in new tab", kbd:["Ctrl","Enter"]}, {icon:"columns", label:"Open in other pane", kbd:["F3"]},
+    "-", {icon:"cut", label:"Cut", kbd:["Ctrl","X"]}, {icon:"copy", label:"Copy", kbd:["Ctrl","C"]}, {icon:"paste", label:"Paste into folder"},
+    {icon:"move", label:"Move to", submenu:true}, {icon:"copy", label:"Copy to", submenu:true},
+    {icon:"rename", label:"Rename", kbd:["F2"]}, {icon:"link", label:"Copy path", kbd:["Ctrl","Shift","C"]}, {icon:"link", label:"Copy as Windows path", hint:"D:\\\\Work"}, {icon:"pin", label:"Pin to sidebar"},
+    "-", {icon:"trash", label:"Move to Trash", kbd:["Del"]}, {icon:"trash", label:"Delete permanently", kbd:["Shift","Del"], danger:true},
+    "-", {icon:"info", label:"Properties", kbd:["Alt","Enter"]}]}),
+  h(E.ContextMenu, {label:"On empty space", items:[
+    {icon:"folder-plus", label:"New folder", kbd:["Ctrl","Shift","N"]}, {icon:"file-plus", label:"New file"}, {icon:"paste", label:"Paste", kbd:["Ctrl","V"]}, {icon:"check", label:"Select all", kbd:["Ctrl","A"]},
+    "-", {icon:"grid", label:"View as grid", kbd:["Ctrl","2"]}, {icon:"eye", label:"Show hidden files", kbd:["Ctrl","H"]},
+    "-", {icon:"terminal", label:"Open terminal here"}, {icon:"link", label:"Copy path"}, {icon:"pin", label:"Pin to sidebar"}, {icon:"info", label:"Properties", kbd:["Alt","Enter"]}]}));
 """, """# ContextMenu
 
 The right-click menu: actions for the selection, grouped and with shortcuts.
 
 **Provide** `items`: `{icon, label, kbd?, hint?, submenu?, danger?, disabled?}`, `"-"` for separators, `{heading}` for group labels.
 
-- Groups: Open · Clipboard & organise · Trash · Properties. Windows-specific actions (Copy as Windows path, Show alternate streams) appear only on NTFS items.
+- On items — Open (Open in new tab / other pane for a folder, Open with… for a file) · Cut, Copy, Paste into folder, **Move to ▸** / **Copy to ▸** (other pane, Home folders, pinned folders, mounted drives), Rename, Copy path, Copy as Windows path (NTFS only), Pin to sidebar · Move to Trash, Delete permanently · Properties. In the Trash: Restore, Delete permanently.
+- On empty space — New folder, New file, Paste, Select all · View as grid/list, Show hidden files · Open terminal here, Copy path, Pin to sidebar, Properties. In the Trash: **Empty Trash**.
+- Right-clicking an unselected item selects it first. The Menu key opens it for the cursor item. Arrow keys move, Enter picks, hovering an item with ▸ opens its submenu beside it.
 - Highlight follows Omarchy's menu: `state-hover` ground, 1px `line` border, `accent-ink` label and glyph. Panel `bg-raised`, 1px `line-strong`, square corners.
 - Opens with a 4px drop in `dur-base`; closes instantly.
 """)
@@ -527,7 +562,8 @@ Ctrl+K: every action, folder, drive and setting, fuzzy-matched — the fastest w
 **Provide** `groups` of `{icon, label, hint?, kbd?}` and the current `query`.
 
 - Built like Omarchy's launcher: `>` prompt in `accent-ink`, results with matched letters in `accent-ink` bold, selected row on `state-hover` with a 1px `line` border.
-- Results rank recent and frequent first; typing a path (`/`, `~`, `C:\\`) switches to path completion; `/` searches files.
+- Groups: **Actions** (new folder, paste, undo, tabs, panes, views, mount / unmount each drive, "Mount Windows (C:) read-write", Empty Trash…), **Go to** (places, pinned, recent folders, mounted drives), **Settings** pages. Within a group the best fuzzy match leads.
+- Typing a path (`/` or `~`) switches to folder completion; Enter opens it.
 - Drops 8px and fades in over `dur-slow`; Esc closes instantly.
 """)
 
@@ -543,6 +579,10 @@ The Space-toggled right pane: large preview, facts, Windows attributes and quick
 
 - 280px on `bg-sunken`, slides in 12px over `dur-slow`. Text files show their first 200 lines, images their thumbnail, folders their size and item count (computed in the background).
 - Windows files show `Copy Windows path` and their DOS attributes; Linux files show permissions and owner instead.
+- Facts: Size (exact bytes too), Modified, Created, Opened, Location, Points to (links, "missing" when broken), Permissions `rw-r--r-- (644)`, Owner · group. Folders: whole-tree size and file count, filling in with a `+` until counted, plus how many items are directly inside.
+- On NTFS the Read-only, Hidden, System and Archive attributes are `Checkbox`es that change the file; Compressed, Encrypted (EFS), Sparse, Online-only and Junction are listed.
+- Linux files get the matching switches under **PERMISSIONS**: Read-only, Executable (files) and Only you can open it, each a `Checkbox` that changes the mode bits; links show none. Both worlds get **Copy path**; Windows files add **Copy Windows path**.
+- With several items selected the header adds "3 selected · 12 MB + folders". Nothing selected: "Select something to see its details." Properties (Alt+Enter, or the menu) opens the `Dialog` popup instead; the pane stays Space's.
 """)
 
 # ------------------------------------------------------------------ Search
@@ -672,7 +712,7 @@ Settings is its own screen (Ctrl+, or the gear): a top bar with a ghost **← Fi
 - **General** — Running: Keep running in the background (close hides the window; later launches reuse it) · Start at login (disabled unless running in the background). Windows: New windows open at Home / Last folder · Show hidden files.
 - **Search & index** — Index: Search index switch (off deletes the index) + `IndexStatus`. Search box: Search looks in (This folder / Everywhere). Indexed folders and Never show in search (`PathListEditor`). Skip contents of: Skip cache folders + `NameChips`.
 - **AI agents** — Allow EchoFiles commands (when off, `ef` exits 3 with "turned off"), ef location, Teach AI agents about ef (links the skill into ~/.claude/skills; off removes only that link), `CommandList` of examples. A `warning` note appears if `ef` is allowed but the index is off.
-- **Appearance** — the Omarchy theme's name and swatches (it follows the system); Row height Compact / Default / Comfortable (24 / 28 / 34px).
+- **Appearance** — the Omarchy theme's name and swatches (it follows the system); Row height Compact / Default / Comfortable (24 / 28 / 34px); Folders open as Automatic / List / Grid (resets per-folder choices).
 - **About** — version, settings file and index folder with **Show**, keyboard shortcuts.
 - Everything saves to `~/.config/echofiles/settings.toml` the moment it changes (shared with `ef`). Only settings that work today appear.
 """, extra=' width=1100 page')
@@ -699,7 +739,8 @@ Two folders side by side (F3) — the fastest way to move files between Linux an
 **Provide** nothing; reference composition.
 
 - The active pane has a 2px `accent` top edge and `bg` ground; the inactive pane drops to `bg-sunken`. Tab switches panes.
-- F5 copies the selection to the other pane, F6 moves it, both through the same pre-flight and progress as drag and drop. Each pane head carries its world mark.
+- F5 copies the selection to the other pane, F6 moves it, both through the same pre-flight and progress as drag and drop. Each pane head carries its world mark and its location; the toolbar and status bar follow the active pane.
+- Clicking in a pane makes it active. Only the active pane takes keys. Narrow panes drop the Kind column first, then Modified, so names keep their room.
 """, extra=' width=1100 page')
 
 comp("MotionSpec", "Pages", 700, """

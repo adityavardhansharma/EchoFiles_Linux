@@ -22,6 +22,13 @@
 //!
 //! [appearance]
 //! density = "default"         # "compact", "default" or "comfortable"
+//! preview = false             # the preview pane (Space)
+//! view = "auto"               # "auto" (grid in picture/video folders), "list" or "grid"
+//!
+//! [sidebar]
+//! pinned = ["~/Projects"]     # the Pinned section, in order
+//! width = 236                 # 180–360, dragged at its edge
+//! hidden = false              # Ctrl+B
 //! ```
 
 use std::io;
@@ -137,10 +144,37 @@ impl Default for Agents {
     }
 }
 
+/// How folders open: every folder as a list, every folder as a grid, or grid only where
+/// pictures and videos live.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DefaultView {
+    #[default]
+    Auto,
+    List,
+    Grid,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
     pub density: Density,
+    pub preview: bool,
+    pub view: DefaultView,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Sidebar {
+    pub pinned: Vec<String>,
+    pub width: u16,
+    pub hidden: bool,
+}
+
+impl Default for Sidebar {
+    fn default() -> Self {
+        Sidebar { pinned: Vec::new(), width: 236, hidden: false }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,6 +184,7 @@ pub struct Settings {
     pub search: SearchConfig,
     pub agents: Agents,
     pub appearance: Appearance,
+    pub sidebar: Sidebar,
 }
 
 pub fn home() -> PathBuf {

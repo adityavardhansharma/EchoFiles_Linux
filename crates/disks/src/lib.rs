@@ -1,5 +1,9 @@
-//! Drive discovery through udisks2 over the system D-Bus (build plan §3). Read-only in M1:
-//! mounting arrives in M2.
+//! Drives through udisks2 over the system D-Bus (build plan §3): discovery, drive letters,
+//! mount and unmount. Mounting an internal drive needs an administrator password; see
+//! [`polkit`] for how EchoFiles asks for it.
+
+pub mod letters;
+pub mod polkit;
 
 use std::collections::HashMap;
 
@@ -22,11 +26,24 @@ pub struct Volume {
     pub fs_type: String,
     pub size: u64,
     pub mount_points: Vec<String>,
+    /// GPT partition GUID — how Windows' registry names the partition.
+    pub part_uuid: String,
+    /// BitLocker-encrypted: nothing to mount until it's unlocked.
+    pub locked: bool,
+    /// Windows drive letter, once known from the registry.
+    pub letter: Option<char>,
+    /// Holds Windows itself (C:); mounted read-only unless writing is allowed.
+    pub system: bool,
 }
 
 impl Volume {
     pub fn is_ntfs(&self) -> bool {
         self.fs_type.starts_with("ntfs")
+    }
+
+    /// Windows sees this partition (NTFS or BitLocker).
+    pub fn is_windows(&self) -> bool {
+        self.is_ntfs() || self.locked
     }
 
     pub fn is_mounted(&self) -> bool {
@@ -62,9 +79,18 @@ impl From<zbus::Error> for Error {
 
 type Interfaces = HashMap<String, HashMap<String, OwnedValue>>;
 
-/// All NTFS volumes of at least 1 GB that udisks doesn't ask us to hide.
+/// All NTFS and BitLocker volumes of at least 1 GB that udisks doesn't ask us to hide,
+/// with their drive letters when known.
 pub fn windows_volumes() -> Result<Vec<Volume>, Error> {
-    Ok(all_volumes()?.into_iter().filter(Volume::is_ntfs).collect())
+    let cache = letters::load();
+    let mut out: Vec<Volume> = all_volumes()?.into_iter().filter(Volume::is_windows).collect();
+    for v in &mut out {
+        v.letter = cache.letters.get(&v.part_uuid).copied();
+        v.system = cache.system.contains(&v.part_uuid);
+    }
+    // Windows order: by drive letter, then the rest by device.
+    out.sort_by(|a, b| (a.letter.is_none(), a.letter, &a.device).cmp(&(b.letter.is_none(), b.letter, &b.device)));
+    Ok(out)
 }
 
 /// Every filesystem-bearing block device udisks knows, sorted by device path.
@@ -88,7 +114,12 @@ pub fn all_volumes() -> Result<Vec<Volume>, Error> {
 
 fn volume(object: &str, ifaces: &Interfaces) -> Option<Volume> {
     let block = ifaces.get("org.freedesktop.UDisks2.Block")?;
-    let fs = ifaces.get("org.freedesktop.UDisks2.Filesystem")?;
+    let fs_type = block.get("IdType").and_then(as_string).unwrap_or_default();
+    let locked = fs_type == "BitLocker";
+    let fs = ifaces.get("org.freedesktop.UDisks2.Filesystem");
+    if fs.is_none() && !locked {
+        return None;
+    }
     if block.get("HintIgnore").and_then(as_bool).unwrap_or(false) {
         return None;
     }
@@ -101,9 +132,13 @@ fn volume(object: &str, ifaces: &Interfaces) -> Option<Volume> {
         device: block.get("Device").and_then(as_bytestring).unwrap_or_default(),
         uuid: block.get("IdUUID").and_then(as_string).unwrap_or_default(),
         label: block.get("IdLabel").and_then(as_string).unwrap_or_default(),
-        fs_type: block.get("IdType").and_then(as_string).unwrap_or_default(),
+        fs_type,
         size,
-        mount_points: fs.get("MountPoints").map(as_bytestrings).unwrap_or_default(),
+        mount_points: fs.and_then(|f| f.get("MountPoints")).map(as_bytestrings).unwrap_or_default(),
+        part_uuid: ifaces.get("org.freedesktop.UDisks2.Partition").and_then(|p| p.get("UUID")).and_then(as_string).unwrap_or_default().to_lowercase(),
+        locked,
+        letter: None,
+        system: false,
     })
 }
 
@@ -147,4 +182,126 @@ fn as_bytestrings(v: &OwnedValue) -> Vec<String> {
         Value::Array(arr) => arr.iter().filter_map(bytes_to_string).collect(),
         _ => Vec::new(),
     }
+}
+
+// ------------------------------------------------------------------------------ mounting
+
+/// Why a mount didn't happen, in words for a banner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MountError {
+    /// The password prompt was cancelled or failed.
+    NotAuthorized,
+    Failed(String),
+}
+
+impl std::fmt::Display for MountError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MountError::NotAuthorized => write!(f, "mounting needs your password, and it wasn't given"),
+            MountError::Failed(m) => write!(f, "{m}"),
+        }
+    }
+}
+
+/// A finished mount.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mounted {
+    pub mount_point: String,
+    pub read_only: bool,
+    /// Why it's read-only when we didn't ask for that (Windows Fast Startup, hibernation).
+    pub forced_read_only: Option<String>,
+    /// This partition holds Windows (letters were read from its registry).
+    pub system: bool,
+}
+
+fn udisks_error(e: zbus::Error) -> MountError {
+    let text = e.to_string();
+    if text.contains("NotAuthorized") {
+        return MountError::NotAuthorized;
+    }
+    // "GDBus.Error:org.freedesktop.UDisks2.Error.Failed: Error mounting /dev/…: wrong fs type…"
+    let short = text.rsplit(": ").next().unwrap_or(&text).trim().to_string();
+    MountError::Failed(short)
+}
+
+fn call_mount(conn: &Connection, object: &str, read_only: bool) -> Result<String, MountError> {
+    // SAFETY: getuid/getgid can't fail.
+    let (uid, gid) = unsafe { (getuid(), getgid()) };
+    let mut opts = format!("uid={uid},gid={gid},windows_names,prealloc,iocharset=utf8");
+    if read_only {
+        opts.push_str(",ro");
+    }
+    let mut options: HashMap<&str, Value> = HashMap::new();
+    options.insert("fstype", Value::from("ntfs3"));
+    options.insert("options", Value::from(opts.as_str()));
+    let reply = conn
+        .call_method(Some("org.freedesktop.UDisks2"), object, Some("org.freedesktop.UDisks2.Filesystem"), "Mount", &(options,))
+        .map_err(udisks_error)?;
+    reply.body().deserialize::<String>().map_err(|e| MountError::Failed(e.to_string()))
+}
+
+fn call_unmount(conn: &Connection, object: &str) -> Result<(), MountError> {
+    let options: HashMap<&str, Value> = HashMap::new();
+    conn.call_method(Some("org.freedesktop.UDisks2"), object, Some("org.freedesktop.UDisks2.Filesystem"), "Unmount", &(options,))
+        .map_err(udisks_error)?;
+    Ok(())
+}
+
+unsafe extern "C" {
+    fn getuid() -> u32;
+    fn getgid() -> u32;
+}
+
+/// Mount a Windows volume with ntfs3. The Windows system partition (C:) mounts read-only
+/// unless `write_system` is set; a volume Windows didn't shut down cleanly (Fast Startup,
+/// hibernation) falls back to read-only instead of failing. Reading the registry on the
+/// way records every partition's drive letter.
+pub fn mount(v: &Volume, write_system: bool) -> Result<Mounted, MountError> {
+    let conn = Connection::system().map_err(|e| MountError::Failed(e.to_string()))?;
+    let want_ro = v.system && !write_system;
+    let (mp, forced) = match call_mount(&conn, &v.object, want_ro) {
+        Ok(mp) => (mp, None),
+        Err(MountError::NotAuthorized) => return Err(MountError::NotAuthorized),
+        Err(first) if !want_ro => match call_mount(&conn, &v.object, true) {
+            Ok(mp) => (mp, Some(format!("Windows didn't shut down fully (Fast Startup or hibernation), so it opened read-only. ({first})"))),
+            Err(_) => return Err(first),
+        },
+        Err(e) => return Err(e),
+    };
+    let mut system = v.system;
+    if let Some(hive) = letters::system_hive(std::path::Path::new(&mp)) {
+        system = true;
+        let mut cache = letters::load();
+        if let Ok(found) = letters::read(&hive) {
+            cache.letters.extend(found);
+        }
+        if !cache.system.contains(&v.part_uuid) {
+            cache.system.push(v.part_uuid.clone());
+        }
+        letters::save(&cache);
+        // First mount of C: happened read-write because we didn't know yet: redo it read-only.
+        if !v.system && !write_system && forced.is_none() {
+            call_unmount(&conn, &v.object)?;
+            let mp = call_mount(&conn, &v.object, true)?;
+            return Ok(Mounted { mount_point: mp, read_only: true, forced_read_only: None, system });
+        }
+    }
+    let read_only = want_ro || forced.is_some();
+    Ok(Mounted { mount_point: mp, read_only, forced_read_only: forced, system })
+}
+
+/// Remount read-write (the "Allow writing" action on C:) or read-only.
+pub fn remount(v: &Volume, read_only: bool) -> Result<Mounted, MountError> {
+    let conn = Connection::system().map_err(|e| MountError::Failed(e.to_string()))?;
+    if v.is_mounted() {
+        call_unmount(&conn, &v.object)?;
+    }
+    let mp = call_mount(&conn, &v.object, read_only)?;
+    Ok(Mounted { mount_point: mp, read_only, forced_read_only: None, system: v.system })
+}
+
+/// Unmount; fails with udisks' reason when files are still open there.
+pub fn unmount(v: &Volume) -> Result<(), MountError> {
+    let conn = Connection::system().map_err(|e| MountError::Failed(e.to_string()))?;
+    call_unmount(&conn, &v.object)
 }

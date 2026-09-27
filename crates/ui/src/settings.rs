@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use ef_config::{self as config, Density, OpenTo, Scope, SearchConfig};
+use ef_config::{self as config, DefaultView, Density, OpenTo, Scope, SearchConfig};
 use iced::widget::{column, container, row, scrollable, text, text_input, Space};
 use iced::{Alignment, Background, Border, Element, Length, Task};
 
@@ -45,6 +45,7 @@ pub enum Field {
 #[derive(Debug, Clone)]
 pub enum SettingsMsg {
     Open,
+    OpenPage(Page),
     Close,
     Page(Page),
     Background(bool),
@@ -63,6 +64,7 @@ pub enum SettingsMsg {
     Cli(bool),
     Skill(bool),
     Density(Density),
+    DefaultView(DefaultView),
     Reveal(PathBuf),
     Saved(Result<(), String>),
 }
@@ -210,6 +212,10 @@ impl App {
                 self.settings_ui.starts_at_login = system::starts_at_login();
                 Task::none()
             }
+            SettingsMsg::OpenPage(p) => {
+                self.settings_ui.page = p;
+                self.settings_update(SettingsMsg::Open)
+            }
             SettingsMsg::Close => {
                 self.mode = Mode::Files;
                 Task::none()
@@ -249,7 +255,7 @@ impl App {
             SettingsMsg::Rebuild => self.build_index(),
             SettingsMsg::DefaultScope(s) => {
                 self.settings.search.default_scope = s;
-                self.scope = s;
+                self.pane_mut().scope = s;
                 self.save_settings()
             }
             SettingsMsg::Draft(f, v) => {
@@ -264,7 +270,7 @@ impl App {
                 self.add_entry(f, &raw)
             }
             SettingsMsg::AddCurrent(f) => {
-                let raw = self.location.to_string_lossy().into_owned();
+                let raw = self.pane().location.to_string_lossy().into_owned();
                 self.add_entry(f, &raw)
             }
             SettingsMsg::Remove(f, i) => {
@@ -302,6 +308,11 @@ impl App {
                 self.settings_ui.problem = system::set_skill(on).err();
                 self.settings_ui.skill_installed = system::skill_installed();
                 self.settings.agents.skill = self.settings_ui.skill_installed;
+                self.save_settings()
+            }
+            SettingsMsg::DefaultView(v) => {
+                self.settings.appearance.view = v;
+                self.apply_default_view();
                 self.save_settings()
             }
             SettingsMsg::Density(d) => {
@@ -822,6 +833,22 @@ impl App {
                         Density::Compact => 0,
                         Density::Default => 1,
                         Density::Comfortable => 2,
+                    },
+                ),
+            ), self.setting(
+                "Folders open as",
+                "Automatic uses a grid in Pictures, Videos and camera folders and a list everywhere else. Changing this resets views you switched by hand (Ctrl+1 / Ctrl+2).",
+                w::segmented(
+                    p,
+                    &[
+                        ("Automatic", Message::Settings(SettingsMsg::DefaultView(DefaultView::Auto))),
+                        ("List", Message::Settings(SettingsMsg::DefaultView(DefaultView::List))),
+                        ("Grid", Message::Settings(SettingsMsg::DefaultView(DefaultView::Grid))),
+                    ],
+                    match self.settings.appearance.view {
+                        DefaultView::Auto => 0,
+                        DefaultView::List => 1,
+                        DefaultView::Grid => 2,
                     },
                 ),
             )],

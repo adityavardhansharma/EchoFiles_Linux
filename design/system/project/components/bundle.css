@@ -35,6 +35,8 @@ body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--f
 .ef-ibtn:hover { background: var(--state-hover); color: var(--ink-strong); }
 .ef-ibtn:active { background: var(--state-press); }
 .ef-ibtn[aria-pressed="true"] { background: var(--state-active); color: var(--accent-ink); }
+.ef-dropbtn { width: auto; display: inline-flex; gap: 2px; padding: 0 var(--space-2); }
+.ef-dropbtn[aria-expanded="true"] { background: var(--state-press); color: var(--ink-strong); }
 .ef-ibtn[disabled] { opacity: var(--opacity-disabled); pointer-events: none; }
 
 /* ---- segmented, switch, checkbox, kbd */
@@ -107,6 +109,7 @@ body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--f
 .ef-sec-list { display: flex; flex-direction: column; gap: 1px; }
 .ef-side-item { font: inherit; display: flex; align-items: center; gap: var(--space-3); height: var(--row); padding: 0 var(--space-3); border: 0; border-radius: var(--radius-1); background: transparent; color: var(--ink); cursor: pointer; text-align: left; width: 100%; min-width: 0; position: relative; transition: background-color var(--dur-fast) var(--ease-standard); }
 .ef-side-item:hover { background: var(--state-hover); }
+.ef-side-indent { padding-left: calc(var(--space-3) + 16px); }
 .ef-side-item:focus-visible { outline: 1px solid var(--focus-ring); outline-offset: -1px; }
 .ef-side-item[aria-current="true"] { background: var(--state-active); color: var(--ink-strong); font-weight: 600; }
 .ef-side-item[aria-current="true"] > .ef-icon { color: var(--accent-ink); }
@@ -200,6 +203,7 @@ body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--f
 .ef-mi[disabled] { opacity: var(--opacity-disabled); pointer-events: none; }
 .ef-mi-label { flex: 1; }
 .ef-mi-hint { color: var(--ink-muted); font-size: 11px; }
+.ef-mi-check { width: 14px; display: inline-grid; place-items: center; color: var(--accent-ink); flex: none; }
 .ef-menu-sep { height: 1px; background: var(--line); margin: var(--space-1) calc(-1 * var(--space-1)); }
 .ef-menu-head { font-size: 11px; line-height: 16px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted); padding: var(--space-2) var(--space-3) var(--space-1); }
 .ef-tooltip { display: inline-flex; align-items: center; gap: var(--space-2); padding: 3px var(--space-2); font-size: 11px; line-height: 16px; background: var(--bg-raised); color: var(--ink); border: 1px solid var(--line-strong); box-shadow: var(--shadow-pop); animation: ef-fade var(--dur-base) var(--ease-standard); white-space: nowrap; }
