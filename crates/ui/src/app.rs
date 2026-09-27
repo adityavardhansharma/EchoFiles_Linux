@@ -1138,6 +1138,15 @@ impl App {
                 }
                 Task::none()
             }
+            Action::Marquee(selected) => {
+                if let Some(pane) = self.pane_by_id_mut(id)
+                    && selected.len() == pane.selected.len() {
+                        pane.selected = selected;
+                        pane.cursor = None;
+                        pane.anchor = None;
+                    }
+                Task::none()
+            }
             Action::ClearSelection => {
                 if let Some(pane) = self.pane_by_id_mut(id) {
                     pane.clear_selection();
@@ -1315,6 +1324,7 @@ impl App {
             Key::Named(Named::Delete) if shift => Some(f(FileMsg::AskDelete)),
             Key::Named(Named::Delete) => Some(f(FileMsg::Trash)),
             Key::Named(Named::Space) => Some(Message::TogglePreview),
+            Key::Named(Named::F10) if shift => Some(f(FileMsg::MenuAtCursor)),
             Key::Named(Named::ContextMenu) => Some(f(FileMsg::MenuAtCursor)),
             Key::Character("r") if ctrl => Some(Message::Reload),
             Key::Character("c") if ctrl && shift => Some(f(FileMsg::CopyPath)),

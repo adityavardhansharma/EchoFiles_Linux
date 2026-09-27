@@ -55,6 +55,8 @@ pub enum Action {
     Middle(usize),
     /// Click on empty space.
     ClearSelection,
+    /// Rubber-band selection, indexed by listing entry like Model::selected.
+    Marquee(Vec<u64>),
     /// A press moved far enough to be a drag of the selection.
     DragStart,
     /// The drag ended over this list: on a folder item, or on the folder itself.
@@ -204,12 +206,31 @@ struct State {
     /// (pressing an already-selected item keeps the selection so it can be dragged).
     press: Option<(Point, usize, bool)>,
     drag_started: bool,
+    marquee: Option<Marquee>,
     /// Folder under the pointer during a drag, and since when.
     drop_hover: Option<(usize, Instant)>,
     sprung: Option<usize>,
     /// Item under the pointer, and since when (for the full-name tooltip).
     hover: Option<(usize, Instant)>,
     visible: (usize, usize),
+}
+
+/// Anchor and endpoint are content coordinates, so wheel scrolling keeps the anchor fixed.
+struct Marquee {
+    start: Point,
+    end: Point,
+    initial: Vec<u64>,
+}
+
+impl Marquee {
+    fn rect(&self) -> Rectangle {
+        Rectangle {
+            x: self.start.x.min(self.end.x),
+            y: self.start.y.min(self.end.y),
+            width: (self.start.x - self.end.x).abs(),
+            height: (self.start.y - self.end.y).abs(),
+        }
+    }
 }
 
 impl<'a, Message> FileList<'a, Message> {
@@ -275,8 +296,33 @@ impl<'a, Message> FileList<'a, Message> {
             (pos < self.model.order.len() && self.item_rect(state, body, pos).contains(p)).then_some(pos)
         } else {
             let pos = ((p.y - body.y + state.offset) / h) as usize;
-            (pos < self.model.order.len()).then_some(pos)
+            (pos < self.model.order.len() && self.item_rect(state, body, pos).contains(p)).then_some(pos)
         }
+    }
+
+    fn update_marquee(&self, state: &mut State, body: Rectangle, pointer: Point, shell: &mut Shell<'_, Message>) {
+        let endpoint = Point::new(
+            pointer.x.clamp(body.x, body.x + body.width) - body.x,
+            pointer.y.clamp(body.y, body.y + body.height) - body.y + state.offset,
+        );
+        let Some(marquee) = state.marquee.as_mut() else { return };
+        marquee.end = endpoint;
+        let rect = marquee.rect();
+        let mut selected = marquee.initial.clone();
+        // Only visit rows covered by the rectangle, including those scrolled out of view.
+        let cols = self.cols(body);
+        let first = ((rect.y / self.item_h()) as usize).saturating_sub(1) * cols;
+        let last = (((rect.y + rect.height) / self.item_h()) as usize + 1)
+            .saturating_mul(cols).min(self.model.order.len());
+        for pos in first..last {
+            let item = self.item_rect(state, body, pos);
+            let item = Rectangle { x: item.x - body.x, y: item.y - body.y + state.offset, ..item };
+            if rect.width > 0.0 && rect.height > 0.0 && rect.intersects(&item) {
+                set_bit(&mut selected, self.model.order[pos] as usize, true);
+            }
+        }
+        shell.publish((self.on_action)(Action::Marquee(selected)));
+        shell.request_redraw();
     }
 
     /// The rename field's box for item `pos`.
@@ -376,6 +422,9 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
             state.generation = self.model.generation;
             state.offset = 0.0;
             state.last_cursor = None;
+            state.marquee = None;
+            state.press = None;
+            state.last_click = None;
         }
         // Keep the keyboard cursor in view whenever it moves.
         if self.model.cursor != state.last_cursor {
@@ -436,6 +485,19 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
         let l = self.model.listing;
 
         match event {
+            Event::Window(iced::window::Event::Unfocused) => {
+                state.marquee = None;
+                state.press = None;
+                state.dragging_thumb = None;
+                state.modifiers = keyboard::Modifiers::default();
+                shell.request_redraw();
+            }
+            Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(Named::Escape), .. }) if state.marquee.is_some() => {
+                let marquee = state.marquee.take().unwrap();
+                publish(shell, Action::Marquee(marquee.initial));
+                shell.capture_event();
+                shell.request_redraw();
+            }
             Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => state.modifiers = *m,
             Event::Window(iced::window::Event::RedrawRequested(now)) => {
                 // Report which items are on screen (thumbnails load for exactly these).
@@ -471,6 +533,9 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                 if next != state.offset {
                     state.offset = next;
                     state.hover = None;
+                    if let Some(pointer) = cursor.position() {
+                        self.update_marquee(state, body, pointer, shell);
+                    }
                     shell.request_redraw();
                 }
                 shell.capture_event();
@@ -511,7 +576,17 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                         shell.capture_event();
                     }
                     (mouse::Button::Left, None) if body.contains(p) => {
-                        publish(shell, Action::ClearSelection);
+                        let initial = if state.modifiers.control() || state.modifiers.shift() {
+                            self.model.selected.to_vec()
+                        } else {
+                            publish(shell, Action::ClearSelection);
+                            vec![0; self.model.selected.len()]
+                        };
+                        let start = Point::new(p.x - body.x, p.y - body.y + state.offset);
+                        state.marquee = Some(Marquee { start, end: start, initial });
+                        state.press = None;
+                        state.last_click = None;
+                        state.hover = None;
                         shell.capture_event();
                     }
                     (mouse::Button::Right, hit) if body.contains(p) => {
@@ -534,6 +609,11 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                 }
             }
             Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                if state.marquee.is_some() {
+                    self.update_marquee(state, body, *position, shell);
+                    shell.capture_event();
+                    return;
+                }
                 if let Some(from) = state.dragging_thumb {
                     let content = self.content_height(self.cols(body)).max(1.0);
                     let dy = (position.y - from) * content / body.height.max(1.0);
@@ -571,6 +651,15 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                 }
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if state.marquee.is_some() {
+                    if let Some(pointer) = cursor.position() {
+                        self.update_marquee(state, body, pointer, shell);
+                    }
+                    state.marquee = None;
+                    shell.request_redraw();
+                    shell.capture_event();
+                    return;
+                }
                 state.dragging_thumb = None;
                 if let Some((_, pos, deferred)) = state.press.take()
                     && deferred && !state.drag_started {
@@ -675,6 +764,16 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                 }
             }
         });
+
+        if let Some(marquee) = &state.marquee {
+            let rect = marquee.rect();
+            let rect = Rectangle { x: rect.x + body.x, y: rect.y + body.y - state.offset, ..rect };
+            renderer.with_layer(body, |renderer| {
+                let mut fill = color(p.accent);
+                fill.a = 0.16;
+                renderer.fill_quad(Quad { bounds: rect, border: Border { color: color(p.accent), width: 1.0, ..Border::default() }, ..Quad::default() }, fill);
+            });
+        }
 
         // Scrollbar.
         let content = self.content_height(cols);
@@ -1008,5 +1107,74 @@ impl<'a, Message> FileList<'a, Message> {
 impl<'a, Message: 'a> From<FileList<'a, Message>> for Element<'a, Message> {
     fn from(list: FileList<'a, Message>) -> Self {
         Element::new(list)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_list(grid: bool, run: impl FnOnce(FileList<'_, Action>)) {
+        let listing = Listing::default();
+        let palette = ef_theme::load_active();
+        let icons = Icons::new(&palette);
+        let dates = DateFormatter::new();
+        let model = Model {
+            listing: &listing, order: &[4, 1, 3, 0, 2], selected: &[0], cut: &[],
+            cursor: None, generation: 0, sort: SortSpec::default(), skeleton: false,
+            empty: None, row_h: 30.0, grid, keys: true, active: true, dragging: false,
+            renaming: None, thumb: Box::new(|_| None),
+        };
+        run(FileList::new(model, &palette, &icons, &dates, |a| a));
+    }
+
+    fn selection(list: &FileList<'_, Action>, state: &mut State, body: Rectangle, pointer: Point) -> u64 {
+        let mut messages = Vec::new();
+        list.update_marquee(state, body, pointer, &mut Shell::new(&mut messages));
+        match messages.pop().unwrap() {
+            Action::Marquee(bits) => bits[0],
+            other => panic!("unexpected action: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reverse_drag_selects_display_order_and_shrinks() {
+        with_list(false, |list| {
+            let body = Rectangle { x: 20.0, y: 50.0, width: 300.0, height: 300.0 };
+            let mut state = State {
+                marquee: Some(Marquee { start: Point::new(250.0, 95.0), end: Point::ORIGIN, initial: vec![0] }),
+                ..State::default()
+            };
+            assert_eq!(selection(&list, &mut state, body, Point::new(30.0, 85.0)), (1 << 1) | (1 << 3) | (1 << 0));
+            assert_eq!(selection(&list, &mut state, body, Point::new(30.0, 141.0)), 1 << 0);
+        });
+    }
+
+    #[test]
+    fn grid_selects_only_intersecting_tiles_and_preserves_initial_selection() {
+        with_list(true, |list| {
+            let body = Rectangle { x: 20.0, y: 50.0, width: 350.0, height: 400.0 };
+            let mut state = State {
+                marquee: Some(Marquee { start: Point::new(110.0, 0.0), end: Point::ORIGIN, initial: vec![1 << 2] }),
+                ..State::default()
+            };
+            assert_eq!(selection(&list, &mut state, body, Point::new(220.0, 170.0)), (1 << 1) | (1 << 2));
+            assert_eq!(selection(&list, &mut state, body, Point::new(130.0, 50.0)), 1 << 2);
+        });
+    }
+
+    #[test]
+    fn scroll_keeps_anchor_in_content_and_selects_offscreen_rows() {
+        with_list(false, |list| {
+            let body = Rectangle { x: 20.0, y: 50.0, width: 300.0, height: 60.0 };
+            let mut state = State {
+                offset: 60.0,
+                marquee: Some(Marquee { start: Point::new(0.0, 0.0), end: Point::ORIGIN, initial: vec![0] }),
+                ..State::default()
+            };
+            assert_eq!(selection(&list, &mut state, body, Point::new(100.0, 105.0)), (1 << 4) | (1 << 1) | (1 << 3) | (1 << 0));
+            assert_eq!(list.item_at(&state, body, Point::new(20.0, 60.0)), None);
+            assert_eq!(list.item_at(&state, body, Point::new(40.0, 60.0)), Some(2));
+        });
     }
 }

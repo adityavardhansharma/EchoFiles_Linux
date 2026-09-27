@@ -389,3 +389,64 @@ impl Pane {
         self.location.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Computer".into())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ef_core::ops::{self, Kind, Progress, Resolution};
+    use std::collections::HashMap;
+    use std::fs;
+
+    #[test]
+    fn multiple_selected_files_copy_move_and_delete_together() {
+        let root = std::env::temp_dir().join(format!("echofiles-bulk-{}-{}", std::process::id(), next_id()));
+        let source = root.join("source");
+        let copied = root.join("copied");
+        let moved = root.join("moved");
+        for dir in [&source, &copied, &moved] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        for name in ["first.txt", "second.txt", "untouched.txt"] {
+            fs::write(source.join(name), name).unwrap();
+        }
+        let listing = listing::list(&source).unwrap();
+        let keys = Arc::new(NameKeys::build(&listing));
+        let mut pane = Pane::new(source.clone(), Scope::default());
+        pane.order = Arc::new(sort::order(&listing, &keys, SortSpec::default(), true));
+        pane.selected = vec![0; listing.len().div_ceil(64)];
+        for i in 0..listing.len() {
+            if listing.name(i) != "untouched.txt" {
+                pane.set_bit(i, true);
+            }
+        }
+        pane.loaded = Some(Arc::new(Loaded {
+            listing, keys, metadata_ready: true, hidden: 0,
+            names_ms: 0.0, meta_ms: 0.0, sort_ms: 0.0,
+        }));
+        // A marquee has no keyboard cursor. Menu and shortcut actions use these targets.
+        assert!(pane.cursor.is_none());
+        let selected = pane.targets();
+        assert_eq!(selected, vec![source.join("first.txt"), source.join("second.txt")]);
+        let progress = Progress::default();
+        let plan = ops::plan(Kind::Copy, &selected, &copied, &progress).unwrap();
+        let outcome = ops::execute(&plan, &HashMap::new(), Resolution::Skip, false, &progress);
+        assert!(outcome.errors.is_empty());
+        assert_eq!(outcome.done.len(), 2);
+        for name in ["first.txt", "second.txt"] {
+            assert_eq!(fs::read(copied.join(name)).unwrap(), name.as_bytes());
+            assert!(source.join(name).exists());
+        }
+        assert!(!copied.join("untouched.txt").exists());
+        let progress = Progress::default();
+        let plan = ops::plan(Kind::Move, &selected, &moved, &progress).unwrap();
+        let outcome = ops::execute(&plan, &HashMap::new(), Resolution::Skip, false, &progress);
+        assert!(outcome.errors.is_empty());
+        assert_eq!(outcome.done.len(), 2);
+        assert!(selected.iter().all(|p| !p.exists()));
+        let destinations: Vec<_> = outcome.done.into_iter().map(|(_, to)| to).collect();
+        assert!(ops::delete(&destinations, &Progress::default()).is_empty());
+        assert!(destinations.iter().all(|p| !p.exists()));
+        assert!(source.join("untouched.txt").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
