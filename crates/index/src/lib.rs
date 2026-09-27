@@ -14,29 +14,32 @@
 //! name, in any order; `"double quotes"` keep a phrase together. Hits are ranked: exact name,
 //! then prefix, then word start, then anywhere; shorter names first within each group.
 
+pub use ef_config as config;
 pub mod corpus;
 pub mod fold;
 pub mod live;
 mod matcher;
 mod store;
+mod view;
+
+pub use store::MappedIndex;
 
 use std::ffi::OsStr;
 use std::io;
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use matcher::Matcher;
 use rustix::fs::{AtFlags, FileType, Mode, OFlags, RawDir};
 
 /// Id of the indexed root folder. Its subtree is the whole index.
 pub const ROOT: u32 = 0;
-const NONE: u32 = u32::MAX;
+pub(crate) const NONE: u32 = u32::MAX;
 
 const KIND_MASK: u8 = 0b11;
-const HIDDEN: u8 = 0b100;
+pub(crate) const HIDDEN: u8 = 0b100;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -47,7 +50,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn from_bits(b: u8) -> Kind {
+    pub(crate) fn from_bits(b: u8) -> Kind {
         match b & KIND_MASK {
             0 => Kind::File,
             1 => Kind::Dir,
@@ -102,6 +105,78 @@ impl<'a> Query<'a> {
 pub struct Stats {
     /// Folders that could not be opened (permissions, removed mid-crawl). Indexed as empty.
     pub unreadable: u32,
+    /// Folders indexed by name only, their contents skipped (see [`Options`]).
+    pub excluded: u32,
+}
+
+/// What a crawl skips. Excluded folders are still indexed themselves (so searching for
+/// `node_modules` finds them); only their contents are left out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Options {
+    /// Folder names whose contents are skipped, matched exactly.
+    pub exclude_names: Vec<Vec<u8>>,
+    /// Skip the contents of folders holding a `CACHEDIR.TAG` file — the standard marker
+    /// cargo `target/`, pytest, mypy and other tools put in their cache folders.
+    pub skip_cache_tagged: bool,
+    /// Absolute paths left out entirely — the entry itself and everything below it (a
+    /// folder the user doesn't want in search at all).
+    pub exclude_paths: Vec<Vec<u8>>,
+}
+
+impl Options {
+    /// Index everything.
+    pub fn everything() -> Options {
+        Options { exclude_names: Vec::new(), skip_cache_tagged: false, exclude_paths: Vec::new() }
+    }
+
+    /// Skip folders people don't search by name: package and toolchain stores, VCS
+    /// internals, caches. On a typical laptop these hold most of the files.
+    pub fn recommended() -> Options {
+        Options {
+            exclude_names: config::DEFAULT_EXCLUDE_NAMES.iter().map(|n| n.as_bytes().to_vec()).collect(),
+            skip_cache_tagged: true,
+            exclude_paths: Vec::new(),
+        }
+    }
+
+    fn excludes(&self, name: &[u8]) -> bool {
+        self.exclude_names.iter().any(|n| n == name)
+    }
+
+    /// Names of `dir`'s children that are excluded by path (usually none: one prefix check
+    /// per excluded path).
+    fn excluded_children<'p>(&'p self, dir: &[u8]) -> Vec<&'p [u8]> {
+        self.exclude_paths
+            .iter()
+            .filter_map(|p| {
+                let rest = p.strip_prefix(dir)?.strip_prefix(b"/")?;
+                (!rest.is_empty() && !rest.contains(&b'/')).then_some(rest)
+            })
+            .collect()
+    }
+
+    /// Whether `path` is an excluded path or inside one.
+    pub fn excludes_path(&self, path: &Path) -> bool {
+        let path = path.as_os_str().as_bytes();
+        self.exclude_paths.iter().any(|p| path.strip_prefix(p.as_slice()).is_some_and(|rest| rest.is_empty() || rest[0] == b'/'))
+    }
+}
+
+impl Options {
+    /// Crawl options for one indexed folder from the user's search settings.
+    pub fn from_search(cfg: &config::SearchConfig, root: &Path) -> Options {
+        Options {
+            exclude_names: cfg.exclude_names.iter().map(|n| n.trim().as_bytes().to_vec()).filter(|n| !n.is_empty()).collect(),
+            skip_cache_tagged: cfg.skip_cache_folders,
+            exclude_paths: cfg.exclude_paths_in(root).iter().map(|p| p.as_os_str().as_bytes().to_vec()).collect(),
+        }
+    }
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options::everything()
+    }
 }
 
 pub struct Index {
@@ -118,6 +193,7 @@ pub struct Index {
     foff: Vec<u32>,
     folded: Vec<u8>,
     stats: Stats,
+    opts: Options,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -135,10 +211,14 @@ struct DirBatch {
     sub: Vec<u32>,
 }
 
-struct Crawl {
+struct Crawl<'o> {
     next_dir: AtomicU32,
     unreadable: AtomicU32,
+    excluded: AtomicU32,
     batches: Mutex<Vec<DirBatch>>,
+    opts: &'o Options,
+    /// Apply the `CACHEDIR.TAG` rule to the crawl root too (rescans of a subfolder).
+    tag_root: bool,
 }
 
 fn open_dir(path: &[u8], follow: bool) -> io::Result<rustix::fd::OwnedFd> {
@@ -149,7 +229,7 @@ fn open_dir(path: &[u8], follow: bool) -> io::Result<rustix::fd::OwnedFd> {
     Ok(rustix::fs::open(OsStr::from_bytes(path), flags, Mode::empty())?)
 }
 
-fn walk<'s>(path: Vec<u8>, dir: u32, crawl: &'s Crawl, scope: &rayon::Scope<'s>) {
+fn walk<'s>(path: Vec<u8>, dir: u32, crawl: &'s Crawl<'s>, scope: &rayon::Scope<'s>) {
     let Ok(fd) = open_dir(&path, dir == 0) else {
         crawl.unreadable.fetch_add(1, Ordering::Relaxed);
         return;
@@ -158,10 +238,17 @@ fn walk<'s>(path: Vec<u8>, dir: u32, crawl: &'s Crawl, scope: &rayon::Scope<'s>)
     let mut raw = RawDir::new(&fd, &mut buf);
     let mut b = DirBatch { dir, flags: Vec::new(), ends: Vec::new(), names: Vec::new(), sub: Vec::new() };
     let mut children = Vec::new();
+    let mut tagged = false;
+    let skip = crawl.opts.excluded_children(&path);
     while let Some(entry) = raw.next() {
         let Ok(e) = entry else { break };
         let name = e.file_name().to_bytes();
         if name == b"." || name == b".." {
+            continue;
+        }
+        tagged |= name == b"CACHEDIR.TAG";
+        if !skip.is_empty() && skip.contains(&name) {
+            crawl.excluded.fetch_add(1, Ordering::Relaxed);
             continue;
         }
         let mut t = e.file_type();
@@ -176,7 +263,10 @@ fn walk<'s>(path: Vec<u8>, dir: u32, crawl: &'s Crawl, scope: &rayon::Scope<'s>)
         b.flags.push(kind as u8 | hidden);
         b.names.extend_from_slice(name);
         b.ends.push(b.names.len() as u32);
-        if kind == Kind::Dir {
+        if kind == Kind::Dir && crawl.opts.excludes(name) {
+            crawl.excluded.fetch_add(1, Ordering::Relaxed);
+            b.sub.push(NONE);
+        } else if kind == Kind::Dir {
             let child = crawl.next_dir.fetch_add(1, Ordering::Relaxed);
             b.sub.push(child);
             let mut p = path.clone();
@@ -188,6 +278,11 @@ fn walk<'s>(path: Vec<u8>, dir: u32, crawl: &'s Crawl, scope: &rayon::Scope<'s>)
         }
     }
     drop(fd);
+    if tagged && crawl.opts.skip_cache_tagged && (dir != 0 || crawl.tag_root) {
+        // A cache folder: keep the folder itself, drop what's inside.
+        crawl.excluded.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
     if !b.flags.is_empty() {
         crawl.batches.lock().unwrap().push(b);
     }
@@ -200,15 +295,36 @@ impl Index {
     /// Crawl `root` in parallel (one rayon task per folder). Symlinks are indexed but not
     /// followed; `root` itself may be a symlink to a folder.
     pub fn build(root: &Path) -> io::Result<Index> {
+        Index::build_with(root, &Options::everything())
+    }
+
+    /// Crawl `root`, skipping what `opts` excludes. The options are kept for [`rescan`]
+    /// and saved with the index.
+    ///
+    /// [`rescan`]: Index::rescan
+    pub fn build_with(root: &Path, opts: &Options) -> io::Result<Index> {
+        Index::crawl(root, opts, false)
+    }
+
+    fn crawl(root: &Path, opts: &Options, tag_root: bool) -> io::Result<Index> {
         // Surface a missing or unreadable root as an error instead of an empty index.
         drop(open_dir(root.as_os_str().as_bytes(), true)?);
-        let crawl = Crawl { next_dir: AtomicU32::new(1), unreadable: AtomicU32::new(0), batches: Mutex::new(Vec::new()) };
+        let crawl = Crawl {
+            next_dir: AtomicU32::new(1),
+            unreadable: AtomicU32::new(0),
+            excluded: AtomicU32::new(0),
+            batches: Mutex::new(Vec::new()),
+            opts,
+            tag_root,
+        };
         let path = root.as_os_str().as_bytes().to_vec();
         rayon::scope(|s| walk(path, 0, &crawl, s));
         let ndirs = crawl.next_dir.load(Ordering::Relaxed) as usize;
         let batches = crawl.batches.into_inner().unwrap();
         let mut idx = assemble(root.to_path_buf(), &batches, ndirs);
         idx.stats.unreadable = crawl.unreadable.load(Ordering::Relaxed);
+        idx.stats.excluded = crawl.excluded.load(Ordering::Relaxed);
+        idx.opts = opts.clone();
         Ok(idx)
     }
 }
@@ -231,6 +347,7 @@ fn assemble(root: PathBuf, batches: &[DirBatch], ndirs: usize) -> Index {
         foff: Vec::with_capacity(n + 1),
         folded: Vec::with_capacity(bytes),
         stats: Stats::default(),
+        opts: Options::everything(),
     };
     idx.push(NONE, Kind::Dir as u8, b"");
 
@@ -274,6 +391,18 @@ impl Index {
         id
     }
 
+    pub(crate) fn view(&self) -> view::View<'_> {
+        view::View {
+            root: &self.root,
+            parent: &self.parent,
+            end: &self.end,
+            flags: &self.flags,
+            foff: &self.foff,
+            folded: &self.folded,
+            names: view::Names::Owned { off: &self.off, names: &self.names },
+        }
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -291,6 +420,10 @@ impl Index {
         self.stats
     }
 
+    pub fn options(&self) -> &Options {
+        &self.opts
+    }
+
     /// Approximate heap bytes held by the index.
     pub fn heap_bytes(&self) -> usize {
         self.parent.capacity() * 4
@@ -304,165 +437,42 @@ impl Index {
 
     /// Entry `id`'s own name as stored on disk (empty for the root).
     pub fn name(&self, id: u32) -> &[u8] {
-        let i = id as usize;
-        &self.names[self.off[i] as usize..self.off[i + 1] as usize - 1]
-    }
-
-    fn folded_name(&self, i: usize) -> &[u8] {
-        &self.folded[self.foff[i] as usize..self.foff[i + 1] as usize - 1]
+        self.view().name(id)
     }
 
     pub fn kind(&self, id: u32) -> Kind {
-        Kind::from_bits(self.flags[id as usize])
+        self.view().kind(id)
     }
 
     pub fn parent(&self, id: u32) -> Option<u32> {
-        Some(self.parent[id as usize]).filter(|&p| p != NONE)
+        self.view().parent(id)
     }
 
     /// Number of entries below `id` (all depths).
     pub fn descendants(&self, id: u32) -> usize {
-        (self.end[id as usize] - id - 1) as usize
+        self.view().descendants(id)
     }
 
     /// Direct children of `id`, in on-disk order.
     pub fn children(&self, id: u32) -> impl Iterator<Item = u32> + '_ {
-        let end = self.end[id as usize];
-        let mut c = id + 1;
-        std::iter::from_fn(move || {
-            (c < end).then(|| {
-                let this = c;
-                c = self.end[c as usize];
-                this
-            })
-        })
+        self.view().children(id)
     }
 
     /// Full path of entry `id`.
     pub fn path(&self, id: u32) -> PathBuf {
-        let mut chain = Vec::new();
-        let mut i = id;
-        while i != ROOT && i != NONE {
-            chain.push(i);
-            i = self.parent[i as usize];
-        }
-        let mut p = self.root.clone();
-        for &k in chain.iter().rev() {
-            p.push(OsStr::from_bytes(self.name(k)));
-        }
-        p
+        self.view().path(id)
     }
 
     /// The entry at `path`, if it is indexed.
     pub fn lookup(&self, path: &Path) -> Option<u32> {
-        match self.locate(path)? {
-            (id, true) => Some(id),
-            _ => None,
-        }
+        self.view().lookup(path)
     }
 
-    /// The deepest indexed entry on the way to `path`, and whether it is `path` itself.
-    /// `None` if `path` is outside the root.
-    fn locate(&self, path: &Path) -> Option<(u32, bool)> {
-        let rel = path.strip_prefix(&self.root).ok()?;
-        let mut id = ROOT;
-        for comp in rel.components() {
-            let Component::Normal(name) = comp else {
-                return Some((id, false));
-            };
-            match self.children(id).find(|&c| self.name(c) == name.as_bytes()) {
-                Some(c) => id = c,
-                None => return Some((id, false)),
-            }
-        }
-        Some((id, true))
-    }
-}
-
-// ---------------------------------------------------------------------------------------
-// Search
-// ---------------------------------------------------------------------------------------
-
-/// Folders with at least this many entries below them are searched on all cores.
-const PARALLEL_MIN: usize = 50_000;
-
-impl Index {
     /// Ids of matching entries, best first. An empty query (no terms, no extension) matches
     /// nothing. Large scopes are split into chunks searched in parallel, each keeping only
     /// its best `limit` hits.
     pub fn search(&self, q: &Query) -> Vec<u32> {
-        let Some(m) = Matcher::new(q) else {
-            return Vec::new();
-        };
-        let within = q.within as usize;
-        if within >= self.len() {
-            return Vec::new();
-        }
-        let (first, last) = (within + 1, self.end[within] as usize);
-        if first >= last {
-            return Vec::new();
-        }
-        let mut keys = if last - first < PARALLEL_MIN {
-            let mut v = self.scan(first, last, &m, q);
-            matcher::keep_best(&mut v, q.limit);
-            v
-        } else {
-            use rayon::prelude::*;
-            let chunks = rayon::current_num_threads() * 4;
-            let step = (last - first).div_ceil(chunks);
-            (first..last)
-                .step_by(step)
-                .collect::<Vec<_>>()
-                .into_par_iter()
-                .map(|a| {
-                    let mut v = self.scan(a, (a + step).min(last), &m, q);
-                    matcher::keep_best(&mut v, q.limit);
-                    v
-                })
-                .reduce(Vec::new, |mut a, mut b| {
-                    a.append(&mut b);
-                    a
-                })
-        };
-        matcher::keep_best(&mut keys, q.limit);
-        keys.sort_unstable();
-        keys.into_iter().map(|k| k as u32).collect()
-    }
-
-    /// Rank keys (`Matcher::rank` | id) of the hits among entries `first..last`.
-    fn scan(&self, first: usize, last: usize, m: &Matcher, q: &Query) -> Vec<u64> {
-        let lo = self.foff[first] as usize;
-        let hay = &self.folded[lo..self.foff[last] as usize];
-        let mut keys = Vec::new();
-        let mut cur = first;
-        let mut prev = usize::MAX;
-        for pos in m.scan_finder().find_iter(hay) {
-            let abs = (lo + pos) as u32;
-            if abs >= self.foff[cur + 1] {
-                cur += self.foff[cur + 1..=last].partition_point(|&o| o <= abs);
-            }
-            if cur == prev {
-                continue;
-            }
-            prev = cur;
-            let name = self.folded_name(cur);
-            if m.accepts(name, Kind::from_bits(self.flags[cur])) && (q.hidden || !self.hidden_below(cur, q.within)) {
-                keys.push(m.rank(name) | cur as u64);
-            }
-        }
-        keys
-    }
-
-    /// Whether `i` or any of its ancestors below `within` is dot-named.
-    fn hidden_below(&self, i: usize, within: u32) -> bool {
-        let mut a = i as u32;
-        while a != within && a != NONE {
-            if self.flags[a as usize] & HIDDEN != 0 {
-                return true;
-            }
-            a = self.parent[a as usize];
-        }
-        false
+        self.view().search(q)
     }
 }
 
@@ -477,13 +487,18 @@ impl Index {
     /// create, delete or rename, that's the parent folder of the changed entry).
     pub fn rescan(&mut self, path: &Path) -> io::Result<Stats> {
         let (mut id, _) = self
+            .view()
             .locate(path)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path is outside the indexed root"))?;
         while self.kind(id) != Kind::Dir {
             id = self.parent[id as usize];
         }
+        // Changes inside an excluded folder don't concern the index.
+        if self.opts.excludes_path(path) || (id != ROOT && self.opts.excludes(self.name(id))) {
+            return Ok(Stats::default());
+        }
         loop {
-            match Index::build(&self.path(id)) {
+            match Index::crawl(&self.path(id), &self.opts, true) {
                 Ok(sub) => {
                     let stats = sub.stats;
                     self.splice(id, &sub);
@@ -556,7 +571,7 @@ impl Index {
             assert_eq!(self.folded[self.foff[i + 1] as usize - 1], 0);
             let mut f = Vec::new();
             fold::fold_into(self.name(i as u32), &mut f);
-            assert_eq!(f, self.folded_name(i));
+            assert_eq!(f, self.view().folded_name(i));
         }
     }
 }

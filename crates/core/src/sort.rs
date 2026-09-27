@@ -181,9 +181,18 @@ fn compare(l: &Listing, keys: &NameKeys, spec: SortSpec, a: usize, b: usize) -> 
             return db.cmp(&da);
         }
     }
+    // A folder's st_size is its directory block, not its contents (the list shows "—"), so
+    // sorting by size keeps grouped folders in name order. Mixed with files, a folder counts
+    // as size 0 so the order stays transitive.
+    let dir_a = l.kind[a] == Kind::Dir;
+    let dir_b = l.kind[b] == Kind::Dir;
+    if spec.by == SortBy::Size && spec.folders_first && dir_a && dir_b {
+        return keys.get(a).cmp(keys.get(b)).then_with(|| l.name_bytes(a).cmp(l.name_bytes(b)));
+    }
+    let size = |i: usize, dir: bool| if dir { 0 } else { l.size[i] };
     let primary = match spec.by {
         SortBy::Name => Ordering::Equal,
-        SortBy::Size => l.size[a].cmp(&l.size[b]),
+        SortBy::Size => size(a, dir_a).cmp(&size(b, dir_b)),
         SortBy::Modified => l.mtime[a].cmp(&l.mtime[b]),
         SortBy::Kind => extension(l.name_bytes(a)).cmp(extension(l.name_bytes(b))),
     };
@@ -215,6 +224,41 @@ mod tests {
         let mut names = vec!["file10.txt", "File2.txt", "file1.txt", "file02b", "Äpfel", "apple", "zeta"];
         names.sort_by_key(|n| key(n));
         assert_eq!(names, ["apple", "file1.txt", "File2.txt", "file02b", "file10.txt", "zeta", "Äpfel"]);
+    }
+
+    #[test]
+    fn size_order_is_transitive_with_folders_mixed_in() {
+        let dir = std::env::temp_dir().join(format!("ef-sort-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("b")).unwrap();
+        std::fs::write(dir.join("m"), b"").unwrap();
+        let mut l = crate::listing::list(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        // Folder block sizes that used to give a < b, b < m, m < a.
+        for i in 0..l.len() {
+            l.size[i] = match l.name_bytes(i) {
+                b"a" => 8192,
+                b"b" => 4096,
+                _ => 6144,
+            };
+        }
+        let keys = NameKeys::build(&l);
+        for folders_first in [false, true] {
+            for descending in [false, true] {
+                let spec = SortSpec { by: SortBy::Size, descending, folders_first };
+                let n = l.len();
+                for x in 0..n {
+                    for y in 0..n {
+                        for z in 0..n {
+                            if compare(&l, &keys, spec, x, y).is_le() && compare(&l, &keys, spec, y, z).is_le() {
+                                assert!(compare(&l, &keys, spec, x, z).is_le(), "{spec:?}: {x} {y} {z}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

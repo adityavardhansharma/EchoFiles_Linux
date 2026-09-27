@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/disks", "crates/vfs", "crates/theme", "crates/ui", "crates/index"]
+members = ["crates/core", "crates/disks", "crates/vfs", "crates/theme", "crates/ui", "crates/index", "crates/config"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,6 +13,8 @@ ef-core = { path = "crates/core", package = "echofiles-core" }
 ef-disks = { path = "crates/disks", package = "echofiles-disks" }
 ef-vfs = { path = "crates/vfs", package = "echofiles-vfs" }
 ef-theme = { path = "crates/theme", package = "echofiles-theme" }
+ef-index = { path = "crates/index", package = "echofiles-index" }
+ef-config = { path = "crates/config", package = "echofiles-config" }
 rustix = { version = "1.1", features = ["fs"] }
 rayon = "1.12"
 zbus = { version = "5.19", default-features = false, features = ["blocking-api", "async-io"] }

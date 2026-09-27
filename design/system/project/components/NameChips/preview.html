@@ -1,0 +1,17 @@
+<!-- @dsCard group="Settings" height=170 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>NameChips</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef ef-stack", style:{maxWidth:720}}, h(E.SettingsGroup, {title:"Skip contents of"}, h(E.NameChips, {id:"n1", names:["node_modules", ".git", ".cache", "__pycache__", ".cargo", ".venv", ".gradle", ".npm"]})));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+<!-- @dsCard group="Settings" height=90 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>SettingRow</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef ef-stack", style:{maxWidth:720}}, h("div", {className:"ef-setbox"}, h(E.SettingRow, {label:"Skip cache folders", description:"Folders marked with CACHEDIR.TAG (browser, build and package caches). They're still listed by name."}, h(E.Switch, {defaultChecked:true, label:"Skip cache folders"}))));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

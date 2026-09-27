@@ -209,11 +209,13 @@ comp("Toolbar", "Navigation", 64, """
 return h("div", {className:"ef"}, h(E.Toolbar, {segments:[{label:"Home",icon:"home"},{label:"Pictures"},{label:"2026"}]}));
 """, """# Toolbar
 
-The 40px navigation row: history, path, search, view and panes.
+The 40px navigation row: history, reload, path, search and settings.
 
-**Provide** `segments` for the PathBar, optional `scope`, `view`, `preview`.
+**Provide** `segments` for the PathBar, optional `scope` (`folder` | `everywhere`), `query`, `hidden`, `settings`.
 
-- Fixed order, no customisation in v0.1. Everything here is also in the command palette.
+- Fixed order: Back, Forward, Up, Reload · PathBar · `SearchScope` · Search · Hidden files (eye) · Settings (gear, Ctrl+,). Grid view, dual pane and preview join when they ship — never as dead buttons.
+- Every button is an `IconButton`: same 28px square, `state-hover` layer and `ink-strong` glyph on hover, `state-press` when pressed, 45% and no hover when disabled (Forward with no history). Every one has a tooltip with its key as a `Kbd`. PathBar segments use the same hover.
+- While Everywhere results are showing, the PathBar ends with a bold **Search results** segment; clicking any earlier segment leaves the results.
 - No window controls: EchoFiles is tiled by Hyprland and never draws client-side decorations.
 """)
 
@@ -259,6 +261,7 @@ A drive in the sidebar: name, state, usage bar and free space in two lines.
 
 **Provide** `name` (display name: alias, else drive letter + label — never the mount path or a raw UUID), `state` (`mounted`, `readonly`, `dirty`, `locked`, `unmounted`, `mounting`), `used` (percent), `world`, `meta`, `free`.
 
+- The state pill leads the second line, before the size, so the two never collide in the 236px sidebar.
 - Mounted drives show no pill (it is the normal state). Read-only and Needs check use `warning`, Locked `danger`, Not mounted is neutral and dims the name.
 - Clicking an unmounted drive mounts it and opens it; a spinner replaces the pill while udisks works. Usage bars grow once on mount (400ms).
 - Usage above 90% turns the bar `warning`, above 97% `danger`.
@@ -541,6 +544,138 @@ The Space-toggled right pane: large preview, facts, Windows attributes and quick
 - 280px on `bg-sunken`, slides in 12px over `dur-slow`. Text files show their first 200 lines, images their thumbnail, folders their size and item count (computed in the background).
 - Windows files show `Copy Windows path` and their DOS attributes; Linux files show permissions and owner instead.
 """)
+
+# ------------------------------------------------------------------ Search
+comp("SearchScope", "Search", 60, """
+return h("div", {className:"ef ef-stack"}, h(E.SearchScope, {value:"everywhere"}));
+""", """# SearchScope
+
+Where the search box looks: **Folder** filters the open folder as you type; **Everywhere** searches every indexed folder through the index.
+
+**Provide** `value` (`folder` | `everywhere`), `onChange`.
+
+- A `SegmentedControl` just left of the search field. Ctrl+E switches it; the field's placeholder follows ("Search this folder" / "Search everywhere").
+- The default comes from Settings → Search & index → Search looks in.
+""")
+
+comp("SearchResults", "Search", 300, """
+return h("div", {className:"ef", style:{height:290, display:"flex"}}, h(E.SearchResults, null));
+""", """# SearchResults
+
+Everywhere results in place of the file list: name, the folder it lives in (`~`-relative), size and date.
+
+**Provide** `hits` (`{name, kind, location, size, date}`); omit for the demo set.
+
+- Answered from the index in milliseconds; with the index off, a live walk of the indexed folders fills the same view. The status bar says which ("from the index" / "live search") and "N matches · showing first 300" when capped.
+- ↑/↓ move, Enter opens (folders open in place, files in their app), Alt+Enter / **Show in folder** opens the parent folder with the file selected. Double-click opens.
+- Location clips on the right; it never pushes into Size. Rows use the same hover and active layers as `FileRow`.
+- No matches: a centred search glyph, "No matches for “…”", and when the index answered, how fresh it is ("updated 20 s ago; new files elsewhere can take up to a minute").
+""")
+
+# ------------------------------------------------------------------ Settings
+comp("SettingsGroup", "Settings", 200, """
+return h("div", {className:"ef ef-stack", style:{maxWidth:720}},
+  h(E.SettingsGroup, {title:"Running"},
+    h(E.SettingRow, {label:"Keep running in the background", description:"Closing the window hides EchoFiles instead of quitting. The next window opens instantly and search stays up to date."}, h(E.Switch, {defaultChecked:true, label:"Keep running"})),
+    h(E.SettingRow, {label:"Start at login", description:"Needs Keep running in the background.", disabled:true}, h(E.Switch, {label:"Start at login"}))));
+""", """# SettingsGroup
+
+An uppercase `label` heading above one bordered box (`bg-raised`, 1px `line`, radius 2) of rows separated by hairlines.
+
+**Provide** `title` and rows as children: `SettingRow`, `SettingBlock`, `IndexStatus`, `PathListEditor`, `NameChips`.
+
+- Groups are separated by 28px; a page is 2–5 groups. Never nest groups.
+""")
+
+comp("SettingRow", "Settings", 90, """
+return h("div", {className:"ef ef-stack", style:{maxWidth:720}}, h("div", {className:"ef-setbox"}, h(E.SettingRow, {label:"Skip cache folders", description:"Folders marked with CACHEDIR.TAG (browser, build and package caches). They're still listed by name."}, h(E.Switch, {defaultChecked:true, label:"Skip cache folders"}))));
+""", """# SettingRow
+
+One setting: label (`ink-strong`, 13px) and a one- or two-sentence description (`ink-muted`, 12px) on the left; the control on the right, vertically centred. 12px × 16px padding.
+
+**Provide** `label`, `description`, `disabled`, and the control as `children` (`Switch`, `SegmentedControl`, a `Button`, or a status pill).
+
+- The description says what the setting does and its consequence ("Turning it off deletes the index"), not how it works.
+- A setting that depends on another is shown `disabled` (45%) with the dependency as its description ("Needs Keep running in the background.") — never hidden.
+""")
+
+comp("PathListEditor", "Settings", 230, """
+return h("div", {className:"ef ef-stack", style:{maxWidth:720}},
+  h(E.SettingsGroup, {title:"Indexed folders"},
+    h(E.SettingBlock, {muted:true}, "Everywhere search and ef cover these folders and everything inside them."),
+    h(E.PathListEditor, {id:"p1", paths:["~", "~/Work/Clients"], current:"~/Projects/EchoFiles_Linux", draft:"~/Privte", error:"“~/Privte” isn't a folder on this computer. Check the spelling, or open the folder and use Add current folder."})));
+""", """# PathListEditor
+
+Rows of folder paths inside a `SettingsGroup`, each with a remove ×, then an add row: field, **Add**, and ghost **Add current folder** (the fastest way to add what you're looking at).
+
+**Provide** `paths` (shown `~`-relative), `icon`, `empty`, `placeholder`, `current`, `error`, `note` (per-row pill, e.g. "Missing").
+
+- Validate on Add and Enter: a full path (`/` or `~/`), an existing folder, not a duplicate. The error sits under the field with an `error` glyph in `danger-ink`, and the field border turns `danger`.
+- Indexed folders can't go empty: removing the last one says "Keep at least one folder — or turn the search index off instead."
+- Changes save immediately and schedule a re-index 1.5 s later.
+""")
+
+comp("NameChips", "Settings", 170, """
+return h("div", {className:"ef ef-stack", style:{maxWidth:720}}, h(E.SettingsGroup, {title:"Skip contents of"}, h(E.NameChips, {id:"n1", names:["node_modules", ".git", ".cache", "__pycache__", ".cargo", ".venv", ".gradle", ".npm"]})));
+""", """# NameChips
+
+Folder *names* (not paths) whose contents the index skips, as chips with a remove ×, then an add row with **Reset to recommended**.
+
+**Provide** `names`.
+
+- Chips are 24px on `bg-deep` with a 1px `line-strong` border; the × is a 24px hit target with the standard hover.
+- Names never contain `/`: the field says a path belongs in **Never show in search**.
+""")
+
+comp("IndexStatus", "Settings", 260, """
+return h("div", {className:"ef ef-stack", style:{maxWidth:720}}, h("div", {className:"ef-setbox"},
+  ["ready","updating","building","problem","off"].map(function(s){ return h(E.IndexStatus, {key:s, state:s}); })));
+""", """# IndexStatus
+
+The search index's health in one row: a `StatePill`, what it means in numbers, and **Rebuild now**.
+
+**Provide** `state` (`off` | `opening` | `building` | `updating` | `ready` | `problem`), optional `detail`.
+
+- Ready: "179,581 items · 13 MB on disk · updated 21 s ago" — counts, size and freshness, live.
+- Building/Updating: `info` pill, the button reads "Indexing…" and is disabled. Problem: `warning` pill and the reason with the folder named.
+- Sits directly under the Search index switch in Settings → Search & index.
+""")
+
+comp("CommandList", "Settings", 170, """
+return h("div", {className:"ef ef-stack", style:{maxWidth:720}}, h(E.CommandList, {items:[["ef find report","names containing “report”"],["ef find '*' --ext pdf --limit 50","every PDF, first 50"],["ef status","what's indexed, how fresh"],["ef index","update the index now"]]}));
+""", """# CommandList
+
+Commands or key bindings with what they do, on the `bg-deep` well — AI agents page and About → Keyboard.
+
+**Provide** `items` (`[command, meaning]`).
+""")
+
+comp("SettingsNav", "Settings", 220, """
+return h("div", {className:"ef", style:{display:"flex", height:210}}, h(E.SettingsNav, {page:"search"}));
+""", """# SettingsNav
+
+The Settings page list, in the sidebar's place: General · Search & index · AI agents · Appearance · About.
+
+**Provide** `page`, `onChange`.
+
+- 236px on `bg-sunken`, 32px rows with a glyph; the current page uses the sidebar's active style (`state-active`, `accent-ink` glyph, bold).
+""")
+
+comp("SettingsPage", "Pages", 900, """
+return h(E.SettingsPage, {height:880});
+""", """# SettingsPage
+
+Settings is its own screen (Ctrl+, or the gear): a top bar with a ghost **← Files** button and `Esc` `Kbd`, the title and a live **Saved** mark; `SettingsNav` on the left; one page of `SettingsGroup`s in a centred 720px column. Esc or ← Files returns to the same folder.
+
+**Provide** optional `page`; the nav is live in the preview.
+
+- **General** — Running: Keep running in the background (close hides the window; later launches reuse it) · Start at login (disabled unless running in the background). Windows: New windows open at Home / Last folder · Show hidden files.
+- **Search & index** — Index: Search index switch (off deletes the index) + `IndexStatus`. Search box: Search looks in (This folder / Everywhere). Indexed folders and Never show in search (`PathListEditor`). Skip contents of: Skip cache folders + `NameChips`.
+- **AI agents** — Allow EchoFiles commands (when off, `ef` exits 3 with "turned off"), ef location, Teach AI agents about ef (links the skill into ~/.claude/skills; off removes only that link), `CommandList` of examples. A `warning` note appears if `ef` is allowed but the index is off.
+- **Appearance** — the Omarchy theme's name and swatches (it follows the system); Row height Compact / Default / Comfortable (24 / 28 / 34px).
+- **About** — version, settings file and index folder with **Show**, keyboard shortcuts.
+- Everything saves to `~/.config/echofiles/settings.toml` the moment it changes (shared with `ef`). Only settings that work today appear.
+""", extra=' width=1100 page')
 
 # ------------------------------------------------------------------ Pages
 comp("AppWindow", "Pages", 700, """

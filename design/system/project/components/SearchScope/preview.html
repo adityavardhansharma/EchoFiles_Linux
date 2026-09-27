@@ -1,0 +1,17 @@
+<!-- @dsCard group="Search" height=60 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>SearchScope</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef ef-stack"}, h(E.SearchScope, {value:"everywhere"}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

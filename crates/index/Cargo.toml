@@ -12,6 +12,8 @@ rustix.workspace = true
 rayon.workspace = true
 memchr = "2.8"
 unicode-normalization = "0.1.25"
+memmap2 = "0.9"
+ef-config.workspace = true
 
 [dev-dependencies]
 divan.workspace = true

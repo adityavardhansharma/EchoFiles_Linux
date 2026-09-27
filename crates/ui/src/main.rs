@@ -1,5 +1,8 @@
 //! EchoFiles — a fast, Omarchy-native file manager.
 //!
+//! Flags: `echofiles [FOLDER]`, `--settings` (open Settings), `--background` (start with no
+//! window; used at login), `--sync-agent-skill` (apply the saved Settings switch).
+//!
 //! Environment:
 //! - `ECHOFILES_TIMING=1` prints startup and listing timings.
 //! - `ECHOFILES_BENCH=<dir>` opens `dir`, scrolls it for 600 frames and prints frame times.
@@ -9,8 +12,14 @@
 mod app;
 mod file_list;
 mod gpu;
+mod indexer;
 mod kinds;
+mod search;
+mod settings;
 mod style;
+mod system;
+mod view;
+mod widgets;
 
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -26,6 +35,31 @@ pub fn since_start_ms() -> f64 {
 
 fn main() -> iced::Result {
     START.get_or_init(Instant::now);
+
+    // One EchoFiles: a second launch hands its request to the running one and exits.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--sync-agent-skill") {
+        if let Err(e) = system::sync_skill_from_settings() {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Err(e) = system::sync_skill_from_settings() {
+        eprintln!("{e}");
+    }
+    let mut owns_socket = false;
+    if std::env::var_os("ECHOFILES_BENCH").is_none() {
+        let request = if args.iter().any(|a| a == "--settings") {
+            system::Request::Settings
+        } else {
+            system::Request::Open(args.iter().find(|a| !a.starts_with("--")).map(|a| ef_config::expand(a)).map(|p| std::fs::canonicalize(&p).unwrap_or(p)))
+        };
+        if system::forward_to_running(&request) {
+            return Ok(());
+        }
+        owns_socket = system::listen();
+    }
 
     // Integrated GPU, Vulkan, and on hybrid laptops no NVIDIA driver load (see gpu.rs).
     // SAFETY: still single-threaded; nothing else reads the environment yet.
@@ -46,11 +80,15 @@ fn main() -> iced::Result {
         }
     }
 
-    iced::application(app::App::boot, app::App::update, app::App::view)
+    // A daemon, so closing the window can leave EchoFiles running (Settings → General).
+    let result = iced::daemon(app::App::boot, app::App::update, app::App::view)
         .title(app::App::title)
         .subscription(app::App::subscription)
         .default_font(style::FONT)
-        .window_size((1280.0, 800.0))
         .antialiasing(false)
-        .run()
+        .run();
+    if owns_socket {
+        let _ = std::fs::remove_file(ef_config::socket_path());
+    }
+    result
 }

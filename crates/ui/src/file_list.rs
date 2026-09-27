@@ -50,6 +50,8 @@ pub struct Model<'a> {
     pub skeleton: bool,
     /// Title and hint drawn when there is nothing to show.
     pub empty: Option<(String, String)>,
+    /// Row height from Settings → Appearance → Density.
+    pub row_h: f32,
 }
 
 /// JetBrains Mono advances every glyph by 0.6 em.
@@ -124,7 +126,7 @@ impl<'a, Message> FileList<'a, Message> {
     }
 
     fn content_height(&self) -> f32 {
-        self.model.order.len() as f32 * style::ROW
+        self.model.order.len() as f32 * self.model.row_h
     }
 
     fn max_offset(&self, viewport: f32) -> f32 {
@@ -135,7 +137,7 @@ impl<'a, Message> FileList<'a, Message> {
         if !body.contains(p) {
             return None;
         }
-        let pos = ((p.y - body.y + state.offset) / style::ROW) as usize;
+        let pos = ((p.y - body.y + state.offset) / self.model.row_h) as usize;
         (pos < self.model.order.len()).then_some(pos)
     }
 }
@@ -168,6 +170,19 @@ fn columns(b: Rectangle) -> Columns {
     Columns { icon, name, name_w, size_right, kind, date }
 }
 
+/// Which column header is under `x`.
+fn header_column(c: &Columns, x: f32) -> SortBy {
+    if x >= c.date {
+        SortBy::Modified
+    } else if x >= c.kind {
+        SortBy::Kind
+    } else if x >= c.size_right - style::COL_SIZE {
+        SortBy::Size
+    } else {
+        SortBy::Name
+    }
+}
+
 impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, Message> {
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<State>()
@@ -185,7 +200,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
         let size = limits.max();
         let state = tree.state.downcast_mut::<State>();
         let body_h = (size.height - style::HEADER).max(0.0);
-        state.viewport_rows = (body_h / style::ROW).floor().max(1.0) as usize;
+        state.viewport_rows = (body_h / self.model.row_h).floor().max(1.0) as usize;
         if state.generation != self.model.generation {
             state.generation = self.model.generation;
             state.offset = 0.0;
@@ -194,11 +209,11 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
         // Keep the keyboard cursor in view whenever it moves.
         if self.model.cursor != state.last_cursor {
             if let Some(c) = self.model.cursor {
-                let top = c as f32 * style::ROW;
+                let top = c as f32 * self.model.row_h;
                 if top < state.offset {
                     state.offset = top;
-                } else if top + style::ROW > state.offset + body_h {
-                    state.offset = top + style::ROW - body_h;
+                } else if top + self.model.row_h > state.offset + body_h {
+                    state.offset = top + self.model.row_h - body_h;
                 }
             }
             state.last_cursor = self.model.cursor;
@@ -228,7 +243,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
             Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => state.modifiers = *m,
             Event::Mouse(mouse::Event::WheelScrolled { delta }) if cursor.is_over(body) => {
                 let dy = match delta {
-                    mouse::ScrollDelta::Lines { y, .. } => -y * style::ROW * 3.0,
+                    mouse::ScrollDelta::Lines { y, .. } => -y * self.model.row_h * 3.0,
                     mouse::ScrollDelta::Pixels { y, .. } => -y,
                 };
                 let next = (state.offset + dy).clamp(0.0, max);
@@ -242,16 +257,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                 let Some(p) = cursor.position() else { return };
                 let (header, _) = areas(layout.bounds());
                 if header.contains(p) {
-                    let c = columns(layout.bounds());
-                    let by = if p.x >= c.date {
-                        SortBy::Modified
-                    } else if p.x >= c.kind {
-                        SortBy::Kind
-                    } else if p.x >= c.size_right - style::COL_SIZE {
-                        SortBy::Size
-                    } else {
-                        SortBy::Name
-                    };
+                    let by = header_column(&columns(layout.bounds()), p.x);
                     publish(shell, Action::Sort(by));
                     shell.capture_event();
                     return;
@@ -281,8 +287,8 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                     state.offset = (state.offset + dy).clamp(0.0, max);
                     state.dragging_thumb = Some(position.y);
                     shell.request_redraw();
-                } else if cursor.is_over(body) {
-                    // Hover highlight follows the pointer.
+                } else if cursor.is_over(layout.bounds()) {
+                    // Hover highlight (rows and column headers) follows the pointer.
                     shell.request_redraw();
                 }
             }
@@ -322,12 +328,13 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
     fn mouse_interaction(
         &self,
         _tree: &Tree,
-        _layout: Layout<'_>,
-        _cursor: mouse::Cursor,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
         _viewport: &Rectangle,
         _renderer: &iced::Renderer,
     ) -> mouse::Interaction {
-        mouse::Interaction::None
+        let (header, _) = areas(layout.bounds());
+        if cursor.is_over(header) { mouse::Interaction::Pointer } else { mouse::Interaction::None }
     }
 
     fn draw(
@@ -372,6 +379,20 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
             );
         };
         let arrow = if self.model.sort.descending { " ↓" } else { " ↑" };
+        let hovered_col = cursor.position().filter(|pt| header.contains(*pt)).map(|pt| header_column(&cols, pt.x));
+        if let Some(by) = hovered_col {
+            // Same hover layer as every other clickable thing (design system States).
+            let (x0, x1) = match by {
+                SortBy::Name => (cols.name - style::SPACE_3, cols.size_right - style::COL_SIZE),
+                SortBy::Size => (cols.size_right - style::COL_SIZE, cols.kind),
+                SortBy::Kind => (cols.kind - style::SPACE_1, cols.date),
+                _ => (cols.date - style::SPACE_1, bounds.x + bounds.width - SCROLLBAR),
+            };
+            renderer.fill_quad(
+                Quad { bounds: Rectangle { x: x0, y: header.y + 2.0, width: x1 - x0 - style::SPACE_1, height: header.height - 4.0 }, border: Border { radius: 2.0.into(), ..Border::default() }, ..Quad::default() },
+                color(p.state_hover),
+            );
+        }
         for (by, title, x, right) in [
             (SortBy::Name, "NAME", cols.name, false),
             (SortBy::Size, "SIZE", cols.size_right, true),
@@ -380,7 +401,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
         ] {
             let active = self.model.sort.by == by;
             let t = if active { format!("{title}{arrow}") } else { title.to_string() };
-            let c = if active { color(p.ink_strong) } else { color(p.ink_muted) };
+            let c = if active || hovered_col == Some(by) { color(p.ink_strong) } else { color(p.ink_muted) };
             label(renderer, &t, x, right, c);
         }
         renderer.fill_quad(
@@ -389,9 +410,9 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
         );
 
         if self.model.skeleton {
-            let rows = (body.height / style::ROW) as usize + 1;
+            let rows = (body.height / self.model.row_h) as usize + 1;
             for r in 0..rows {
-                let y = body.y + r as f32 * style::ROW + (style::ROW - 10.0) / 2.0;
+                let y = body.y + r as f32 * self.model.row_h + (self.model.row_h - 10.0) / 2.0;
                 let w = 0.25 + ((r * 37) % 45) as f32 / 100.0;
                 for (x, width, h) in [
                     (cols.icon, style::ICON_ROW, 14.0),
@@ -410,8 +431,8 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
             let icon = Rectangle { x: body.center_x() - 32.0, y: body.y + body.height * 0.3 - 32.0, width: 64.0, height: 64.0 };
             renderer.draw_svg(Svg::new(self.icons.color("folder-open")), icon, body);
             for (content, size, font, c, dy) in [
-                (title.clone(), 22.0, style::FONT_BOLD, color(p.ink_strong), 64.0),
-                (hint.clone(), style::META, style::FONT, color(p.ink_muted), 96.0),
+                (title.clone(), 22.0, style::FONT_BOLD, color(p.ink_strong), 64.0 + 28.0),
+                (hint.clone(), style::META, style::FONT, color(p.ink_muted), 64.0 + 58.0),
             ] {
                 renderer.fill_text(
                     Text {
@@ -435,9 +456,9 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
 
         // ---- rows (visible slice only)
         let n = self.model.order.len();
-        let first = (state.offset / style::ROW) as usize;
+        let first = (state.offset / self.model.row_h) as usize;
         let first = first.saturating_sub(OVERSCAN);
-        let last = ((state.offset + body.height) / style::ROW).ceil() as usize + OVERSCAN;
+        let last = ((state.offset + body.height) / self.model.row_h).ceil() as usize + OVERSCAN;
         let last = last.min(n);
         let hover = cursor.position().and_then(|pt| self.row_at(state, body, pt));
         let l = self.model.listing;
@@ -446,8 +467,8 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
         renderer.with_layer(body, |renderer| {
             for pos in first..last {
                 let i = self.model.order[pos] as usize;
-                let y = body.y + pos as f32 * style::ROW - state.offset;
-                let row = Rectangle { x: bounds.x + style::SPACE_1, y, width: bounds.width - style::SPACE_1 * 2.0 - SCROLLBAR, height: style::ROW };
+                let y = body.y + pos as f32 * self.model.row_h - state.offset;
+                let row = Rectangle { x: bounds.x + style::SPACE_1, y, width: bounds.width - style::SPACE_1 * 2.0 - SCROLLBAR, height: self.model.row_h };
                 let selected = is_selected(self.model.selected, i);
                 let is_cursor = self.model.cursor == Some(pos);
                 if selected || hover == Some(pos) || is_cursor {
@@ -463,23 +484,29 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                 let name = l.name_bytes(i);
                 let hidden = l.flags[i] & flags::HIDDEN != 0;
                 let alpha = if hidden { 0.6 } else { 1.0 };
-                let icon_box = Rectangle { x: cols.icon, y: y + (style::ROW - style::ICON_ROW) / 2.0, width: style::ICON_ROW, height: style::ICON_ROW };
+                let icon_box = Rectangle { x: cols.icon, y: y + (self.model.row_h - style::ICON_ROW) / 2.0, width: style::ICON_ROW, height: style::ICON_ROW };
                 renderer.draw_svg(
                     Svg { opacity: alpha, ..Svg::new(self.icons.color(kinds::icon(name, l.kind[i]))) },
                     icon_box,
                     body,
                 );
 
-                let cy = y + style::ROW / 2.0;
+                let cy = y + self.model.row_h / 2.0;
                 let full = String::from_utf8_lossy(name);
                 let max_cells = (cols.name_w / ADVANCE).floor() as usize;
-                let (stem, ext) = fit_name(&full, l.is_dir(i), max_cells);
+                let (mut stem, mut ext) = fit_name(&full, l.is_dir(i), max_cells);
+                if !name.is_ascii() {
+                    // Shaped text doesn't advance exactly 0.6 em per cell (CJK, emoji), so a
+                    // separately placed extension would float; draw the name as one run.
+                    stem.push_str(&ext);
+                    ext.clear();
+                }
                 let shaping = if name.is_ascii() { text::Shaping::Basic } else { text::Shaping::Advanced };
                 let mut ink = if selected { color(p.ink_strong) } else { color(p.ink) };
                 ink.a *= alpha;
                 let mut ink_ext = color(p.ink_muted);
                 ink_ext.a *= alpha;
-                let name_clip = Rectangle { x: cols.name, y, width: cols.name_w, height: style::ROW };
+                let name_clip = Rectangle { x: cols.name, y, width: cols.name_w, height: self.model.row_h };
                 let clip = name_clip.intersection(&body).unwrap_or(name_clip);
                 let stem_cells: usize = stem.chars().map(cols_of).sum();
                 for (content, x, c) in [(stem, cols.name, ink), (ext, cols.name + stem_cells as f32 * ADVANCE, ink_ext)] {
@@ -489,7 +516,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                     renderer.fill_text(
                         Text {
                             content,
-                            bounds: Size::new(f32::INFINITY, style::ROW),
+                            bounds: Size::new(f32::INFINITY, self.model.row_h),
                             size: Pixels(style::BODY),
                             line_height: text::LineHeight::Absolute(Pixels(20.0)),
                             font: style::FONT,
@@ -505,11 +532,11 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                 }
 
                 let meta = |renderer: &mut iced::Renderer, s: String, x: f32, right: bool, w: f32| {
-                    let clip = Rectangle { x: if right { x - w } else { x }, y, width: w, height: style::ROW };
+                    let clip = Rectangle { x: if right { x - w } else { x }, y, width: w, height: self.model.row_h };
                     renderer.fill_text(
                         Text {
                             content: s,
-                            bounds: Size::new(f32::INFINITY, style::ROW),
+                            bounds: Size::new(f32::INFINITY, self.model.row_h),
                             size: Pixels(style::META),
                             line_height: text::LineHeight::Absolute(Pixels(16.0)),
                             font: style::FONT,

@@ -401,3 +401,103 @@ fn live_search_can_be_cancelled_and_needs_a_real_root() {
     std::os::unix::fs::symlink(tmp.path(), tmp.path().join("a/loop")).unwrap();
     assert_eq!(live::search(tmp.path(), &Query::new("report"), &AtomicBool::new(false), &|_| {}).unwrap().len(), 1);
 }
+
+#[test]
+fn mapped_index_gives_the_same_answers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("c");
+    corpus::generate(&root, 5_000, Layout::Tree).unwrap();
+    let idx = Index::build(&root).unwrap();
+    let file = tmp.path().join("i.efidx");
+    idx.save(&file).unwrap();
+    let mapped = ef_index::MappedIndex::open(&file).unwrap();
+    assert_eq!(mapped.len(), idx.len());
+    for id in 0..idx.len() as u32 {
+        assert_eq!(mapped.name(id), idx.name(id), "name of {id}");
+    }
+    let docs = idx.lookup(&root.join("Documents")).unwrap();
+    assert_eq!(mapped.lookup(&root.join("Documents")), Some(docs));
+    for &t in TEXTS {
+        for hidden in [false, true] {
+            for within in [ef_index::ROOT, docs] {
+                let q = Query { hidden, within, ..Query::new(t) };
+                assert_eq!(mapped.search(&q), idx.search(&q), "{t} hidden={hidden} within={within}");
+            }
+        }
+        let q = Query { ext: Some("pdf"), limit: Some(10), ..Query::new(t) };
+        assert_eq!(mapped.search(&q), idx.search(&q), "{t} ext+limit");
+    }
+    // Most corpus names are mixed-case, but lowercase ASCII names must not be stored twice.
+    assert!(mapped.mapped_bytes() < idx.heap_bytes());
+}
+
+#[test]
+fn exclusions_skip_contents_but_keep_the_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    for f in ["src/report.rs", "node_modules/pkg/report.js", ".git/objects/report", "proj/target/CACHEDIR.TAG", "proj/target/debug/report.o"] {
+        touch(root, f);
+    }
+    let opts = ef_index::Options::recommended();
+    let mut idx = Index::build_with(root, &opts).unwrap();
+    assert_eq!(idx.stats().excluded, 3, "node_modules, .git and the tagged target/");
+    let paths = |idx: &Index, q: &Query| results(idx, q).into_iter().map(|p| p.strip_prefix(root).unwrap().to_path_buf()).collect::<Vec<_>>();
+    let all = Query { hidden: true, ..Query::new("report") };
+    assert_eq!(paths(&idx, &all), [PathBuf::from("src/report.rs")]);
+    // The excluded folders themselves are still found by name, empty.
+    let nm = Query { kind: KindFilter::Dirs, ..Query::new("node_modules") };
+    assert_eq!(idx.search(&nm).len(), 1);
+    assert_eq!(idx.descendants(idx.lookup(&root.join("proj/target")).unwrap()), 0);
+
+    // Changes inside excluded folders never pull their contents in.
+    touch(root, "node_modules/pkg/new report.js");
+    idx.rescan(&root.join("node_modules/pkg")).unwrap();
+    idx.rescan(&root.join("proj/target/debug")).unwrap();
+    idx.check();
+    assert_eq!(paths(&idx, &all), [PathBuf::from("src/report.rs")]);
+
+    // Options survive a save and load, so later rescans keep excluding.
+    let file = root.join("i.efidx");
+    idx.save(&file).unwrap();
+    let mut back = Index::load(&file).unwrap();
+    assert_eq!(back.options(), &opts);
+    back.rescan(&root.join("proj")).unwrap();
+    assert_eq!(paths(&back, &all), [PathBuf::from("src/report.rs")]);
+    assert_eq!(ef_index::MappedIndex::open(&file).unwrap().options(), &opts);
+
+    // Without options, everything is indexed.
+    let full = Index::build(root).unwrap();
+    assert_eq!(full.search(&all).len(), 5);
+}
+
+#[test]
+fn excluded_paths_leave_search_entirely() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    for f in ["Documents/report.pdf", "Private/report secret.pdf", "Private/deep/report 2.pdf", "Privateer/report.txt"] {
+        touch(root, f);
+    }
+    let mut opts = ef_index::Options::everything();
+    opts.exclude_paths.push(root.join("Private").as_os_str().as_bytes().to_vec());
+    let mut idx = Index::build_with(root, &opts).unwrap();
+    let got = |idx: &Index| results(idx, &Query::new("report")).into_iter().map(|p| p.strip_prefix(root).unwrap().to_path_buf()).collect::<Vec<_>>();
+    // `Private` and everything in it are gone; `Privateer` (same prefix) is not excluded.
+    assert_eq!(got(&idx), [PathBuf::from("Documents/report.pdf"), PathBuf::from("Privateer/report.txt")]);
+    assert!(idx.lookup(&root.join("Private")).is_none());
+    assert_eq!(idx.stats().excluded, 1);
+
+    // New files inside the excluded path stay out, even after rescans of it or its parent.
+    touch(root, "Private/new report.pdf");
+    idx.rescan(&root.join("Private")).unwrap();
+    idx.rescan(root).unwrap();
+    idx.check();
+    assert_eq!(got(&idx).len(), 2);
+
+    // Search settings: only excluded paths inside a root apply to it.
+    let mut cfg = ef_index::config::SearchConfig::default();
+    cfg.exclude_paths = vec![format!("{}/Private/", root.display()), "/elsewhere/x".into()];
+    let o = ef_index::Options::from_search(&cfg, root);
+    assert_eq!(o.exclude_paths, [root.join("Private").as_os_str().as_bytes().to_vec()]);
+    assert!(o.exclude_names.contains(&b"node_modules".to_vec()));
+    assert_eq!(o, { let mut r = ef_index::Options::recommended(); r.exclude_paths = o.exclude_paths.clone(); r });
+}

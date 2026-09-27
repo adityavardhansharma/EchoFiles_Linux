@@ -157,6 +157,31 @@ Motion confirms; it never makes anyone wait. Durations: `dur-instant` 0 · `dur-
 - States are never colour alone: pills carry a word and a square mark, and badges carry a glyph.
 - Full keyboard operation; focus is always visible; `prefers-reduced-motion` zeroes every duration.
 
+## Interaction states
+
+One set of states for everything clickable — toolbar buttons, path segments, sidebar rows, column headers, result rows, chips' ×, settings nav. The app builds all of them from one module (`crates/ui/src/widgets.rs`), so they can't drift.
+
+- **Hover**: `state-hover` layer; glyphs and labels go to `ink-strong`. Column headers show the layer behind the hovered column and a pointer cursor.
+- **Pressed**: `state-press`. **Active/current**: `state-active` + `accent-ink` glyph + bold label.
+- **Disabled**: 45% opacity and no hover (Forward with no history, Start at login while background is off).
+- Fields: `line-strong` border at rest, `ink-muted` on hover, `focus-ring` when focused, `danger` when invalid.
+- Every icon-only button has a tooltip naming the action with its key as a `Kbd` chip.
+
+## Settings screen
+
+Settings is its own screen (Ctrl+, or the toolbar gear): top bar with **← Files** `Esc` and a live **Saved** mark, `SettingsNav` on the left, one page on the right. Use `SettingsPage` as the reference.
+
+- Five pages: General · Search & index · AI agents · Appearance · About. A page is a 22px title, one sentence, then 2–5 `SettingsGroup`s in a centred 720px column.
+- Every row is a `SettingRow`: what it does on the left, the control on the right. Dependent settings are shown disabled with the dependency as their description, never hidden.
+- Only settings that work today. No "coming soon" rows.
+- Save on every change to `~/.config/echofiles/settings.toml` (shared with `ef`). No Save/Cancel pair.
+- Folder lists use `PathListEditor`; folder names use `NameChips`; the index shows `IndexStatus`; commands and shortcuts use `CommandList`.
+- Validation errors name the path and the fix, in `danger-ink` under the field.
+
+## Search
+
+The search box has two scopes (`SearchScope`, Ctrl+E): **Folder** filters the open folder as you type ("12 of 40 match" in the status bar); **Everywhere** shows `SearchResults` from the index. Esc clears the search from anywhere, even while typing, and navigating anywhere clears it too.
+
 ## How the pieces come together
 
 `AppWindow` is the reference screen, and `DualPane` and `MotionSpec` are the other two. Build any new screen from the same grounds (`bg-deep` → `bg` → `bg-sunken` → `bg-raised`), put at most one `primary` button on each surface, keep colour for accent, selection, state and world, and check it in Echo, one light theme (Catppuccin Latte) and one warm dark theme (Gruvbox) before shipping.
