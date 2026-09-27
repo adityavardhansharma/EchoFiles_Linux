@@ -74,7 +74,9 @@ jobs:
           set -euo pipefail
           args=()
           if [[ "$DRAFT" == true ]]; then args+=(--draft); fi
-          gh release create "v$VERSION" release-files/* \
+          gh release create "v$VERSION" release-files/*.pkg.tar.zst \
+            release-files/*-source.tar.gz release-files/PKGBUILD \
+            release-files/.SRCINFO release-files/SHA256SUMS \
             --target "$REVISION" \
             --title "EchoFiles $VERSION" \
             --generate-notes "${args[@]}"
