@@ -735,7 +735,7 @@ impl App {
             vec![
                 self.setting(
                     "Allow EchoFiles commands",
-                    "Lets AI agents and scripts search your files with ef find — milliseconds instead of walking the disk. When off, ef refuses and says it's turned off.",
+                    "Lets AI agents and scripts search indexed files quickly and search other folders live with ef find --in. When off, ef refuses and says it's turned off.",
                     self.toggle(a.cli, SettingsMsg::Cli),
                 ),
                 self.setting(
@@ -749,7 +749,7 @@ impl App {
             "Skill",
             vec![self.setting_with(
                 "Teach AI agents about ef",
-                "Links the EchoFiles skill into ~/.claude/skills so agents like Claude Code reach for ef before find. Turning it off removes only that link.",
+                "Makes the EchoFiles skill available to Claude, Codex, Gemini, OpenCode and Pi in every project. Turning it off removes EchoFiles' skill links.",
                 !a.cli,
                 w::switch(p, self.settings_ui.skill_installed, a.cli.then(|| Box::new(|b| Message::Settings(SettingsMsg::Skill(b))) as Box<dyn Fn(bool) -> Message>)),
             )],

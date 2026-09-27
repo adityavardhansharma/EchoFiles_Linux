@@ -234,10 +234,9 @@ makes the UI faster (Part 2, item 2), so agents get it almost for free.
 
 ### Commands + skill, no MCP — why that's the right shape
 
-- **Works with every agent Omarchy supports.** They all run shell commands; not all speak
-  MCP. Omarchy's own `omarchy` and `diagnose-crash` skills work exactly this way: a
-  `SKILL.md` in `/usr/share/omarchy/default/agents/skills/`, symlinked into
-  `~/.claude/skills/`.
+- **Works with agents that support shell commands and skills.** Omarchy's own `omarchy`
+  and `diagnose-crash` skills use one `SKILL.md` linked into the global skill folders for
+  `.agents`, Claude, Codex and Pi.
 - **No always-on tool schema in the agent's context.** An MCP server's tool definitions
   sit in every conversation. A skill loads only when the task is about files.
 - **Nothing extra to run.** The CLI talks to the resident engine if it's up, and falls back
@@ -245,9 +244,15 @@ makes the UI faster (Part 2, item 2), so agents get it almost for free.
 - **Composable.** `ef find … | xargs rg …` works; MCP tools don't pipe.
 - Easy to audit: every agent action is a command line in the transcript.
 
-Proposed skill (`/usr/share/echofiles/agents/skills/echofiles/SKILL.md`, symlinked into
-`~/.claude/skills/echofiles`). Its description tells agents to use it for finding, listing,
-sizing, moving or trashing user files, and always for Windows drives:
+**Implemented:** The Settings → AI agents switch writes one EchoFiles `SKILL.md` under
+`~/.local/share/echofiles/agents/skills/echofiles/` and links it into the global `.agents`,
+Claude, Codex and Pi skill folders. This makes `ef find`, `ef status` and `ef index`
+discoverable across projects when the switch is on; switching it off removes EchoFiles'
+links. `ef find --in PATH` searches a folder outside the index live. The installer applies
+the saved setting on reinstall. The `.agents` location also
+serves other agents that follow the shared Agent Skills convention.
+
+The following broader command set remains proposed:
 
 | Command | Output | Replaces |
 |---|---|---|

@@ -9,8 +9,15 @@ BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
 APPS="$DATA/applications"
 ICON="$DATA/icons/hicolor/scalable/apps"
+SKILL_SOURCE="$DATA/echofiles/agents/skills/echofiles"
 
 if [[ "${1:-}" == "--uninstall" ]]; then
+  for skills_dir in "$HOME/.agents/skills" "$HOME/.claude/skills" "$HOME/.codex/skills" "$HOME/.pi/agent/skills"; do
+    link="$skills_dir/echofiles"
+    if [[ -L "$link" && "$(readlink "$link")" == "$SKILL_SOURCE" ]]; then
+      rm "$link"
+    fi
+  done
   rm -f "$BIN/echofiles" "$BIN/ef" "$APPS/echofiles.desktop" "$ICON/echofiles.svg"
   echo "Removed EchoFiles. Settings (~/.config/echofiles) and the index (~/.cache/echofiles) were kept."
   exit 0
@@ -21,6 +28,7 @@ mkdir -p "$BIN" "$APPS" "$ICON"
 install -m 755 target/release/echofiles "$BIN/echofiles"
 install -m 755 target/release/ef "$BIN/ef"
 install -m 644 assets/brand/echofiles-logo.svg "$ICON/echofiles.svg"
+"$BIN/echofiles" --sync-agent-skill
 
 cat > "$APPS/echofiles.desktop" <<EOF
 [Desktop Entry]

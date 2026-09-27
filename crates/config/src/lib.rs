@@ -18,7 +18,7 @@
 //!
 //! [agents]
 //! cli = true                  # off: `ef` refuses to run
-//! skill = false               # EchoFiles skill linked into ~/.claude/skills
+//! skill = false               # EchoFiles skill linked into global agent skill folders
 //!
 //! [appearance]
 //! density = "default"         # "compact", "default" or "comfortable"

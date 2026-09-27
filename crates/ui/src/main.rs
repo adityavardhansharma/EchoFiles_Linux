@@ -1,7 +1,7 @@
 //! EchoFiles — a fast, Omarchy-native file manager.
 //!
 //! Flags: `echofiles [FOLDER]`, `--settings` (open Settings), `--background` (start with no
-//! window; used at login).
+//! window; used at login), `--sync-agent-skill` (apply the saved Settings switch).
 //!
 //! Environment:
 //! - `ECHOFILES_TIMING=1` prints startup and listing timings.
@@ -38,6 +38,16 @@ fn main() -> iced::Result {
 
     // One EchoFiles: a second launch hands its request to the running one and exits.
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--sync-agent-skill") {
+        if let Err(e) = system::sync_skill_from_settings() {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Err(e) = system::sync_skill_from_settings() {
+        eprintln!("{e}");
+    }
     if std::env::var_os("ECHOFILES_BENCH").is_none() {
         let request = if args.iter().any(|a| a == "--settings") {
             system::Request::Settings

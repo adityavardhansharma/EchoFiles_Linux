@@ -110,28 +110,29 @@ pub fn starts_at_login() -> bool {
 }
 
 // ---------------------------------------------------------------------------------------
-// AI agent skill (the Omarchy way: a SKILL.md linked into ~/.claude/skills)
+// AI agent skill (the Omarchy way: one SKILL.md linked into global agent skill folders)
 // ---------------------------------------------------------------------------------------
 
 const SKILL: &str = r#"---
 name: echofiles
 description: >
-  Fast file search and file facts on this computer through EchoFiles' index. Use it to find
-  files or folders by name anywhere in the home folder or on mounted Windows drives, to get
-  an overview of where things are, or before running find/fd/locate over large trees.
+  Fast file search on this computer through EchoFiles. Use it to find files or folders by
+  name in indexed locations or search any accessible folder live with ef find --in, including
+  external drives and /tmp, before running find/fd/locate over large trees.
   Triggers: find a file, where is, search files, locate, which folder, all PDFs, recent files.
 ---
 
 # EchoFiles — `ef`
 
-`ef` searches EchoFiles' index of the user's files: milliseconds instead of walking the disk,
-and it already skips caches, package stores and `.git` internals.
+`ef` searches EchoFiles' index of the user's files. With `--in` on a folder outside the
+index, it searches that folder live without changing the indexed locations.
 
 ```sh
 ef find report                      # names containing all words, best matches first
 ef find "annual report"             # exact phrase
 ef find '*' --ext pdf --limit 50    # every PDF, first 50
 ef find invoice --in ~/Documents    # only inside a folder
+ef find report --in /tmp             # live search outside the index
 ef find src --dirs                  # folders only (--files for files only)
 ef find config --hidden             # include dotfiles and hidden folders
 ef find report --count              # just the number of matches
@@ -140,6 +141,8 @@ ef status                           # what's indexed and how fresh
 
 - Matching ignores case and accents ("resume" finds "Résumé").
 - Results are full paths, one per line. Always pass `--limit` for broad queries.
+- `--in` accepts any accessible folder. Outside indexed locations it walks the folder live,
+  so searches there can take longer.
 - The index updates within seconds in Downloads, Desktop, Documents and the folder open in
   EchoFiles, and at least every minute elsewhere. For a file created moments ago in some
   other folder, confirm with `ls`.
@@ -154,37 +157,65 @@ fn skill_source_dir() -> PathBuf {
         .join("echofiles/agents/skills/echofiles")
 }
 
-pub fn skill_link() -> PathBuf {
-    config::home().join(".claude/skills/echofiles")
+fn skill_links() -> [PathBuf; 4] {
+    let home = config::home();
+    [
+        home.join(".agents/skills/echofiles"),
+        home.join(".claude/skills/echofiles"),
+        home.join(".codex/skills/echofiles"),
+        home.join(".pi/agent/skills/echofiles"),
+    ]
 }
 
-/// Whether agents can see the skill (our link is in place).
+fn is_our_link(link: &Path, source: &Path) -> bool {
+    std::fs::read_link(link).is_ok_and(|target| target == source)
+}
+
+/// Whether all supported agents can discover the global skill.
 pub fn skill_installed() -> bool {
-    std::fs::read_link(skill_link()).is_ok_and(|t| t == skill_source_dir())
+    let source = skill_source_dir();
+    source.join("SKILL.md").is_file() && skill_links().iter().all(|link| is_our_link(link, &source))
 }
 
 pub fn set_skill(on: bool) -> Result<(), String> {
-    let link = skill_link();
+    let source = skill_source_dir();
+    let links = skill_links();
     if !on {
-        // Only ever remove our own link.
-        if skill_installed() {
-            std::fs::remove_file(&link).map_err(|e| format!("Couldn't remove {}: {e}", link.display()))?;
+        // Never remove another agent skill with the same name.
+        for link in &links {
+            if is_our_link(link, &source) {
+                std::fs::remove_file(link).map_err(|e| format!("Couldn't remove {}: {e}", link.display()))?;
+            }
         }
         return Ok(());
     }
-    let src = skill_source_dir();
-    std::fs::create_dir_all(&src)
-        .and_then(|_| std::fs::write(src.join("SKILL.md"), SKILL))
-        .map_err(|e| format!("Couldn't write the skill to {}: {e}", src.display()))?;
-    if skill_installed() {
-        return Ok(());
+
+    // Check every destination before touching any of them, so a conflicting skill cannot
+    // leave a half-installed set of links.
+    for link in &links {
+        if link.symlink_metadata().is_ok() && !is_our_link(link, &source) {
+            return Err(format!("{} already exists and isn't EchoFiles' — leaving it alone.", config::tilde(link)));
+        }
     }
-    if link.symlink_metadata().is_ok() {
-        return Err(format!("{} already exists and isn't EchoFiles' — leaving it alone.", config::tilde(&link)));
+
+    std::fs::create_dir_all(&source)
+        .and_then(|_| std::fs::write(source.join("SKILL.md"), SKILL))
+        .map_err(|e| format!("Couldn't write the skill to {}: {e}", source.display()))?;
+    for link in &links {
+        if is_our_link(link, &source) {
+            continue;
+        }
+        std::fs::create_dir_all(link.parent().unwrap())
+            .and_then(|_| std::os::unix::fs::symlink(&source, link))
+            .map_err(|e| format!("Couldn't link the skill into {}: {e}", config::tilde(link.parent().unwrap())))?;
     }
-    std::fs::create_dir_all(link.parent().unwrap())
-        .and_then(|_| std::os::unix::fs::symlink(&src, &link))
-        .map_err(|e| format!("Couldn't link the skill into {}: {e}", config::tilde(link.parent().unwrap())))
+    Ok(())
+}
+
+/// Apply the saved Settings switch during install and when the app starts.
+pub fn sync_skill_from_settings() -> Result<(), String> {
+    let settings = config::Settings::load().map_err(|e| format!("Couldn't read EchoFiles settings: {e}"))?;
+    set_skill(settings.agents.skill)
 }
 
 /// Where `ef` is on `$PATH`, if anywhere.
