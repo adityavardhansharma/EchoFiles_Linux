@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=EchoFiles
+GenericName=File Manager
+Comment=Fast native file manager with indexed search
+Exec=echofiles %F
+Icon=echofiles
+Terminal=false
+Categories=System;FileTools;FileManager;Utility;
+MimeType=inode/directory;
+StartupWMClass=echofiles
+Keywords=files;folders;search;explorer;
+Actions=Settings;
+
+[Desktop Action Settings]
+Name=Settings
+Exec=echofiles --settings
