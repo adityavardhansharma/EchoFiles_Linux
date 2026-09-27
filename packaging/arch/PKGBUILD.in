@@ -1,0 +1,35 @@
+pkgname=echofiles
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Fast native file manager with indexed search for Linux'
+arch=('x86_64')
+url='https://github.com/adityavardhansharma/EchoFiles_Linux'
+license=('GPL-3.0-or-later')
+depends=('gcc-libs' 'glibc' 'fontconfig' 'libxkbcommon' 'wayland' 'libx11' 'libxcursor' 'libxi' 'libxrandr' 'vulkan-icd-loader')
+makedepends=('rust' 'pkgconf')
+optdepends=('udisks2: mount and manage drives' 'polkit: authenticate privileged drive operations' 'vulkan-driver: GPU rendering (install the driver for your GPU)' 'xdg-utils: open files in other applications')
+source=("$url/releases/download/v$pkgver/echofiles-$pkgver-source.tar.gz")
+sha256sums=('@SHA256@')
+options=('!lto')
+
+prepare() {
+  cd "echofiles-$pkgver"
+  cargo fetch --locked
+}
+
+build() {
+  cd "echofiles-$pkgver"
+  # Public builds support baseline x86-64, overriding the developer's AVX2 setting.
+  export RUSTFLAGS='-C target-cpu=x86-64'
+  export CARGO_TARGET_DIR="$srcdir/target"
+  cargo build --frozen --release -p echofiles -p echofiles-index --bin echofiles --bin ef
+}
+
+package() {
+  cd "echofiles-$pkgver"
+  install -Dm755 "$srcdir/target/release/echofiles" "$pkgdir/usr/bin/echofiles"
+  install -Dm755 "$srcdir/target/release/ef" "$pkgdir/usr/bin/ef"
+  install -Dm644 packaging/echofiles.desktop "$pkgdir/usr/share/applications/echofiles.desktop"
+  install -Dm644 assets/brand/echofiles-logo.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/echofiles.svg"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/echofiles/README.md"
+}

@@ -1,0 +1,74 @@
+name: Release EchoFiles
+run-name: Release EchoFiles v${{ inputs.version }}
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version matching committed Cargo.toml (e.g. 0.1.0)'
+        required: true
+        type: string
+      draft:
+        description: 'Create a draft for review before publishing'
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install build tools
+        run: pacman -Syu --noconfirm git nodejs python rust pkgconf fontconfig libxkbcommon wayland libx11 libxcursor libxi libxrandr vulkan-icd-loader
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Prepare source and AUR recipe
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python scripts/prepare-release.py "$VERSION"
+      - name: Build the Arch package as an unprivileged user
+        run: |
+          useradd --create-home builder
+          chown -R builder:builder dist
+          # The matching source archive is already in dist, so makepkg uses it locally.
+          runuser -u builder -- bash -c 'cd "$1"; makepkg --noconfirm; makepkg --printsrcinfo > .SRCINFO' bash "$GITHUB_WORKSPACE/dist"
+      - name: Collect release assets
+        run: |
+          mkdir release-assets
+          cp dist/*.pkg.tar.zst dist/*-source.tar.gz dist/PKGBUILD dist/.SRCINFO release-assets/
+          cd release-assets
+          sha256sum *.pkg.tar.zst *-source.tar.gz PKGBUILD .SRCINFO > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: echofiles-release
+          path: release-assets/
+          include-hidden-files: true
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: echofiles-release
+          path: assets
+      - name: Create versioned GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          DRAFT: ${{ inputs.draft }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ "$DRAFT" == true ]]; then args+=(--draft); fi
+          gh release create "v$VERSION" assets/*.pkg.tar.zst assets/*-source.tar.gz assets/PKGBUILD assets/.SRCINFO assets/SHA256SUMS \
+            --target "$REVISION" --title "EchoFiles $VERSION" --generate-notes "${args[@]}"
