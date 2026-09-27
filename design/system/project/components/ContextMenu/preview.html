@@ -8,12 +8,18 @@
 (function(){
 var E = window.Echo, h = React.createElement;
 function App(){
-return h("div", {className:"ef", style:{padding:16}}, h(E.ContextMenu, {items:[
-  {icon:"external", label:"Open", kbd:["Enter"], active:true}, {icon:"columns", label:"Open in other pane", kbd:["F3"]}, {icon:"plus", label:"Open in new tab", kbd:["Ctrl","Enter"]},
-  "-", {icon:"copy", label:"Copy", kbd:["Ctrl","C"]}, {icon:"cut", label:"Cut", kbd:["Ctrl","X"]}, {icon:"move", label:"Move to AVS (D:)", submenu:true},
-  {icon:"rename", label:"Rename", kbd:["F2"]}, {icon:"link", label:"Copy as Windows path", hint:"D:\\Work"},
-  "-", {icon:"trash", label:"Move to Trash", kbd:["Del"]}, {icon:"trash", label:"Delete permanently", kbd:["Shift","Del"], danger:true},
-  "-", {icon:"info", label:"Properties", kbd:["Alt","Enter"]}]}));
+return h("div", {className:"ef", style:{padding:16, display:"flex", gap:16, alignItems:"flex-start"}},
+  h(E.ContextMenu, {label:"On a folder", items:[
+    {icon:"external", label:"Open", kbd:["Enter"], active:true}, {icon:"plus", label:"Open in new tab", kbd:["Ctrl","Enter"]}, {icon:"columns", label:"Open in other pane", kbd:["F3"]},
+    "-", {icon:"cut", label:"Cut", kbd:["Ctrl","X"]}, {icon:"copy", label:"Copy", kbd:["Ctrl","C"]}, {icon:"paste", label:"Paste into folder"},
+    {icon:"move", label:"Move to", submenu:true}, {icon:"copy", label:"Copy to", submenu:true},
+    {icon:"rename", label:"Rename", kbd:["F2"]}, {icon:"link", label:"Copy path", kbd:["Ctrl","Shift","C"]}, {icon:"link", label:"Copy as Windows path", hint:"D:\\Work"}, {icon:"pin", label:"Pin to sidebar"},
+    "-", {icon:"trash", label:"Move to Trash", kbd:["Del"]}, {icon:"trash", label:"Delete permanently", kbd:["Shift","Del"], danger:true},
+    "-", {icon:"info", label:"Properties", kbd:["Alt","Enter"]}]}),
+  h(E.ContextMenu, {label:"On empty space", items:[
+    {icon:"folder-plus", label:"New folder", kbd:["Ctrl","Shift","N"]}, {icon:"file-plus", label:"New file"}, {icon:"paste", label:"Paste", kbd:["Ctrl","V"]}, {icon:"check", label:"Select all", kbd:["Ctrl","A"]},
+    "-", {icon:"grid", label:"View as grid", kbd:["Ctrl","2"]}, {icon:"eye", label:"Show hidden files", kbd:["Ctrl","H"]},
+    "-", {icon:"terminal", label:"Open terminal here"}, {icon:"link", label:"Copy path"}, {icon:"pin", label:"Pin to sidebar"}, {icon:"info", label:"Properties", kbd:["Alt","Enter"]}]}));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(h(App));
 })();

@@ -8,3 +8,5 @@ A drive in the sidebar: name, state, usage bar and free space in two lines.
 - Mounted drives show no pill (it is the normal state). Read-only and Needs check use `warning`, Locked `danger`, Not mounted is neutral and dims the name.
 - Clicking an unmounted drive mounts it and opens it; a spinner replaces the pill while udisks works. Usage bars grow once on mount (400ms).
 - Usage above 90% turns the bar `warning`, above 97% `danger`.
+- Pills: **Mounting…** (`info`) while udisks works — the password dialog appears if Linux asks for one; **Read-only** (`warning`) for C: and anything mounted read-only; **Needs check** (`warning`) when Windows didn't shut down fully and the drive fell back to read-only; **Locked** (`danger`) for BitLocker; **Not mounted** (neutral).
+- Tooltip: the mount path and driver (`/run/media/…/AVS · ntfs3`), or the device when unmounted. Right-click: Open, Open in new tab, **Allow writing…** (C: only, `danger`), **Unmount**, All drives.

@@ -17,13 +17,16 @@ return h("div", {className:"ef", style:{display:"flex", height:590}},
       h(E.SidebarItem, {icon:"image", label:"Pictures", dropTarget:true}),
       h(E.SidebarItem, {icon:"music", label:"Music"}),
       h(E.SidebarItem, {icon:"trash", label:"Trash"})),
+    h(E.SidebarSection, {title:"Pinned"},
+      h(E.SidebarItem, {icon:"pin", label:"Work"}),
+      h(E.SidebarItem, {icon:"pin", label:"EchoFiles_Linux"})),
     h(E.SidebarSection, {title:"Windows", world:"windows", count:3},
       h(E.DriveItem, {name:"Windows (C:)", state:"readonly", used:76, world:"windows", meta:"NTFS", free:"88 GB free"}),
+      h(E.SidebarItem, {icon:"folder", label:"Documents", indent:true}),
+      h(E.SidebarItem, {icon:"folder", label:"Downloads", indent:true}),
       h(E.DriveItem, {name:"AVS (D:)", state:"mounted", used:58, world:"windows", meta:"NTFS", free:"66 GB free"}),
-      h(E.DriveItem, {name:"AVS (E:)", state:"unmounted", meta:"295 GB · click to mount"}),
-      h(E.SidebarItem, {icon:"user", label:"Aditya (C:\\Users)"})),
-    h(E.SidebarSection, {title:"Pinned"},
-      h(E.SidebarItem, {icon:"star", label:"Work", trail:"D:"}))));
+      h(E.DriveItem, {name:"AVS (E:)", state:"unmounted", meta:"295 GB · click to mount"})),
+    h(E.SidebarItem, {icon:"sliders", label:"All drives"})));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(h(App));
 })();

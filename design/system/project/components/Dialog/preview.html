@@ -1,4 +1,4 @@
-<!-- @dsCard group="Overlays" height=330 -->
+<!-- @dsCard group="Overlays" height=980 -->
 <!doctype html>
 <html>
 <head><meta charset="utf-8"><title>Dialog</title></head>
@@ -8,10 +8,17 @@
 (function(){
 var E = window.Echo, h = React.createElement;
 function App(){
-return h("div", {className:"ef"}, h(E.Dialog, {tone:"danger", title:"Delete 3 items permanently?", icon:"trash-full",
-  footer:[h(E.Button, {key:1}, "Cancel"), h(E.Button, {key:2, variant:"danger", icon:"trash"}, "Delete permanently")]},
-  h("p", null, "“Report-Q3.xlsx”, “IMG_20260914_182233.jpg” and 1 more will be erased from AVS (D:). This can't be undone."),
-  h("p", null, "To keep a way back, press Del instead — it moves them to Trash.")));
+return h("div", {className:"ef ef-stack"},
+  h(E.Dialog, {tone:"danger", title:"Delete 3 items permanently?", icon:"trash-full",
+    footer:[h(E.Button, {key:1, variant:"ghost", kbd:["Esc"]}, "Cancel"), h(E.Button, {key:2, icon:"trash"}, "Move to Trash"), h(E.Button, {key:3, variant:"danger", icon:"trash"}, "Delete permanently")]},
+    h("p", null, "“Report-Q3.xlsx”, “IMG_20260914_182233.jpg” and 1 more will be erased from AVS (D:). Deleting permanently can't be undone.")),
+  h(E.Dialog, {title:"Password needed", icon:"lock", height:260,
+    footer:[h(E.Button, {key:1, variant:"ghost", kbd:["Esc"]}, "Cancel"), h(E.Button, {key:2, variant:"primary", icon:"key", kbd:["Enter"]}, "Authenticate")]},
+    h("p", null, "Authentication is required to mount AVS (/dev/nvme0n1p6). Enter the password for aditya."),
+    h(E.TextField, {id:"pw", type:"password", placeholder:"Password"})),
+  h(E.Dialog, {tone:"danger", title:"Allow writing to Windows (C:)?", icon:"shield", height:280,
+    footer:[h(E.Button, {key:1, variant:"ghost", kbd:["Esc"]}, "Cancel"), h(E.Button, {key:2, variant:"danger", icon:"unlock"}, "Allow writing")]},
+    h("p", null, "This is the drive Windows runs from. Changing files here while Windows is hibernated or using Fast Startup can corrupt it — only continue if Windows was shut down with Restart. EchoFiles goes back to read-only the next time it mounts the drive.")));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(h(App));
 })();

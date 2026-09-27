@@ -184,7 +184,13 @@ var ICONS = {"glyphs":{"arrow-left":"<path d=\"M19 12H5M11 6l-6 6 6 6\"/>","arro
       h(PathBar, { segments: p.segments || [], animateLast: true }),
       h(SearchScope, { value: scope }),
       h(SearchField, { placeholder: scope === "everywhere" ? "Search everywhere" : "Search this folder", defaultValue: p.query }),
+      h("span", { className: "ef-toolbar-sep" }),
+      h(IconButton, { icon: "list", label: "List view (Ctrl+1)", pressed: !p.grid }),
+      h(IconButton, { icon: "grid", label: "Grid view (Ctrl+2)", pressed: !!p.grid }),
+      h(IconButton, { icon: "columns", label: p.dual ? "Single pane (F3)" : "Dual pane (F3)", pressed: !!p.dual }),
+      h(IconButton, { icon: "sidebar", label: "Preview pane (Space)", pressed: !!p.preview }),
       h(IconButton, { icon: p.hidden ? "eye" : "eye-off", label: p.hidden ? "Hide hidden files (Ctrl+H)" : "Show hidden files (Ctrl+H)", pressed: !!p.hidden }),
+      h(IconButton, { icon: "command", label: "Command palette (Ctrl+K)" }),
       h(IconButton, { icon: "settings", label: "Settings (Ctrl+,)", pressed: !!p.settings }));
   }
 
@@ -206,7 +212,7 @@ var ICONS = {"glyphs":{"arrow-left":"<path d=\"M19 12H5M11 6l-6 6 6 6\"/>","arro
       h("div", { className: "ef-sec-list" }, p.children));
   }
   function SidebarItem(p) {
-    return h("button", { type: "button", className: cx("ef-side-item", p.dropTarget && "ef-side-drop"), "aria-current": p.active ? "true" : undefined },
+    return h("button", { type: "button", className: cx("ef-side-item", p.dropTarget && "ef-side-drop", p.indent && "ef-side-indent"), "aria-current": p.active ? "true" : undefined },
       h(Icon, { name: p.icon || "folder", size: 16 }),
       h("span", { className: "ef-side-name" }, p.label),
       p.trail ? h("span", { className: "ef-side-trail" }, p.trail) : null);
@@ -402,10 +408,11 @@ var ICONS = {"glyphs":{"arrow-left":"<path d=\"M19 12H5M11 6l-6 6 6 6\"/>","arro
     return h(Dialog, {
       title: p.title || "“Report-Q3.xlsx” already exists in AVS (D:)", icon: "file-sheet", height: 420,
       footer: [
-        h("span", { key: "all", className: "ef-grow" }, h(Checkbox, { id: "apply-all" }, "Apply to all " + (p.count || 12) + " conflicts")),
+        h("span", { key: "all", className: "ef-grow" }, h(Checkbox, { id: "apply-all" }, "Do this for all " + (p.count || 12) + " conflicts")),
+        h(Button, { key: "cancel", variant: "ghost", kbd: ["Esc"] }, "Cancel"),
         h(Button, { key: "skip" }, "Skip"),
-        h(Button, { key: "both" }, "Keep both"),
-        h(Button, { key: "rep", variant: "primary", kbd: ["Enter"] }, "Replace")]
+        h(Button, { key: "rep" }, p.folders ? "Merge" : "Replace"),
+        h(Button, { key: "both", variant: "primary", kbd: ["Enter"] }, "Keep both")]
     },
       h("div", { className: "ef-conflict" },
         h("div", { className: "ef-conflict-card" }, h(FileIcon, { name: "file-sheet", size: 32 }), h("b", null, "Copying"), h("span", { className: "ef-newer" }, "Modified today 18:22 · newer"), h("span", null, "84 KB · ~/Documents")),
@@ -506,13 +513,16 @@ var ICONS = {"glyphs":{"arrow-left":"<path d=\"M19 12H5M11 6l-6 6 6 6\"/>","arro
         h(SidebarItem, { icon: "download", label: "Downloads", trail: "3 new" }),
         h(SidebarItem, { icon: "image", label: "Pictures" }),
         h(SidebarItem, { icon: "trash", label: "Trash" })),
+      h(SidebarSection, { title: "Pinned" },
+        h(SidebarItem, { icon: "pin", label: "Work" }),
+        h(SidebarItem, { icon: "pin", label: "EchoFiles_Linux" })),
       h(SidebarSection, { title: "Windows", world: "windows", count: 3 },
         h(DriveItem, { name: "Windows (C:)", state: "readonly", used: 76, world: "windows", meta: "NTFS", free: "88 GB free", active: p.active === "c" }),
+        h(SidebarItem, { icon: "folder", label: "Documents", indent: true }),
+        h(SidebarItem, { icon: "folder", label: "Downloads", indent: true }),
         h(DriveItem, { name: "AVS (D:)", state: "mounted", used: 58, world: "windows", meta: "NTFS", free: "66 GB free", active: p.active === "d" }),
         h(DriveItem, { name: "AVS (E:)", state: "unmounted", meta: "295 GB · click to mount" })),
-      h(SidebarSection, { title: "Pinned" },
-        h(SidebarItem, { icon: "star", label: "Work", trail: "D:" }),
-        h(SidebarItem, { icon: "folder", label: "EchoFiles_Linux" })));
+      h(SidebarItem, { icon: "sliders", label: "All drives" }));
   }
 
   function AppWindow(p) {

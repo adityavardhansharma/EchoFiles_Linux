@@ -107,6 +107,7 @@ body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--f
 .ef-sec-list { display: flex; flex-direction: column; gap: 1px; }
 .ef-side-item { font: inherit; display: flex; align-items: center; gap: var(--space-3); height: var(--row); padding: 0 var(--space-3); border: 0; border-radius: var(--radius-1); background: transparent; color: var(--ink); cursor: pointer; text-align: left; width: 100%; min-width: 0; position: relative; transition: background-color var(--dur-fast) var(--ease-standard); }
 .ef-side-item:hover { background: var(--state-hover); }
+.ef-side-indent { padding-left: calc(var(--space-3) + 16px); }
 .ef-side-item:focus-visible { outline: 1px solid var(--focus-ring); outline-offset: -1px; }
 .ef-side-item[aria-current="true"] { background: var(--state-active); color: var(--ink-strong); font-weight: 600; }
 .ef-side-item[aria-current="true"] > .ef-icon { color: var(--accent-ink); }
