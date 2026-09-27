@@ -45,6 +45,7 @@ pub enum Field {
 #[derive(Debug, Clone)]
 pub enum SettingsMsg {
     Open,
+    OpenPage(Page),
     Close,
     Page(Page),
     Background(bool),
@@ -210,6 +211,10 @@ impl App {
                 self.settings_ui.starts_at_login = system::starts_at_login();
                 Task::none()
             }
+            SettingsMsg::OpenPage(p) => {
+                self.settings_ui.page = p;
+                self.settings_update(SettingsMsg::Open)
+            }
             SettingsMsg::Close => {
                 self.mode = Mode::Files;
                 Task::none()
@@ -249,7 +254,7 @@ impl App {
             SettingsMsg::Rebuild => self.build_index(),
             SettingsMsg::DefaultScope(s) => {
                 self.settings.search.default_scope = s;
-                self.scope = s;
+                self.pane_mut().scope = s;
                 self.save_settings()
             }
             SettingsMsg::Draft(f, v) => {
@@ -264,7 +269,7 @@ impl App {
                 self.add_entry(f, &raw)
             }
             SettingsMsg::AddCurrent(f) => {
-                let raw = self.location.to_string_lossy().into_owned();
+                let raw = self.pane().location.to_string_lossy().into_owned();
                 self.add_entry(f, &raw)
             }
             SettingsMsg::Remove(f, i) => {

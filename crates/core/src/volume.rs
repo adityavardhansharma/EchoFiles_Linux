@@ -8,6 +8,8 @@ pub struct FsInfo {
     pub fs_type: &'static str,
     pub free: u64,
     pub total: u64,
+    /// Mounted read-only.
+    pub read_only: bool,
 }
 
 impl FsInfo {
@@ -24,6 +26,7 @@ pub fn fs_info(path: &Path) -> Option<FsInfo> {
         fs_type: fs_name(st.f_type as i64),
         free: st.f_bavail as u64 * block,
         total: st.f_blocks as u64 * block,
+        read_only: (st.f_flags as u64) & 1 != 0, // ST_RDONLY
     })
 }
 

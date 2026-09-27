@@ -130,7 +130,7 @@ pub struct Change {
 pub struct Watcher {
     fd: Arc<OwnedFd>,
     watches: Arc<Mutex<Vec<(i32, PathBuf)>>>,
-    current: Mutex<Option<i32>>,
+    current: Mutex<Vec<i32>>,
 }
 
 impl Watcher {
@@ -174,7 +174,7 @@ impl Watcher {
                 }
             })
             .ok()?;
-        Some(Watcher { fd, watches, current: Mutex::new(None) })
+        Some(Watcher { fd, watches, current: Mutex::new(Vec::new()) })
     }
 
     fn add(&self, path: &Path) -> Option<i32> {
@@ -202,8 +202,9 @@ impl Watcher {
         }
     }
 
-    /// Follow the folder that's open, dropping the previous one unless it's a landing folder.
-    pub fn watch_current(&self, path: &Path) {
+    /// Follow the folders that are open (every visible pane), dropping the ones no longer
+    /// shown unless they're landing folders.
+    pub fn watch_open(&self, paths: &[PathBuf]) {
         let mut cur = self.current.lock().unwrap();
         let landing = |wd: i32| {
             let home = config::home();
@@ -211,13 +212,14 @@ impl Watcher {
                 *w == wd && (p == &home || ["Downloads", "Desktop", "Documents", "Pictures", "Videos", "Music"].iter().any(|n| p == &home.join(n)))
             })
         };
-        if let Some(old) = cur.take() {
-            if !landing(old) {
+        let wanted: Vec<i32> = paths.iter().filter_map(|p| self.add(p)).collect();
+        for old in cur.drain(..) {
+            if !wanted.contains(&old) && !landing(old) {
                 let _ = inotify::remove_watch(&*self.fd, old);
                 self.watches.lock().unwrap().retain(|(w, _)| *w != old);
             }
         }
-        *cur = self.add(path);
+        *cur = wanted;
     }
 }
 

@@ -36,7 +36,36 @@ pub mod flags {
     pub const STATED: u16 = 1 << 1;
     /// `statx` failed (entry vanished, permission denied…).
     pub const STAT_FAILED: u16 = 1 << 2;
+    /// A symlink whose target is a folder: opens like one.
+    pub const LINK_DIR: u16 = 1 << 3;
+    /// A symlink whose target is gone.
+    pub const BROKEN: u16 = 1 << 4;
+    /// NTFS: a cloud placeholder (OneDrive "online-only").
+    pub const CLOUD: u16 = 1 << 5;
+    /// NTFS: EFS-encrypted; unreadable without the Windows certificate.
+    pub const LOCKED: u16 = 1 << 6;
 }
+
+/// NTFS attribute bits (`FILE_ATTRIBUTE_*`), read through ntfs3's `system.ntfs_attrib`.
+pub mod win {
+    pub const READONLY: u32 = 0x1;
+    pub const HIDDEN: u32 = 0x2;
+    pub const SYSTEM: u32 = 0x4;
+    pub const ARCHIVE: u32 = 0x20;
+    pub const SPARSE: u32 = 0x200;
+    pub const REPARSE: u32 = 0x400;
+    pub const COMPRESSED: u32 = 0x800;
+    pub const OFFLINE: u32 = 0x1000;
+    pub const ENCRYPTED: u32 = 0x4000;
+    pub const RECALL_ON_OPEN: u32 = 0x40000;
+    pub const RECALL_ON_DATA_ACCESS: u32 = 0x400000;
+}
+
+/// Files Windows keeps at a volume's top level that Explorer never shows.
+const WINDOWS_JUNK: [&str; 13] = [
+    "$recycle.bin", "system volume information", "pagefile.sys", "hiberfil.sys", "swapfile.sys", "dumpstack.log.tmp", "dumpstack.log",
+    "thumbs.db", "desktop.ini", "$winreagent", "config.msi", "$sysreset", "recovery",
+];
 
 /// A directory's entries as parallel columns; ~40 bytes per entry, no per-entry heap allocation.
 #[derive(Clone, Debug, Default)]
@@ -50,6 +79,8 @@ pub struct Listing {
     pub mtime: Vec<i64>,
     pub mode: Vec<u32>,
     pub flags: Vec<u16>,
+    /// NTFS attributes; empty on other filesystems.
+    pub attrs: Vec<u32>,
 }
 
 impl Listing {
@@ -98,6 +129,12 @@ impl Listing {
             + self.mtime.capacity() * 8
             + self.mode.capacity() * 4
             + self.flags.capacity() * 2
+            + self.attrs.capacity() * 4
+    }
+
+    /// The Windows attribute bits of entry `i`, if this is an NTFS listing.
+    pub fn win_attrs(&self, i: usize) -> Option<u32> {
+        self.attrs.get(i).copied()
     }
 
     fn push(&mut self, name: &[u8], kind: Kind) {
@@ -178,6 +215,59 @@ pub fn fill_metadata(listing: &mut Listing, fd: &OwnedFd) {
             None => listing.flags[i] |= flags::STAT_FAILED,
         }
     }
+    // Symlinks: where do they point? One more statx, following the link, for links only.
+    let links: Vec<usize> = (0..n).filter(|&i| listing.kind[i] == Kind::Symlink).collect();
+    let targets: Vec<(usize, Option<u32>)> = links
+        .par_iter()
+        .map(|&i| (i, rustix::fs::statx(fd.as_fd(), listing.name_cstr(i), AtFlags::STATX_DONT_SYNC, StatxFlags::TYPE).ok().map(|st| st.stx_mode as u32)))
+        .collect();
+    for (i, mode) in targets {
+        match mode {
+            Some(m) if kind_from_mode(m) == Kind::Dir => listing.flags[i] |= flags::LINK_DIR,
+            Some(_) => {}
+            None => listing.flags[i] |= flags::BROKEN,
+        }
+    }
+}
+
+/// Hide Windows' own bookkeeping files the way Explorer does (names phase, no I/O).
+pub fn mark_windows_junk(listing: &mut Listing) {
+    for i in 0..listing.len() {
+        let n = listing.name_bytes(i);
+        if n.len() <= 26 && WINDOWS_JUNK.iter().any(|j| j.as_bytes().eq_ignore_ascii_case(n)) || n.starts_with(b"found.") {
+            listing.flags[i] |= flags::HIDDEN;
+        }
+    }
+}
+
+/// NTFS: read each entry's attributes; Hidden/System entries become hidden like dotfiles,
+/// cloud placeholders and EFS files get their badges.
+pub fn fill_windows_attributes(listing: &mut Listing, _fd: &OwnedFd) {
+    let n = listing.len();
+    let dir = listing.dir.clone();
+    let attrs: Vec<u32> = (0..n)
+        .into_par_iter()
+        .with_min_len(STAT_CHUNK)
+        .map(|i| {
+            let mut buf = [0u8; 4];
+            match rustix::fs::lgetxattr(dir.join(listing.name(i)), "system.ntfs_attrib", &mut buf) {
+                Ok(4) => u32::from_le_bytes(buf),
+                _ => 0,
+            }
+        })
+        .collect();
+    for (i, a) in attrs.iter().enumerate() {
+        if a & (win::HIDDEN | win::SYSTEM) != 0 {
+            listing.flags[i] |= flags::HIDDEN;
+        }
+        if a & (win::OFFLINE | win::RECALL_ON_OPEN | win::RECALL_ON_DATA_ACCESS) != 0 {
+            listing.flags[i] |= flags::CLOUD;
+        }
+        if a & win::ENCRYPTED != 0 {
+            listing.flags[i] |= flags::LOCKED;
+        }
+    }
+    listing.attrs = attrs;
 }
 
 fn kind_from_mode(mode: u32) -> Kind {
