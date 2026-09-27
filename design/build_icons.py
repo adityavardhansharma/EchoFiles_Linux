@@ -118,7 +118,7 @@ GLYPHS = {
     "users": '<circle cx="9" cy="8.5" r="3"/><path d="M3.5 19.5a5.5 5.5 0 0 1 11 0M15.5 5.8a3 3 0 0 1 0 5.4M17 14.2a5.5 5.5 0 0 1 3.5 5.3"/>',
     # system
     "settings": GEAR,
-    "terminal": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/>',
+    "terminal": '<path d="M5 7l5 5-5 5M12 18h7"/>',
     "command": '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 10l2.5 2L7 14M12 14h5"/>',
     "keyboard": '<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M8 14h8"/>',
     "drive": '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 13h18M16.5 15.5h.01M13.5 15.5h.01"/>',

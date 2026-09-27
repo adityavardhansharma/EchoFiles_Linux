@@ -345,14 +345,12 @@ impl App {
         }
         for (i, v) in self.volumes.iter().enumerate() {
             col = col.push(self.drive_item(i, v));
-            // Known Windows folders nest under the drive that holds them.
-            for (label, path) in self.win_folders.iter().filter(|(_, pth)| v.mount_points.iter().any(|m| pth.starts_with(m))) {
-                col = col.push(self.side_item("folder", label.clone(), path.clone(), false, 16.0));
-            }
         }
         col = col.push(Space::new().height(style::SPACE_4));
         col = col.push(self.side_button("sliders", "All drives", Message::ShowDrives, self.pane().drives));
-        w::fill(scrollable(col).height(Length::Fill), p.bg_sunken).width(self.settings.sidebar.width as f32).height(Length::Fill).padding([12, 8]).into()
+        // A thin scrollbar beside the rows, never over them.
+        let bar = scrollable::Scrollbar::new().width(4).scroller_width(4).spacing(4);
+        w::fill(scrollable(col).direction(scrollable::Direction::Vertical(bar)).height(Length::Fill), p.bg_sunken).width(self.settings.sidebar.width as f32).height(Length::Fill).padding([12, 8]).into()
     }
 
     fn side_button<'a>(&'a self, icon: &str, label: &str, msg: Message, active: bool) -> Element<'a, Message> {

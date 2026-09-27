@@ -9,5 +9,5 @@ The place list on `bg-sunken`: Linux, Pinned (when anything is pinned), Windows,
 - Sections are data-driven (the phone section plugs in later). Drag a file onto an item → `accent-soft` with a 1px `accent` inset.
 - Width `sidebar-width` (236px), resizable 180–360 by dragging its right edge (the edge turns `accent` while dragged), hidden with Ctrl+B; both are remembered in settings.
 - **Pinned** folders come from *Pin to sidebar* in any folder's menu and show a `pin` glyph; right-click to unpin.
-- Windows user folders (Desktop, Documents, Downloads, Pictures, Music, Videos under `Users\<you>`) nest, indented, under the mounted drive that holds them.
+- Drives are listed on their own — no Windows user folders under them (a PC with several accounts would bury the list). A thin scrollbar sits beside the rows, never over them.
 - Every place: click opens, middle-click opens in a new tab, right-click for Open / Open in new tab / Paste into folder / Pin, and files dragged onto it move or copy there. Trash's menu has **Empty Trash**.

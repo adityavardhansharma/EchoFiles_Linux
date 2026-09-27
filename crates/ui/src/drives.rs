@@ -132,7 +132,6 @@ impl App {
                     }
                 }
                 self.volumes = v;
-                self.win_folders = known_folders(&self.volumes);
                 Task::none()
             }
             DriveMsg::Volumes(Err(e)) => {
@@ -296,11 +295,17 @@ impl App {
         let ink = if active { color(p.ink_strong) } else if v.is_mounted() { color(p.ink) } else { color(p.ink_muted) };
         let head = text(display_name(v, &self.volumes)).size(style::BODY).font(if active { style::FONT_BOLD } else { style::FONT }).color(ink).wrapping(text::Wrapping::None);
         let mut meta = String::new();
+        // With a pill on the line there's only room for the free space; the total is in
+        // the tooltip and on the Drives page.
+        let pill = st.mounting || v.locked || !v.is_mounted() || st.reason.is_some() || fs.as_ref().is_some_and(|f| f.read_only);
         match &fs {
             Some(f) => {
                 fmt::size(f.free, &mut meta);
-                meta.push_str(" free of ");
-                fmt::size(f.total, &mut meta);
+                meta.push_str(" free");
+                if !pill {
+                    meta.push_str(" of ");
+                    fmt::size(f.total, &mut meta);
+                }
             }
             None => fmt::size(v.size, &mut meta),
         }
@@ -326,7 +331,15 @@ impl App {
         let r = row![container(w::glyph(&self.icons, if v.locked { "lock" } else { "drive" }, 16.0, tint)).padding([2, 0]), lines].spacing(style::SPACE_4).align_y(Alignment::Start);
         let item = w::row_button(p, container(r).padding([6, 0]).into(), active, Some(Message::Drive(DriveMsg::Click(i))));
         let tip = match v.mount_points.first() {
-            Some(mp) => format!("{mp} · {}", fs.as_ref().map_or("ntfs3", |f| f.fs_type)),
+            Some(mp) => {
+                let mut t = format!("{mp} · {} · ", fs.as_ref().map_or("ntfs3", |f| f.fs_type));
+                if let Some(f) = &fs {
+                    fmt::size(f.free, &mut t);
+                    t.push_str(" free of ");
+                    fmt::size(f.total, &mut t);
+                }
+                t
+            }
             None => format!("{} · {}", v.device, if v.locked { "BitLocker" } else { "NTFS" }),
         };
         let item = self.tip(item, &tip, None);
@@ -429,27 +442,4 @@ impl App {
         .spacing(6);
         w::fill(scrollable(container(column![head, grid, Space::new().height(24)].spacing(style::SPACE_5)).padding([24, 28])).height(Length::Fill), p.bg).width(Length::Fill).height(Length::Fill).into()
     }
-}
-
-/// Windows known folders on mounted drives: `Users/<profile>/{Desktop,Documents,…}`.
-/// With one profile they're listed by name; with several, "name · profile".
-fn known_folders(vols: &[Volume]) -> Vec<(String, PathBuf)> {
-    let mut out = Vec::new();
-    for v in vols {
-        let Some(mp) = v.mount_points.first() else { continue };
-        let users = Path::new(mp).join("Users");
-        let Ok(rd) = std::fs::read_dir(&users) else { continue };
-        let skip = ["default", "public", "all users", "default user", "defaultapppool", "desktop.ini"];
-        let profiles: Vec<PathBuf> = rd.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).filter(|e| !skip.contains(&e.file_name().to_string_lossy().to_lowercase().as_str())).map(|e| e.path()).collect();
-        for prof in &profiles {
-            for name in ["Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos"] {
-                let p = prof.join(name);
-                if p.is_dir() {
-                    let label = if profiles.len() > 1 { format!("{name} · {}", prof.file_name().unwrap_or_default().to_string_lossy()) } else { name.to_string() };
-                    out.push((label, p));
-                }
-            }
-        }
-    }
-    out
 }

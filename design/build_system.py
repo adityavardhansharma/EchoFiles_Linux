@@ -237,8 +237,6 @@ return h("div", {className:"ef", style:{display:"flex", height:590}},
       h(E.SidebarItem, {icon:"pin", label:"EchoFiles_Linux"})),
     h(E.SidebarSection, {title:"Windows", world:"windows", count:3},
       h(E.DriveItem, {name:"Windows (C:)", state:"readonly", used:76, world:"windows", meta:"NTFS", free:"88 GB free"}),
-      h(E.SidebarItem, {icon:"folder", label:"Documents", indent:true}),
-      h(E.SidebarItem, {icon:"folder", label:"Downloads", indent:true}),
       h(E.DriveItem, {name:"AVS (D:)", state:"mounted", used:58, world:"windows", meta:"NTFS", free:"66 GB free"}),
       h(E.DriveItem, {name:"AVS (E:)", state:"unmounted", meta:"295 GB · click to mount"})),
     h(E.SidebarItem, {icon:"sliders", label:"All drives"})));
@@ -253,7 +251,7 @@ The place list on `bg-sunken`: Linux, Pinned (when anything is pinned), Windows,
 - Sections are data-driven (the phone section plugs in later). Drag a file onto an item → `accent-soft` with a 1px `accent` inset.
 - Width `sidebar-width` (236px), resizable 180–360 by dragging its right edge (the edge turns `accent` while dragged), hidden with Ctrl+B; both are remembered in settings.
 - **Pinned** folders come from *Pin to sidebar* in any folder's menu and show a `pin` glyph; right-click to unpin.
-- Windows user folders (Desktop, Documents, Downloads, Pictures, Music, Videos under `Users\\<you>`) nest, indented, under the mounted drive that holds them.
+- Drives are listed on their own — no Windows user folders under them (a PC with several accounts would bury the list). A thin scrollbar sits beside the rows, never over them.
 - Every place: click opens, middle-click opens in a new tab, right-click for Open / Open in new tab / Paste into folder / Pin, and files dragged onto it move or copy there. Trash's menu has **Empty Trash**.
 """)
 
@@ -274,6 +272,7 @@ A drive in the sidebar: name, state, usage bar and free space in two lines.
 - Mounted drives show no pill (it is the normal state). Read-only and Needs check use `warning`, Locked `danger`, Not mounted is neutral and dims the name.
 - Clicking an unmounted drive mounts it and opens it; a spinner replaces the pill while udisks works. Usage bars grow once on mount (400ms).
 - Usage above 90% turns the bar `warning`, above 97% `danger`.
+- With a pill, the second line shows only the free space ("38 GB free"); without one, "61 GB free of 295 GB". The total is always in the tooltip.
 - Pills: **Mounting…** (`info`) while udisks works — the password dialog appears if Linux asks for one; **Read-only** (`warning`) for C: and anything mounted read-only; **Needs check** (`warning`) when Windows didn't shut down fully and the drive fell back to read-only; **Locked** (`danger`) for BitLocker; **Not mounted** (neutral).
 - Tooltip: the mount path and driver (`/run/media/…/AVS · ntfs3`), or the device when unmounted. Right-click: Open, Open in new tab, **Allow writing…** (C: only, `danger`), **Unmount**, All drives.
 """)
@@ -505,7 +504,7 @@ A modal for decisions that can't wait: permanent delete, conflicts, unsafe write
 
 - `bg-raised` panel with a 2px `accent` border (Omarchy popup style; `danger` border when destructive), square corners, `shadow-float`, over `scrim`.
 - Enters with scale .98 → 1 in `dur-slow`. Esc cancels. The dangerous button is never the Enter default.
-- The dialogs EchoFiles has: **Delete permanently** (Shift+Del; offers Move to Trash; if a drive has no trash it says why and offers only permanent delete), **Empty the Trash?**, **Password needed** (EchoFiles' own polkit prompt for mounting internal drives; a wrong password turns the field `danger` with "That password didn't work"), **Allow writing to Windows (C:)?**, `ConflictDialog`, and **Some names won't work on Windows** (lists "a:b.txt → a_b.txt", Enter renames and continues).
+- The dialogs EchoFiles has: **Delete permanently** (Shift+Del; offers Move to Trash; if a drive has no trash it says why and offers only permanent delete), **Empty the Trash?**, **Password needed** (EchoFiles' own polkit prompt for mounting internal drives; a wrong password turns the field `danger` with "That password didn't work"), **Allow writing to Windows (C:)?**, **Properties** (Alt+Enter or the menu: the item's facts only — size, dates, location, permissions or Windows attributes — with a × in the corner, Close and Esc; for several items, how many, their total size counted live and where), `ConflictDialog`, and **Some names won't work on Windows** (lists "a:b.txt → a_b.txt", Enter renames and continues).
 """)
 
 comp("ConflictDialog", "Overlays", 440, """
@@ -579,7 +578,8 @@ The Space-toggled right pane: large preview, facts, Windows attributes and quick
 - Windows files show `Copy Windows path` and their DOS attributes; Linux files show permissions and owner instead.
 - Facts: Size (exact bytes too), Modified, Created, Opened, Location, Points to (links, "missing" when broken), Permissions `rw-r--r-- (644)`, Owner · group. Folders: whole-tree size and file count, filling in with a `+` until counted, plus how many items are directly inside.
 - On NTFS the Read-only, Hidden, System and Archive attributes are `Checkbox`es that change the file; Compressed, Encrypted (EFS), Sparse, Online-only and Junction are listed.
-- With several items selected the header adds "3 selected · 12 MB + folders". Alt+Enter (Properties) opens the pane if it's closed. Nothing selected: "Select something to see its details."
+- Linux files get the matching switches under **PERMISSIONS**: Read-only, Executable (files) and Only you can open it, each a `Checkbox` that changes the mode bits; links show none. Both worlds get **Copy path**; Windows files add **Copy Windows path**.
+- With several items selected the header adds "3 selected · 12 MB + folders". Nothing selected: "Select something to see its details." Properties (Alt+Enter, or the menu) opens the `Dialog` popup instead; the pane stays Space's.
 """)
 
 # ------------------------------------------------------------------ Search
@@ -709,7 +709,7 @@ Settings is its own screen (Ctrl+, or the gear): a top bar with a ghost **← Fi
 - **General** — Running: Keep running in the background (close hides the window; later launches reuse it) · Start at login (disabled unless running in the background). Windows: New windows open at Home / Last folder · Show hidden files.
 - **Search & index** — Index: Search index switch (off deletes the index) + `IndexStatus`. Search box: Search looks in (This folder / Everywhere). Indexed folders and Never show in search (`PathListEditor`). Skip contents of: Skip cache folders + `NameChips`.
 - **AI agents** — Allow EchoFiles commands (when off, `ef` exits 3 with "turned off"), ef location, Teach AI agents about ef (links the skill into ~/.claude/skills; off removes only that link), `CommandList` of examples. A `warning` note appears if `ef` is allowed but the index is off.
-- **Appearance** — the Omarchy theme's name and swatches (it follows the system); Row height Compact / Default / Comfortable (24 / 28 / 34px).
+- **Appearance** — the Omarchy theme's name and swatches (it follows the system); Row height Compact / Default / Comfortable (24 / 28 / 34px); Folders open as Automatic / List / Grid (resets per-folder choices).
 - **About** — version, settings file and index folder with **Show**, keyboard shortcuts.
 - Everything saves to `~/.config/echofiles/settings.toml` the moment it changes (shared with `ef`). Only settings that work today appear.
 """, extra=' width=1100 page')

@@ -515,8 +515,6 @@
         h(SidebarItem, { icon: "pin", label: "EchoFiles_Linux" })),
       h(SidebarSection, { title: "Windows", world: "windows", count: 3 },
         h(DriveItem, { name: "Windows (C:)", state: "readonly", used: 76, world: "windows", meta: "NTFS", free: "88 GB free", active: p.active === "c" }),
-        h(SidebarItem, { icon: "folder", label: "Documents", indent: true }),
-        h(SidebarItem, { icon: "folder", label: "Downloads", indent: true }),
         h(DriveItem, { name: "AVS (D:)", state: "mounted", used: 58, world: "windows", meta: "NTFS", free: "66 GB free", active: p.active === "d" }),
         h(DriveItem, { name: "AVS (E:)", state: "unmounted", meta: "295 GB · click to mount" })),
       h(SidebarItem, { icon: "sliders", label: "All drives" }));
@@ -744,7 +742,8 @@
         h(SettingRow, { label: "Omarchy theme · tokyo-night", description: "EchoFiles follows your Omarchy theme and font and switches with them. Change the theme from the Omarchy menu." },
           h("span", { className: "ef-swatches" }, ["--bg", "--bg-raised", "--ink", "--accent", "--world-linux", "--world-windows", "--success", "--warning", "--danger"].map(function (v) { return h("i", { key: v, style: { background: "var(" + v + ")" } }); })))),
       h(SettingsGroup, { key: "b", title: "Layout" },
-        h(SettingRow, { label: "Row height", description: "How tightly the file list is packed." }, h(SegmentedControl, { label: "Row height", value: "default", options: [{ value: "compact", text: "Compact" }, { value: "default", text: "Default" }, { value: "comfortable", text: "Comfortable" }] })))];
+        h(SettingRow, { label: "Row height", description: "How tightly the file list is packed." }, h(SegmentedControl, { label: "Row height", value: "default", options: [{ value: "compact", text: "Compact" }, { value: "default", text: "Default" }, { value: "comfortable", text: "Comfortable" }] })),
+        h(SettingRow, { label: "Folders open as", description: "Automatic uses a grid in Pictures, Videos and camera folders and a list everywhere else. Changing this resets views you switched by hand (Ctrl+1 / Ctrl+2)." }, h(SegmentedControl, { label: "Folders open as", value: "auto", options: [{ value: "auto", text: "Automatic" }, { value: "list", text: "List" }, { value: "grid", text: "Grid" }] })))];
     if (page === "about") return [
       h(PageHead, { key: "h", title: "About" }, "Where EchoFiles keeps things, and how to drive it from the keyboard."),
       h(SettingsGroup, { key: "a", title: "EchoFiles" },

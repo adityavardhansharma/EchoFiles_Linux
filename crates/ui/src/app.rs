@@ -167,7 +167,7 @@ pub struct App {
     // preview and thumbnails
     pub(crate) thumbs: Thumbs,
     pub(crate) preview: Option<(PathBuf, Arc<PreviewData>)>,
-    preview_want: Option<PathBuf>,
+    pub(crate) preview_want: Option<PathBuf>,
     pub(crate) view_modes: HashMap<PathBuf, bool>,
     /// Recently visited folders, newest last (command palette "Go to").
     pub(crate) recent: Vec<PathBuf>,
@@ -175,8 +175,6 @@ pub struct App {
     pub(crate) mouse: Point,
     pub(crate) modifiers: keyboard::Modifiers,
     pub(crate) window_size: iced::Size,
-    /// Known Windows user folders (Desktop, Documents…) on mounted drives.
-    pub(crate) win_folders: Vec<(String, PathBuf)>,
     /// Background size of the selected folders: (what was measured, totals, cancel).
     pub(crate) sel_size: Option<(Vec<PathBuf>, Arc<ef_core::ops::DirSize>, Arc<AtomicBool>)>,
 }
@@ -315,7 +313,6 @@ impl App {
             mouse: Point::ORIGIN,
             modifiers: keyboard::Modifiers::default(),
             window_size: iced::Size::new(1280.0, 800.0),
-            win_folders: Vec::new(),
             sel_size: None,
             settings,
         };
@@ -382,14 +379,31 @@ impl App {
         }
     }
 
-    /// Grid in picture and video folders unless the folder remembers otherwise.
+    /// The folder's remembered view, else Settings → Appearance → Folders open as.
     fn grid_for(&self, dir: &Path) -> bool {
         if let Some(&g) = self.view_modes.get(dir) {
             return g;
         }
+        match self.settings.appearance.view {
+            config::DefaultView::List => return false,
+            config::DefaultView::Grid => return true,
+            config::DefaultView::Auto => {}
+        }
         let home = config::home();
         let name = dir.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
         dir == home.join("Pictures") || dir == home.join("Videos") || matches!(name.as_str(), "dcim" | "camera" | "screenshots" | "photos" | "wallpapers")
+    }
+
+    /// The default view changed: forget per-folder choices and re-apply it everywhere.
+    pub(crate) fn apply_default_view(&mut self) {
+        self.view_modes.clear();
+        let _ = std::fs::remove_file(view_modes_file());
+        let grids: Vec<(u64, bool)> = self.all_panes().map(|p| (p.id, self.grid_for(&p.location))).collect();
+        for (id, g) in grids {
+            if let Some(p) = self.pane_by_id_mut(id) {
+                p.grid = g;
+            }
+        }
     }
 
     /// (Re)load the active pane's folder.
@@ -1387,6 +1401,7 @@ impl App {
         let fresh = |t: Instant| t.elapsed() < Duration::from_millis(400);
         self.transfers.iter().any(|t| t.running())
             || self.preview_counting()
+            || self.props_counting()
             || self.sel_size.as_ref().is_some_and(|s| !s.1.done.load(Ordering::Relaxed))
             || self.drag.is_some()
             || (self.animations && (self.menu.as_ref().is_some_and(|m| fresh(m.opened)) || self.dialog.as_ref().is_some_and(|d| fresh(d.opened())) || self.toasts.iter().any(|t| fresh(t.at)) || self.command.as_ref().is_some_and(|c| fresh(c.opened))))

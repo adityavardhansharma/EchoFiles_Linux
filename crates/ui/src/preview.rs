@@ -25,6 +25,7 @@ pub const WIDTH: f32 = 280.0;
 /// Everything shown about one item, gathered off the UI thread.
 #[derive(Debug)]
 pub struct PreviewData {
+    pub path: PathBuf,
     pub name: String,
     pub is_dir: bool,
     pub kind: String,
@@ -96,6 +97,7 @@ pub fn gather(p: &Path) -> PreviewData {
         Ok(m) => m,
         Err(e) => {
             return PreviewData {
+                path: p.to_path_buf(),
                 name,
                 is_dir: false,
                 kind: String::new(),
@@ -146,6 +148,7 @@ pub fn gather(p: &Path) -> PreviewData {
         }
     }
     PreviewData {
+        path: p.to_path_buf(),
         name,
         is_dir,
         kind,
@@ -168,6 +171,50 @@ pub fn gather(p: &Path) -> PreviewData {
 }
 
 impl App {
+    pub(crate) fn props_counting(&self) -> bool {
+        match &self.dialog {
+            Some(crate::overlay::Dialog::Properties { data, total, .. }) => {
+                total.as_ref().is_some_and(|t| !t.done.load(Ordering::Relaxed)) || data.as_ref().and_then(|d| d.tree.as_ref()).is_some_and(|t| !t.done.load(Ordering::Relaxed))
+            }
+            _ => false,
+        }
+    }
+
+    /// The Properties popup: facts only — changes live in the preview pane.
+    pub(crate) fn properties_dialog(&self) -> Option<Element<'_, Message>> {
+        let Some(crate::overlay::Dialog::Properties { paths, data, total, opened, .. }) = &self.dialog else { return None };
+        let p = &self.palette;
+        let close = w::text_button(p, &self.icons, "Close", None, Some("Esc"), Variant::Secondary, Some(Message::Ui(crate::overlay::UiMsg::CloseDialog)));
+        let muted = |s: String| text(s).size(style::META).font(style::FONT).color(color(p.ink_muted));
+        if paths.len() > 1 {
+            let t = total.as_ref()?;
+            let mut s = String::new();
+            fmt::size(t.bytes.load(Ordering::Relaxed), &mut s);
+            if !t.done.load(Ordering::Relaxed) {
+                s.push('+');
+            }
+            let mut files = String::new();
+            fmt::count(t.files.load(Ordering::Relaxed) as usize, &mut files);
+            let dirs = paths.iter().filter(|p| p.is_dir()).count();
+            let body = column![
+                self.prop("Selected", format!("{} items ({} {})", paths.len(), dirs, if dirs == 1 { "folder" } else { "folders" })),
+                self.prop("Size", format!("{s} · {files} files in all")),
+                self.prop("Location", config::tilde(paths[0].parent().unwrap_or(&paths[0]))),
+            ]
+            .spacing(6);
+            return Some(self.dialog_frame_with("file-list", format!("{} items", paths.len()), body.into(), vec![close], false, true, *opened));
+        }
+        let path = &paths[0];
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+        let body: Element<'_, Message> = match data {
+            None => muted("Reading…".into()).into(),
+            Some(d) if d.error.is_some() => text(format!("Can't read it: {}", d.error.clone().unwrap_or_default())).size(style::META).font(style::FONT).color(color(p.danger.ink)).into(),
+            Some(d) => column![muted(d.kind.clone()), self.facts(path, d)].spacing(style::SPACE_3).into(),
+        };
+        let icon = if path.is_dir() { "folder" } else { crate::kinds::icon(name.as_bytes(), ef_core::Kind::File) };
+        Some(self.dialog_frame_with(icon, name, body, vec![close], false, true, *opened))
+    }
+
     pub(crate) fn preview_counting(&self) -> bool {
         self.preview.as_ref().is_some_and(|(_, d)| d.tree.as_ref().is_some_and(|t| !t.done.load(Ordering::Relaxed)))
     }
@@ -180,6 +227,116 @@ impl App {
         ]
         .spacing(style::SPACE_3)
         .into()
+    }
+
+    /// Every fact about an item, as label/value rows (preview pane and Properties popup).
+    pub(crate) fn facts<'a>(&self, path: &std::path::Path, d: &PreviewData) -> Element<'a, Message> {
+        let mut props = column![].spacing(6);
+        let mut s = String::new();
+        match (&d.tree, d.is_dir) {
+            (Some(t), true) => {
+                let done = t.done.load(Ordering::Relaxed);
+                fmt::size(t.bytes.load(Ordering::Relaxed), &mut s);
+                if !done {
+                    s.push('+');
+                }
+                let files = t.files.load(Ordering::Relaxed) as usize;
+                let mut f = String::new();
+                fmt::count(files, &mut f);
+                props = props.push(self.prop("Size", format!("{s} · {f} {}", if files == 1 { "file" } else { "files" })));
+                props = props.push(self.prop("Contains", format!("{} {}", d.items.unwrap_or(0), if d.items == Some(1) { "item" } else { "items" })));
+            }
+            _ => {
+                fmt::size(d.size, &mut s);
+                let mut exact = String::new();
+                fmt::count(d.size as usize, &mut exact);
+                props = props.push(self.prop("Size", format!("{s} ({exact} bytes)")));
+            }
+        }
+        let date = |t: i64| {
+            let mut s = String::new();
+            self.dates.format(t, &mut s);
+            s
+        };
+        props = props.push(self.prop("Modified", date(d.modified)));
+        if let Some(c) = d.created {
+            props = props.push(self.prop("Created", date(c)));
+        }
+        props = props.push(self.prop("Opened", date(d.accessed)));
+        props = props.push(self.prop("Location", config::tilde(path.parent().unwrap_or(path))));
+        if let Some(l) = &d.link {
+            props = props.push(self.prop("Points to", format!("{}{}", l.display(), if d.broken { " (missing)" } else { "" })));
+        }
+        match d.attrs {
+            None => {
+                props = props.push(self.prop("Permissions", format!("{} ({:o})", perms(d.mode), d.mode & 0o7777)));
+                props = props.push(self.prop("Owner", format!("{} · {}", d.owner, d.group)));
+            }
+            Some(a) => {
+                let mut on: Vec<&str> = [(win::READONLY, "Read-only"), (win::HIDDEN, "Hidden"), (win::SYSTEM, "System"), (win::ARCHIVE, "Archive")]
+                    .into_iter()
+                    .filter(|(b, _)| a & b != 0)
+                    .map(|(_, l)| l)
+                    .collect();
+                for (b, l) in [(win::COMPRESSED, "Compressed"), (win::ENCRYPTED, "Encrypted (EFS)"), (win::SPARSE, "Sparse"), (win::REPARSE, "Junction or link")] {
+                    if a & b != 0 {
+                        on.push(l);
+                    }
+                }
+                if a & (win::OFFLINE | win::RECALL_ON_OPEN | win::RECALL_ON_DATA_ACCESS) != 0 {
+                    on.push("Online-only (cloud)");
+                }
+                props = props.push(self.prop("Attributes", if on.is_empty() { "None".into() } else { on.join(" · ") }));
+                if let Some(wp) = self.windows_path(path) {
+                    props = props.push(self.prop("Windows", wp));
+                }
+            }
+        }
+        props.into()
+    }
+
+    /// Switches and copy buttons for the preview pane: Windows attributes on NTFS, the
+    /// matching Linux permissions everywhere else.
+    fn controls<'a>(&self, path: &std::path::Path, d: &PreviewData) -> Element<'a, Message> {
+        let p = &self.palette;
+        let head = |t: &str| text(t.to_string()).size(style::LABEL).font(style::FONT_BOLD).color(color(p.ink_muted));
+        let mut col = column![].spacing(2);
+        let copy_path = w::text_button(p, &self.icons, "Copy path", Some("link"), None, Variant::Secondary, Some(Message::File(FileMsg::CopyPath)));
+        match d.attrs {
+            Some(a) => {
+                col = col.push(head("WINDOWS ATTRIBUTES"));
+                for (bit, label) in [(win::READONLY, "Read-only"), (win::HIDDEN, "Hidden"), (win::SYSTEM, "System"), (win::ARCHIVE, "Archive")] {
+                    let path = path.to_path_buf();
+                    col = col.push(w::checkbox(p, &self.icons, label, a & bit != 0, move |on| Message::File(FileMsg::SetAttr(path.clone(), bit, on))));
+                }
+                let mut buttons = column![copy_path].spacing(style::SPACE_3);
+                if self.windows_path(path).is_some() {
+                    buttons = buttons.push(w::text_button(p, &self.icons, "Copy Windows path", Some("link"), None, Variant::Secondary, Some(Message::File(FileMsg::CopyWindowsPath))));
+                }
+                col = col.push(Space::new().height(style::SPACE_3)).push(buttons);
+            }
+            None if d.link.is_none() => {
+                // The Linux counterparts: who may change, run and see it.
+                let m = d.mode & 0o7777;
+                col = col.push(head("PERMISSIONS"));
+                let set = |mode: u32| {
+                    let path = path.to_path_buf();
+                    move |_: bool| Message::File(FileMsg::SetMode(path.clone(), mode))
+                };
+                let read_only = m & 0o222 == 0;
+                col = col.push(w::checkbox(p, &self.icons, "Read-only", read_only, set(if read_only { m | 0o200 } else { m & !0o222 })));
+                if !d.is_dir {
+                    let exec = m & 0o111 != 0;
+                    col = col.push(w::checkbox(p, &self.icons, "Executable", exec, set(if exec { m & !0o111 } else { m | ((m & 0o444) >> 2) })));
+                }
+                let private = m & 0o077 == 0;
+                let open_up = if d.is_dir { 0o055 } else { 0o044 };
+                col = col.push(w::checkbox(p, &self.icons, "Only you can open it", private, set(if private { m | open_up } else { m & !0o077 })));
+                col = col.push(Space::new().height(style::SPACE_3)).push(copy_path);
+            }
+            None => col = col.push(copy_path),
+        }
+        col.into()
     }
 
     pub(crate) fn preview_view(&self) -> Element<'_, Message> {
@@ -221,78 +378,8 @@ impl App {
             col = col.push(text(format!("Can't read it: {e}")).size(style::META).font(style::FONT).color(color(p.danger.ink)));
             return w::fill(scrollable(container(col).padding(16)).height(Length::Fill), p.bg_sunken).width(WIDTH).height(Length::Fill).into();
         }
-        let mut props = column![].spacing(6);
-        let mut s = String::new();
-        match (&d.tree, d.is_dir) {
-            (Some(t), true) => {
-                let done = t.done.load(Ordering::Relaxed);
-                fmt::size(t.bytes.load(Ordering::Relaxed), &mut s);
-                if !done {
-                    s.push('+');
-                }
-                let files = t.files.load(Ordering::Relaxed) as usize;
-                let mut f = String::new();
-                fmt::count(files, &mut f);
-                props = props.push(self.prop("Size", format!("{s} · {f} {}", if files == 1 { "file" } else { "files" })));
-                props = props.push(self.prop("Contains", format!("{} {}", d.items.unwrap_or(0), if d.items == Some(1) { "item" } else { "items" })));
-            }
-            _ => {
-                fmt::size(d.size, &mut s);
-                let mut exact = String::new();
-                fmt::count(d.size as usize, &mut exact);
-                props = props.push(self.prop("Size", format!("{s} ({exact} bytes)")));
-            }
-        }
-        let date = |t: i64| {
-            let mut s = String::new();
-            self.dates.format(t, &mut s);
-            s
-        };
-        props = props.push(self.prop("Modified", date(d.modified)));
-        if let Some(c) = d.created {
-            props = props.push(self.prop("Created", date(c)));
-        }
-        props = props.push(self.prop("Opened", date(d.accessed)));
-        props = props.push(self.prop("Location", config::tilde(path.parent().unwrap_or(path))));
-        if let Some(l) = &d.link {
-            props = props.push(self.prop("Points to", format!("{}{}", l.display(), if d.broken { " (missing)" } else { "" })));
-        }
-        if d.attrs.is_none() {
-            props = props.push(self.prop("Permissions", format!("{} ({:o})", perms(d.mode), d.mode & 0o7777)));
-            props = props.push(self.prop("Owner", format!("{} · {}", d.owner, d.group)));
-        }
-        col = col.push(props);
-        if let Some(a) = d.attrs {
-            let mut attrs = column![text("WINDOWS ATTRIBUTES").size(style::LABEL).font(style::FONT_BOLD).color(color(p.ink_muted))].spacing(2);
-            for (bit, label) in [(win::READONLY, "Read-only"), (win::HIDDEN, "Hidden"), (win::SYSTEM, "System"), (win::ARCHIVE, "Archive")] {
-                let path = path.clone();
-                attrs = attrs.push(w::checkbox(p, &self.icons, label, a & bit != 0, move |on| Message::File(FileMsg::SetAttr(path.clone(), bit, on))));
-            }
-            let mut notes = Vec::new();
-            if a & win::COMPRESSED != 0 {
-                notes.push("Compressed");
-            }
-            if a & win::ENCRYPTED != 0 {
-                notes.push("Encrypted (EFS)");
-            }
-            if a & win::SPARSE != 0 {
-                notes.push("Sparse");
-            }
-            if a & (win::OFFLINE | win::RECALL_ON_OPEN | win::RECALL_ON_DATA_ACCESS) != 0 {
-                notes.push("Online-only (cloud)");
-            }
-            if a & win::REPARSE != 0 {
-                notes.push("Junction or link");
-            }
-            if !notes.is_empty() {
-                attrs = attrs.push(text(notes.join(" · ")).size(style::META).font(style::FONT).color(color(p.ink_muted)));
-            }
-            col = col.push(attrs);
-            if let Some(wp) = self.windows_path(path) {
-                col = col.push(self.prop("Windows", wp));
-                col = col.push(w::text_button(p, &self.icons, "Copy Windows path", Some("link"), None, Variant::Secondary, Some(Message::File(FileMsg::CopyWindowsPath))));
-            }
-        }
+        col = col.push(self.facts(path, d));
+        col = col.push(self.controls(path, d));
         col = col.push(row![
             w::text_button(p, &self.icons, "Open", Some("external"), Some("Enter"), Variant::Secondary, Some(Message::File(FileMsg::Open))),
             w::text_button(p, &self.icons, "Rename", Some("rename"), None, Variant::Ghost, Some(Message::File(FileMsg::StartRename))),

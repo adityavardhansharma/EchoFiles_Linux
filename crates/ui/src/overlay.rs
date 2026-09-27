@@ -106,6 +106,8 @@ pub enum Dialog {
     Password { prompt: ef_disks::polkit::Prompt, value: String, opened: Instant },
     WriteSystem { drive: usize, opened: Instant },
     EmptyTrash { opened: Instant },
+    /// Properties (Alt+Enter): facts only, closed with × or Esc.
+    Properties { paths: Vec<PathBuf>, data: Option<std::sync::Arc<crate::preview::PreviewData>>, total: Option<std::sync::Arc<ef_core::ops::DirSize>>, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>, opened: Instant },
 }
 
 impl Dialog {
@@ -116,7 +118,8 @@ impl Dialog {
             | Dialog::BadNames { opened, .. }
             | Dialog::Password { opened, .. }
             | Dialog::WriteSystem { opened, .. }
-            | Dialog::EmptyTrash { opened } => *opened,
+            | Dialog::EmptyTrash { opened }
+            | Dialog::Properties { opened, .. } => *opened,
         }
     }
 }
@@ -213,6 +216,12 @@ impl App {
                 self.transfers.retain(|t| t.id != id);
             }
             Dialog::Password { prompt, .. } => prompt.answer(None),
+            Dialog::Properties { cancel, data, .. } => {
+                cancel.store(true, Ordering::Relaxed);
+                if let Some(d) = data {
+                    d.cancel.store(true, Ordering::Relaxed);
+                }
+            }
             _ => {}
         }
         Task::none()
@@ -573,6 +582,7 @@ impl App {
                 }
                 Some(Dialog::BadNames { .. }) => self.file_update(FileMsg::FixNames(true)),
                 Some(Dialog::Password { .. }) => self.ui_update(UiMsg::PasswordSubmit),
+                Some(Dialog::Properties { .. }) => self.ui_update(UiMsg::CloseDialog),
                 // Destructive dialogs never act on Enter.
                 _ => Task::none(),
             },
@@ -745,14 +755,23 @@ impl App {
     }
 
     fn dialog_frame<'a>(&'a self, icon: &'static str, title: String, body: Element<'a, Message>, footer: Vec<Element<'a, Message>>, danger: bool, opened: Instant) -> Element<'a, Message> {
+        self.dialog_frame_with(icon, title, body, footer, danger, false, opened)
+    }
+
+    /// `closable` adds a × in the corner (Properties, which has nothing to decide).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn dialog_frame_with<'a>(&'a self, icon: &'static str, title: String, body: Element<'a, Message>, footer: Vec<Element<'a, Message>>, danger: bool, closable: bool, opened: Instant) -> Element<'a, Message> {
         let p = &self.palette;
         let t = self.t(opened, 180);
-        let head = row![
+        let mut head = row![
             iced::widget::svg(self.icons.color(icon)).width(32).height(32),
             text(title).size(16).font(style::FONT_BOLD).color(color(p.ink_strong)).width(Length::Fill),
         ]
         .spacing(style::SPACE_4)
         .align_y(Alignment::Center);
+        if closable {
+            head = head.push(self.tip(w::icon_button(p, &self.icons, "close", Some(Message::Ui(UiMsg::CloseDialog)), false), "Close", Some("Esc")));
+        }
         let mut foot = row![Space::new().width(Length::Fill)].spacing(style::SPACE_3).align_y(Alignment::Center);
         for b in footer {
             foot = foot.push(b);
@@ -881,6 +900,7 @@ impl App {
                 let foot = vec![cancel(), self.btn("Authenticate", Some("key"), Some("Enter"), Variant::Primary, Message::Ui(UiMsg::PasswordSubmit))];
                 self.dialog_frame("lock", "Password needed".into(), body.into(), foot, false, *opened)
             }
+            Dialog::Properties { .. } => self.properties_dialog()?,
             Dialog::WriteSystem { drive, opened } => {
                 let name = self.volumes.get(*drive).map(|v| crate::drives::display_name(v, &self.volumes)).unwrap_or_default();
                 let foot = vec![cancel(), self.btn("Allow writing", Some("unlock"), None, Variant::Danger, Message::Ui(UiMsg::Pick(Box::new(Message::Drive(DriveMsg::AllowWrite(*drive))))))];

@@ -159,6 +159,9 @@ pub enum FileMsg {
     EmptyTrash,
     Emptied(Result<(), String>),
     SetAttr(PathBuf, u32, bool),
+    /// Change Linux permission bits (the preview pane's switches).
+    SetMode(PathBuf, u32),
+    PropsLoaded(PathBuf, Arc<crate::preview::PreviewData>),
     SelectAll,
     OpenTerminal,
 }
@@ -706,11 +709,46 @@ impl App {
                 Task::none()
             }
             FileMsg::Properties => {
-                if !self.settings.appearance.preview {
-                    self.settings.appearance.preview = true;
-                    return self.persist_settings();
+                // The selection, or the open folder when nothing is selected.
+                let mut paths = self.targets();
+                if paths.is_empty() {
+                    paths.push(self.pane().location.clone());
+                }
+                let cancel: Arc<std::sync::atomic::AtomicBool> = Arc::default();
+                let mut total = None;
+                let mut task = Task::none();
+                if paths.len() == 1 {
+                    let p = paths[0].clone();
+                    task = background(move || Arc::new(crate::preview::gather(&p)), |d| {
+                        let path = PathBuf::from(&d.path);
+                        Message::File(FileMsg::PropsLoaded(path, d))
+                    });
+                } else {
+                    let size = Arc::new(ops::DirSize::default());
+                    let (s2, c2, p2) = (size.clone(), cancel.clone(), paths.clone());
+                    std::thread::spawn(move || ops::measure(&p2, &s2, &c2));
+                    total = Some(size);
+                }
+                self.menu = None;
+                self.dialog = Some(Dialog::Properties { paths, data: None, total, cancel, opened: Instant::now() });
+                task
+            }
+            FileMsg::PropsLoaded(path, d) => {
+                match &mut self.dialog {
+                    Some(Dialog::Properties { paths, data, .. }) if paths.len() == 1 && paths[0] == path => *data = Some(d),
+                    _ => d.cancel.store(true, Ordering::Relaxed),
                 }
                 Task::none()
+            }
+            FileMsg::SetMode(path, mode) => {
+                use std::os::unix::fs::PermissionsExt;
+                if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)) {
+                    self.toast_error("Couldn't change the permissions".into(), e.to_string());
+                }
+                self.preview = None;
+                self.preview_want = None;
+                let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+                self.refresh(&dir)
             }
             FileMsg::Pin(p) => {
                 let s = config::tilde(&p);
@@ -784,6 +822,7 @@ impl App {
                     self.toast_error("Couldn't change that attribute".into(), std::io::Error::from(e).to_string());
                 }
                 self.preview = None;
+                self.preview_want = None;
                 let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
                 self.refresh(&dir)
             }

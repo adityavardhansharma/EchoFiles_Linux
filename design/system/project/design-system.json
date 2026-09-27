@@ -1107,8 +1107,8 @@
         },
         "terminal.svg": {
           "name": "terminal.svg",
-          "blob": "fe4936fea4762525a54c01f6322ddd33",
-          "size": 275,
+          "blob": "1dbf01bd22c6f6d976a9f22b7f1d8b81",
+          "size": 220,
           "type": "image/svg+xml"
         },
         "trash.svg": {
@@ -1169,8 +1169,8 @@
   },
   "lastChange": {
     "by": "Aditya",
-    "at": "2026-09-27T14:02:16Z",
+    "at": "2026-09-27T14:23:01Z",
     "via": "Claude Code",
-    "note": "File operations shipped: Toolbar gains List/Grid, Dual pane, Preview and Command palette toggles; Sidebar gets Pinned, nested Windows user folders and All drives; ContextMenu shows the real item and empty-space menus with Move to / Copy to submenus; Dialog documents Delete, Empty Trash, Password needed (EchoFiles' polkit prompt) and Allow writing to C:; ConflictDialog makes Keep both the Enter default and Merge for folders; DriveItem, PreviewPane, FileRow (rename errors), StatusBar, Toast, TabStrip, PathBar and DualPane READMEs match the app."
+    "note": "Properties is now a small Dialog (× / Close / Esc, facts only) while Space keeps the preview pane; PreviewPane gains Linux PERMISSIONS switches (Read-only, Executable, Only you can open it) and Copy path; Settings → Appearance adds Folders open as Automatic / List / Grid; Sidebar drops nested Windows user folders and keeps its scrollbar beside the rows; DriveItem shows only free space next to a pill; the terminal glyph is an open prompt so it no longer looks like the command palette."
   }
 }

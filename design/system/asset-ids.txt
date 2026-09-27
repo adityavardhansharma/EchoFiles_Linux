@@ -148,7 +148,7 @@ Glyphs/star.svg 276 a393d1a8aec1ca951adf3d92f7728d1f
 Glyphs/swap.svg 242 351e443ddbcb0402dcf6aef6cf56782c
 Glyphs/sync.svg 291 5bad100080b155c0632a74e0d305ca43
 Glyphs/tag.svg 366 1d15d0e484629b5653193dc0c611d7ed
-Glyphs/terminal.svg 275 fe4936fea4762525a54c01f6322ddd33
+Glyphs/terminal.svg 220 1dbf01bd22c6f6d976a9f22b7f1d8b81
 Glyphs/trash.svg 305 1a14778814e62347e5b439f0de0f7264
 Glyphs/undo.svg 245 b438080c8caf9bb5ce699ed034299db6
 Glyphs/unlock.svg 297 c987e15d3963a2b1be6914184708fd95
