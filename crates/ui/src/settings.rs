@@ -5,6 +5,8 @@
 //! `~/.config/echofiles/settings.toml`, which `ef` reads too.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use ef_config::{self as config, Density, OpenTo, Scope, SearchConfig};
 use iced::widget::{column, container, row, scrollable, text, text_input, Space};
@@ -149,11 +151,25 @@ impl App {
     fn save_settings(&mut self) -> Task<Message> {
         self.settings_ui.save = SaveState::Saving;
         let s = self.settings.clone();
+        // Saves run on their own threads and share one tmp file: take turns, and never let an
+        // older snapshot land after a newer one.
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        static WRITTEN: Mutex<u64> = Mutex::new(0);
+        let generation = NEXT.fetch_add(1, Ordering::Relaxed);
         Task::perform(
             async move {
                 let (tx, rx) = iced::futures::channel::oneshot::channel();
                 std::thread::spawn(move || {
-                    let _ = tx.send(s.save().map_err(|e| format!("Couldn't save settings to {}: {e}", config::tilde(&config::Settings::path()))));
+                    let mut written = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
+                    if *written > generation {
+                        let _ = tx.send(Ok(()));
+                        return;
+                    }
+                    let r = s.save().map_err(|e| format!("Couldn't save settings to {}: {e}", config::tilde(&config::Settings::path())));
+                    if r.is_ok() {
+                        *written = generation;
+                    }
+                    let _ = tx.send(r);
                 });
                 rx.await.unwrap_or(Ok(()))
             },

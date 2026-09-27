@@ -226,6 +226,12 @@ impl Settings {
     }
 }
 
+/// Roots from `searched` that lie strictly inside `root`. Each is searched on its own, so a
+/// search of `root` skips them rather than listing their contents twice.
+pub fn nested_roots(searched: &[PathBuf], root: &Path) -> Vec<PathBuf> {
+    searched.iter().filter(|r| r.as_path() != root && r.starts_with(root)).cloned().collect()
+}
+
 /// `~` and `~/…` become the home folder; a trailing slash is dropped.
 pub fn expand(p: &str) -> PathBuf {
     let p = p.trim();

@@ -48,6 +48,7 @@ fn main() -> iced::Result {
     if let Err(e) = system::sync_skill_from_settings() {
         eprintln!("{e}");
     }
+    let mut owns_socket = false;
     if std::env::var_os("ECHOFILES_BENCH").is_none() {
         let request = if args.iter().any(|a| a == "--settings") {
             system::Request::Settings
@@ -57,7 +58,7 @@ fn main() -> iced::Result {
         if system::forward_to_running(&request) {
             return Ok(());
         }
-        system::listen();
+        owns_socket = system::listen();
     }
 
     // Integrated GPU, Vulkan, and on hybrid laptops no NVIDIA driver load (see gpu.rs).
@@ -86,6 +87,8 @@ fn main() -> iced::Result {
         .default_font(style::FONT)
         .antialiasing(false)
         .run();
-    let _ = std::fs::remove_file(ef_config::socket_path());
+    if owns_socket {
+        let _ = std::fs::remove_file(ef_config::socket_path());
+    }
     result
 }

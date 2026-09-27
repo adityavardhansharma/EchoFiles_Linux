@@ -76,8 +76,10 @@ fn main() -> ExitCode {
             let mut out = std::io::BufWriter::new(std::io::stdout().lock());
             let mut any_index = false;
             let mut searched_index = false;
-            for root in &roots {
-                let Ok(idx) = MappedIndex::open(&config::index_file_for(root)) else { continue };
+            let indexes: Vec<(&PathBuf, MappedIndex)> =
+                roots.iter().filter_map(|root| Some((root, MappedIndex::open(&config::index_file_for(root)).ok()?))).collect();
+            let indexed: Vec<PathBuf> = indexes.iter().map(|(root, _)| root.to_path_buf()).collect();
+            for (root, idx) in &indexes {
                 any_index = true;
                 let scope = match &within {
                     Some(p) if p.starts_with(root) => match idx.lookup(p) {
@@ -96,7 +98,19 @@ fn main() -> ExitCode {
                     hidden: flag(&args, "--hidden"),
                     limit: limit.map(|l| l.saturating_sub(shown)),
                 };
-                let hits = idx.search(&q);
+                // Roots nested inside this one are searched on their own; skip them here so
+                // their files aren't listed twice. `--in` searches a single root.
+                let nested = if within.is_none() { config::nested_roots(&indexed, root) } else { Vec::new() };
+                let hits = if nested.is_empty() {
+                    idx.search(&q)
+                } else {
+                    let mut hits = idx.search(&Query { limit: None, ..q.clone() });
+                    hits.retain(|&h| !nested.iter().any(|n| idx.path(h).starts_with(n)));
+                    if let Some(l) = q.limit {
+                        hits.truncate(l);
+                    }
+                    hits
+                };
                 total += hits.len();
                 if !flag(&args, "--count") {
                     for &h in &hits {

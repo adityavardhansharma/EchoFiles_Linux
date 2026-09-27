@@ -35,17 +35,20 @@ pub fn forward_to_running(req: &Request) -> bool {
 
 static INBOX: OnceLock<Mutex<Option<mpsc::UnboundedReceiver<Request>>>> = OnceLock::new();
 
-/// Become the running instance: listen for requests from later launches.
-pub fn listen() {
+/// Become the running instance: listen for requests from later launches. Returns whether
+/// this process bound the socket (and so should remove it on exit).
+pub fn listen() -> bool {
     let path = config::socket_path();
     let _ = std::fs::remove_file(&path); // stale socket from a crash; `forward_to_running` failed
-    let Ok(listener) = UnixListener::bind(&path) else { return };
+    let Ok(listener) = UnixListener::bind(&path) else { return false };
     let (tx, rx) = mpsc::unbounded();
     INBOX.get_or_init(|| Mutex::new(Some(rx)));
     std::thread::Builder::new()
         .name("ef-socket".into())
         .spawn(move || {
             for stream in listener.incoming().flatten() {
+                // A client that never sends a line must not block every later launch.
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
                 let mut line = String::new();
                 if BufReader::new(stream).read_line(&mut line).is_err() {
                     continue;
@@ -62,6 +65,7 @@ pub fn listen() {
             }
         })
         .ok();
+    true
 }
 
 /// Requests from other launches, as a subscription stream (taken once).

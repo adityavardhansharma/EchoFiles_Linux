@@ -55,18 +55,33 @@ fn fill_details(hits: &mut [Hit]) {
 
 /// Search every indexed folder's index. Returns `None` if no index file exists yet.
 pub fn from_index(roots: &[RootIndex], text: &str, hidden: bool) -> Option<Results> {
-    let maps: Vec<_> = roots.iter().filter_map(|r| r.map.clone()).collect();
+    let maps: Vec<_> = roots.iter().filter_map(|r| Some((&r.root, r.map.clone()?))).collect();
     if maps.is_empty() {
         return None;
     }
+    let searched: Vec<PathBuf> = maps.iter().map(|(root, _)| root.to_path_buf()).collect();
     let mut hits = Vec::new();
     let mut total = 0;
-    for m in &maps {
+    for (root, m) in &maps {
         let q = Query { text, hidden, ..Query::new(text) };
         let all = m.search(&Query { limit: None, ..q.clone() });
-        total += all.len();
-        for &id in all.iter().take(LIMIT.saturating_sub(hits.len())) {
-            hits.push(hit(m.path(id), m.kind(id) == ef_index::Kind::Dir));
+        let nested = config::nested_roots(&searched, root);
+        if nested.is_empty() {
+            total += all.len();
+            for &id in all.iter().take(LIMIT.saturating_sub(hits.len())) {
+                hits.push(hit(m.path(id), m.kind(id) == ef_index::Kind::Dir));
+            }
+        } else {
+            for &id in &all {
+                let p = m.path(id);
+                if nested.iter().any(|n| p.starts_with(n)) {
+                    continue;
+                }
+                total += 1;
+                if hits.len() < LIMIT {
+                    hits.push(hit(p, m.kind(id) == ef_index::Kind::Dir));
+                }
+            }
         }
     }
     fill_details(&mut hits);
@@ -80,9 +95,10 @@ pub fn live(roots: &[PathBuf], exclude: &ef_config::SearchConfig, text: &str, hi
     let mut hits = Vec::new();
     let mut total = 0;
     for root in roots {
+        let nested = config::nested_roots(roots, root);
         let found = indexer::background_pool().install(|| ef_index::live::search(root, &q, cancel, &|_| {})).ok()?;
         for p in found {
-            if exclude.exclude_paths.iter().any(|e| p.starts_with(config::expand(e))) || in_skipped(&p, root, exclude) {
+            if nested.iter().any(|n| p.starts_with(n)) || exclude.exclude_paths.iter().any(|e| p.starts_with(config::expand(e))) || in_skipped(&p, root, exclude) {
                 continue;
             }
             total += 1;

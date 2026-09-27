@@ -53,7 +53,7 @@ laptop (Ryzen 9 4900HS, 16 threads, btrfs, warm cache) unless marked *estimate*.
 - Folders excluded by name or tag are still found by name; only their contents are left out.
 - Rescans never pull excluded contents back in.
 - The rules are saved in the index file, so later rescans keep them.
-- Settings live in `~/.config/echofiles/search.toml`, edited in-app under **Settings →
+- Settings live in `~/.config/echofiles/settings.toml` (section `[search]`), edited in-app under **Settings →
   Search** (Ctrl+, or the toolbar gear). The design is in the design system: `SettingsPage`,
   `PathListEditor`, `NameChips`, `SettingRow`.
 

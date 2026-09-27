@@ -876,6 +876,15 @@ impl App {
             }
             Message::IndexBuilt(roots) => {
                 if !self.settings.search.index {
+                    // A build still running when the index was turned off saved its files
+                    // after `remove_files` ran; delete them again.
+                    let files: Vec<_> = roots.iter().map(|r| ef_config::index_file_for(&r.root)).collect();
+                    drop(roots);
+                    std::thread::spawn(move || {
+                        for f in files {
+                            let _ = std::fs::remove_file(f);
+                        }
+                    });
                     return Task::none();
                 }
                 self.index_error = roots.iter().find_map(|r| r.error.clone());
