@@ -83,9 +83,10 @@ pub enum MenuFor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Toasts are for news and problems only; finished actions (trash, copy, rename…) don't
+/// announce themselves — the files on screen already show it, and Ctrl+Z undoes.
 pub enum Tone {
     Accent,
-    Success,
     Danger,
 }
 
@@ -935,12 +936,10 @@ impl App {
         for t in self.toasts.iter().skip(hidden) {
             let edge = match t.tone {
                 Tone::Accent => color(p.accent),
-                Tone::Success => color(p.success.base),
                 Tone::Danger => color(p.danger.base),
             };
             let (icon, tint) = match t.tone {
                 Tone::Accent => ("info", color(p.accent_ink)),
-                Tone::Success => ("check", color(p.success.ink)),
                 Tone::Danger => ("error", color(p.danger.ink)),
             };
             let mut head = row![w::glyph(&self.icons, icon, 16.0, tint), text(t.title.clone()).size(style::BODY).font(style::FONT_BOLD).color(color(p.ink_strong)).width(Length::Fill)].spacing(style::SPACE_3).align_y(Alignment::Center);

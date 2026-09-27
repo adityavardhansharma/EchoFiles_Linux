@@ -433,18 +433,18 @@ A full-width strip at the top of a folder view for facts about the whole locatio
 
 comp("Toast", "Feedback", 230, """
 return h("div", {className:"ef ef-stack", style:{alignItems:"flex-end"}},
-  h(E.Toast, {title:"Moved 3 items to Trash", tone:"success", actions:[h(E.Button, {key:1, size:"sm", kbd:["Ctrl","Z"]}, "Undo")]}),
+  h(E.Toast, {title:"AVS (D:) opened read-only"}, "Windows didn't shut down fully (Fast Startup or hibernation)."),
   h(E.Toast, {title:"Couldn't copy “Q3:final.xlsx”", tone:"danger", actions:[h(E.Button, {key:1, size:"sm"}, "Rename to “Q3-final.xlsx”"), h(E.Button, {key:2, size:"sm", variant:"ghost"}, "Skip")]}, "Windows names can't contain “:”."));
 """, """# Toast
 
 A floating notice in the bottom-right corner for results of actions.
 
-**Provide** `title` (what happened, past tense), `tone` (`success`, `danger`, or default accent), `children` (why, for errors), `actions`.
+**Provide** `title` (what happened, past tense), `tone` (`danger`, or default accent), `children` (why), `actions`.
 
 - Border is 2px — `accent`, `success` or `danger` — the Omarchy notification look (Hyprland's active border). Radius follows Hyprland `rounding` (0).
 - Enter: rise 12px with `ease-spring` in `dur-slow`; exit: fade at 70%. Stack newest at the bottom, at most three; older collapse into "+2 more".
-- Success toasts auto-dismiss after 4s (8s when they carry Undo; paused on hover); error toasts stay until dismissed. Every reversible action gets an Undo toast: rename, move, copy, trash, new folder. Undo (Ctrl+Z) walks back through them in order.
-- Quick copies and moves (under ~0.7s) skip the `TransferToast` and end straight in a toast.
+- Toasts are for news and problems only. A finished action — trash, delete, copy, move, rename, undo, restore, unmount — never announces itself: the files on screen already show it, and Ctrl+Z walks back through rename, move, copy, trash and new folder in order.
+- Accent toasts (news: a drive opened read-only, nothing to paste, a cancelled transfer) leave after 4s, paused on hover; error toasts stay until dismissed.
 """)
 
 comp("TransferToast", "Feedback", 170, """
@@ -456,8 +456,8 @@ Progress for copy, move, delete and extraction: title, current file, bar, throug
 
 **Provide** `title`, `detail` (source and current file), `value` (0–100) or `indeterminate` (during planning), `meta` (bytes done · speed), `eta`.
 
-- The bar is linear and fed from the engine's atomic counters at frame rate — never a message per chunk. At 100% it turns `success` and the tick draws.
-- "Flushed to disk" appears only after the batch `syncfs` completes, so people know when it's safe to reboot into Windows.
+- The bar is linear and fed from the engine's atomic counters at frame rate — never a message per chunk. It appears only for work that takes longer than ~0.4s.
+- It leaves the moment the batch `syncfs` completes — the drive is then safe to unplug or reboot from. Only a transfer with failures stays, turned `danger`, until dismissed.
 - Pause and Cancel (Esc) are always there; cancel undoes a partial move.
 """)
 

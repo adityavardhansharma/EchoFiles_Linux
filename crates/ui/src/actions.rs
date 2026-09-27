@@ -103,13 +103,6 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
-fn items(paths: &[PathBuf]) -> String {
-    match paths {
-        [one] => format!("“{}”", one.file_name().unwrap_or_default().to_string_lossy()),
-        _ => plural(paths.len(), "item", "items"),
-    }
-}
-
 /// What a trash run did: items that went, and (path, reason) for those that couldn't.
 pub type TrashResult = Arc<(Vec<Trashed>, Vec<(PathBuf, String)>)>;
 
@@ -273,11 +266,6 @@ impl App {
             }
             _ => Task::none(),
         }
-    }
-
-    pub(crate) fn toast_ok(&mut self, title: String, undo: bool) {
-        let action = undo.then(|| ("Undo".to_string(), Message::File(FileMsg::Undo)));
-        self.push_toast(Tone::Success, title, None, action);
     }
 
     pub(crate) fn toast_error(&mut self, title: String, body: String) {
@@ -538,9 +526,7 @@ impl App {
                 let mut dirs: Vec<PathBuf> = ok.iter().filter_map(|t| t.original.parent().map(Path::to_path_buf)).collect();
                 dirs.dedup();
                 if !ok.is_empty() {
-                    let originals: Vec<PathBuf> = ok.iter().map(|t| t.original.clone()).collect();
                     self.undo.push(Undo::Trash(ok.clone()));
-                    self.toast_ok(format!("Moved {} to the Trash", items(&originals)), true);
                 }
                 if !failed.is_empty() {
                     // No trash on this drive (read-only, or no permission to make one): offer
@@ -564,9 +550,8 @@ impl App {
                 background(move || ops::delete(&p2, &Progress::default()), move |errs| Message::File(FileMsg::Deleted(paths.clone(), errs)))
             }
             FileMsg::Deleted(paths, errs) => {
-                if errs.is_empty() {
-                    self.push_toast(Tone::Success, format!("Deleted {} permanently", items(&paths)), None, None);
-                } else {
+                // Success speaks for itself (the items are gone); only problems get a toast.
+                if !errs.is_empty() {
                     self.toast_error(format!("Couldn't delete {}", plural(errs.len(), "item", "items")), errs.join("\n"));
                 }
                 let mut dirs: Vec<PathBuf> = paths.iter().filter_map(|p| p.parent().map(Path::to_path_buf)).collect();
@@ -599,7 +584,7 @@ impl App {
             },
             FileMsg::Undone(r) => {
                 match r {
-                    Ok(m) => self.push_toast(Tone::Success, m, None, None),
+                    Ok(_) => {}
                     Err(e) => self.toast_error("Couldn't undo".into(), e),
                 }
                 let dirs: Vec<PathBuf> = self.tabs[self.tab].panes.iter().map(|p| p.location.clone()).collect();
@@ -660,8 +645,8 @@ impl App {
                 let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) else { return Task::none() };
                 t.finished = Some(Instant::now());
                 t.outcome = Some(outcome.clone());
-                let (kind, dest, title) = (t.kind, t.dest.clone(), t.title());
-                let quick = t.started.elapsed().as_millis() < 700;
+                let (kind, dest) = (t.kind, t.dest.clone());
+                let ok = outcome.errors.is_empty() && !outcome.cancelled;
                 if !outcome.done.is_empty() && !outcome.cancelled {
                     self.undo.push(match kind {
                         Kind::Copy => Undo::Copy(outcome.done.iter().map(|(_, d)| d.clone()).collect()),
@@ -673,11 +658,9 @@ impl App {
                 } else if !outcome.errors.is_empty() {
                     let n = outcome.errors.len();
                     self.toast_error(format!("{} couldn't be {}", plural(n, "item", "items"), if kind == Kind::Copy { "copied" } else { "moved" }), outcome.errors.iter().take(3).cloned().collect::<Vec<_>>().join("\n"));
-                } else if quick && !outcome.done.is_empty() {
-                    // Fast ones never showed a progress toast: say what happened, with Undo.
-                    self.toast_ok(title, true);
                 }
-                if quick {
+                // A finished transfer leaves at once; only problems stay on screen.
+                if ok {
                     self.transfers.retain(|t| t.id != id);
                 }
                 // Select what arrived.
@@ -790,9 +773,7 @@ impl App {
                 )
             }
             FileMsg::Restored(errs) => {
-                if errs.is_empty() {
-                    self.push_toast(Tone::Success, "Restored from the Trash".into(), None, None);
-                } else {
+                if !errs.is_empty() {
                     self.toast_error("Couldn't restore everything".into(), errs.join("\n"));
                 }
                 let dir = self.pane().location.clone();
@@ -805,7 +786,7 @@ impl App {
             FileMsg::EmptyTrash => background(|| trash::empty_home().map_err(|e| e.to_string()), |r| Message::File(FileMsg::Emptied(r))),
             FileMsg::Emptied(r) => {
                 match r {
-                    Ok(()) => self.push_toast(Tone::Success, "Emptied the Trash".into(), None, None),
+                    Ok(()) => {}
                     Err(e) => self.toast_error("Couldn't empty the Trash".into(), e),
                 }
                 let dir = trash::home_trash().join("files");

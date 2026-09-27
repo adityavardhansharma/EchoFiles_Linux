@@ -215,7 +215,6 @@ impl App {
                 match result {
                     Ok(()) => {
                         self.drive_state.remove(&device);
-                        self.push_toast(Tone::Success, format!("Unmounted {name}"), Some("It's safe to boot into Windows.".into()), None);
                     }
                     Err(e) => self.toast_error(format!("Couldn't unmount {name}"), format!("{e}. Close files and terminals that are using it, then try again.")),
                 }

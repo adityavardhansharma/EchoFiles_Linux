@@ -9,7 +9,7 @@
 var E = window.Echo, h = React.createElement;
 function App(){
 return h("div", {className:"ef ef-stack", style:{alignItems:"flex-end"}},
-  h(E.Toast, {title:"Moved 3 items to Trash", tone:"success", actions:[h(E.Button, {key:1, size:"sm", kbd:["Ctrl","Z"]}, "Undo")]}),
+  h(E.Toast, {title:"AVS (D:) opened read-only"}, "Windows didn't shut down fully (Fast Startup or hibernation)."),
   h(E.Toast, {title:"Couldn't copy “Q3:final.xlsx”", tone:"danger", actions:[h(E.Button, {key:1, size:"sm"}, "Rename to “Q3-final.xlsx”"), h(E.Button, {key:2, size:"sm", variant:"ghost"}, "Skip")]}, "Windows names can't contain “:”."));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(h(App));
