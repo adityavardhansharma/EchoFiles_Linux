@@ -5,6 +5,25 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+# Explain the prerequisites before Cargo emits a long, confusing build failure.
+if [[ "${1:-}" != "--uninstall" ]]; then
+  if ! command -v cargo >/dev/null 2>&1 || ! command -v rustc >/dev/null 2>&1; then
+    echo "EchoFiles needs Rust 1.90 or newer. Install Rust from https://rustup.rs/ and retry." >&2
+    exit 1
+  fi
+  rustc --version | awk '{ if (split($2, v, ".") < 2 || (v[1] + 0) < 1 || (v[1] + 0) == 1 && (v[2] + 0) < 90) exit 1 }' || {
+    echo "EchoFiles needs Rust 1.90 or newer. Update with: rustup update stable" >&2
+    exit 1
+  }
+  for tool in pkg-config; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      echo "Missing $tool. On Arch or Omarchy, install it with: omarchy pkg add pkgconf" >&2
+      exit 1
+    fi
+  done
+fi
+
 BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
 APPS="$DATA/applications"

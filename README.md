@@ -4,56 +4,31 @@ A native Rust file manager for Linux with fast folder browsing, indexed filename
 list and grid views, tabs, dual panes, previews, file operations and an `ef` search CLI.
 Works on Omarchy and other Arch Linux desktops with Wayland or X11.
 
-## Install on Arch Linux / Omarchy
+## Install from GitHub on Arch Linux / Omarchy
 
-**Distribution status:** the release workflow and AUR recipe are prepared. The package must
-be published to the AUR before the `yay` and Omarchy commands below work.
-
-Once the `echofiles` package is published to the AUR:
-
-```bash
-yay -S echofiles
-```
-
-On Omarchy, the equivalent command is:
-
-```bash
-omarchy pkg aur add echofiles
-```
-
-This is an **AUR source package**: the first installation compiles EchoFiles. Rust build
-requirements are handled by the package manager. Subsequent updates arrive through `yay -Syu`.
-Omarchy's AUR helper uses yay internally. EchoFiles is not in Arch's official repositories,
-so `pacman -S echofiles` and `omarchy pkg add echofiles` are not the installation route.
-
-### Install a prebuilt GitHub release
-
-When a release is published, download its `echofiles-…-x86_64.pkg.tar.zst` and `SHA256SUMS`
-from [Releases](https://github.com/adityavardhansharma/EchoFiles_Linux/releases).
-In the download directory, verify the file and install the exact downloaded package:
-
-```bash
-sha256sum --check --ignore-missing SHA256SUMS
-sudo pacman -U ./echofiles-0.1.0-1-x86_64.pkg.tar.zst
-```
-
-Replace the filename with the version you downloaded. This installs a tracked system
-package, the `echofiles` and `ef` commands, a desktop launcher and an icon. Public builds
-support baseline x86-64; they do not require the developer's AVX2 CPU. Install the Vulkan
-driver appropriate for your GPU. Drive mounting uses optional `udisks2` and `polkit`.
-The Arch package is for Arch-compatible systems, not Debian or Ubuntu.
-
-### Build from this repository now
+Clone the repository, install the build tools, then run the installer. This builds both the
+graphical file manager (`echofiles`) and the command-line search tool (`ef`), and adds a
+launcher entry for your desktop. It installs just for your user; no `sudo` is needed.
 
 ```bash
 git clone https://github.com/adityavardhansharma/EchoFiles_Linux.git
 cd EchoFiles_Linux
-RUSTFLAGS='-C target-cpu=x86-64' bash scripts/install.sh
+omarchy pkg add rust pkgconf fontconfig libxkbcommon wayland libx11 libxcursor libxi libxrandr vulkan-icd-loader
+rustup toolchain install 1.90.0 # only if Rust 1.90+ is not already installed
+bash scripts/install.sh
 ```
 
-Requires Rust 1.90 or newer and the native dependencies listed in
-[the package recipe](packaging/arch/PKGBUILD.in). This existing script builds and installs
-for the current user under `~/.local`, without root. It is separate from pacman packaging.
+If Rust is managed by rustup and is older than 1.90, update it with `rustup update stable`.
+On plain Arch, install the system packages with `sudo pacman -S rust pkgconf fontconfig libxkbcommon wayland libx11 libxcursor libxi libxrandr vulkan-icd-loader`; the `rust` package provides Cargo and rustc. Install the Vulkan driver for your GPU. Optional drive mounting uses `udisks2` and `polkit`.
+
+On a non-Arch Linux distribution, install Rust 1.90+, pkg-config, Fontconfig, Vulkan, and
+the Wayland/X11 development libraries using its package manager, then run the same clone and
+installer commands. This source installer is intended for Linux desktop users.
+
+The launcher appears as **EchoFiles**. The `echofiles` and `ef` commands are installed into
+`~/.local/bin`. If that directory is missing from `PATH`, add it to your shell's PATH.
+Updates are simple: `cd EchoFiles_Linux`, run `git pull`, then run `bash scripts/install.sh`
+again. The installer rebuilds and replaces the user binaries.
 
 ### Move from the old user installation to a package
 
