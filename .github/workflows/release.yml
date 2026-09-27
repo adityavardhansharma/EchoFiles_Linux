@@ -1,0 +1,80 @@
+name: Build and release EchoFiles
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version in Cargo.toml (for example 0.1.0)
+        required: true
+        type: string
+      draft:
+        description: Create a draft release for review
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install build dependencies
+        run: pacman -Syu --noconfirm git nodejs rust pkgconf fontconfig libxkbcommon wayland libx11 libxcursor libxi libxrandr vulkan-icd-loader
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Prepare versioned source archive and Arch recipe
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python scripts/prepare-release.py "$VERSION"
+      - name: Build Arch package
+        run: |
+          useradd --create-home builder
+          chown -R builder:builder dist
+          runuser -u builder -- bash -c 'cd "$1" && makepkg --noconfirm && makepkg --printsrcinfo > .SRCINFO' bash "$GITHUB_WORKSPACE/dist"
+      - name: Prepare release files
+        run: |
+          mkdir release-files
+          cp dist/*.pkg.tar.zst dist/*-source.tar.gz dist/PKGBUILD dist/.SRCINFO release-files/
+          cd release-files
+          sha256sum *.pkg.tar.zst *-source.tar.gz PKGBUILD .SRCINFO > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: echofiles-release
+          path: release-files/
+          include-hidden-files: true
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: echofiles-release
+          path: release-files
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          DRAFT: ${{ inputs.draft }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ "$DRAFT" == true ]]; then args+=(--draft); fi
+          gh release create "v$VERSION" release-files/* \
+            --target "$REVISION" \
+            --title "EchoFiles $VERSION" \
+            --generate-notes "${args[@]}"
