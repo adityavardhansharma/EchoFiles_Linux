@@ -1,5 +1,6 @@
 //! `ef` — EchoFiles from the terminal and for AI agents. Uses the same index as the app
-//! (Settings → Search) and can be turned off in Settings → AI agents.
+//! (Settings → Search); `--in` scans live when its folder is outside the index.
+//! Commands can be turned off in Settings → AI agents.
 //!
 //! ```text
 //! ef find <text> [--ext EXT] [--dirs|--files] [--hidden] [--in PATH] [--limit N] [--count]
@@ -12,6 +13,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::AtomicBool;
 use std::time::{Instant, SystemTime};
 
 use ef_index::config::{self, Settings};
@@ -65,11 +67,15 @@ fn main() -> ExitCode {
             let Some(text) = args.get(1).filter(|a| !a.starts_with("--")) else { return usage() };
             let ext = value(&args, "--ext").map(|e| e.trim_start_matches('.').to_string());
             let limit: Option<usize> = value(&args, "--limit").and_then(|v| v.parse().ok());
-            let within = value(&args, "--in").map(config::expand);
+            let within = value(&args, "--in").map(|p| {
+                let path = config::expand(p);
+                std::fs::canonicalize(&path).unwrap_or(path)
+            });
             let mut shown = 0usize;
             let mut total = 0usize;
             let mut out = std::io::BufWriter::new(std::io::stdout().lock());
             let mut any_index = false;
+            let mut searched_index = false;
             for root in &roots {
                 let Ok(idx) = MappedIndex::open(&config::index_file_for(root)) else { continue };
                 any_index = true;
@@ -81,6 +87,7 @@ fn main() -> ExitCode {
                     Some(_) => continue,
                     None => ef_index::ROOT,
                 };
+                searched_index = true;
                 let q = Query {
                     text: if text == "*" { "" } else { text },
                     within: scope,
@@ -100,12 +107,42 @@ fn main() -> ExitCode {
                 if limit.is_some_and(|l| shown >= l) {
                     break;
                 }
+                // An explicit --in path should be searched once, even if configured roots overlap.
+                if within.is_some() {
+                    break;
+                }
+            }
+            if let Some(path) = within.as_ref().filter(|_| !searched_index) {
+                // The folder may be outside every index, excluded, or newer than the index.
+                // The same matcher can search it directly without adding it to Settings.
+                let q = Query {
+                    text: if text == "*" { "" } else { text },
+                    within: ef_index::ROOT,
+                    kind: if flag(&args, "--dirs") { KindFilter::Dirs } else if flag(&args, "--files") { KindFilter::Files } else { KindFilter::Any },
+                    ext: ext.as_deref(),
+                    hidden: flag(&args, "--hidden"),
+                    limit,
+                };
+                let cancel = AtomicBool::new(false);
+                let hits = match ef_index::live::search(path, &q, &cancel, &|_| {}) {
+                    Ok(hits) => hits,
+                    Err(e) => {
+                        eprintln!("Couldn't search {}: {e}", path.display());
+                        return ExitCode::FAILURE;
+                    }
+                };
+                total = hits.len();
+                if !flag(&args, "--count") {
+                    for hit in hits {
+                        let _ = writeln!(out, "{}", hit.display());
+                    }
+                }
             }
             if flag(&args, "--count") {
                 let _ = writeln!(out, "{total}");
             }
             let _ = out.flush();
-            if !any_index {
+            if !any_index && within.is_none() {
                 eprintln!("No index yet. Turn on the search index in EchoFiles → Settings → Search, or run `ef index`.");
                 return ExitCode::FAILURE;
             }

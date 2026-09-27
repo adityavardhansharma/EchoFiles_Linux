@@ -1,8 +1,8 @@
 # Search for the app: indexed and live — design, tests and benchmark results
 
-Status: implemented in `crates/index` (library `ef_index`), 2026-09-26. Scope: the search the
-EchoFiles app uses. Agent commands (`ef …`) are out of scope here; the old prototype `ef`
-binary is only kept compiling.
+Status: implemented in `crates/index` (library `ef_index`), 2026-09-26. The app uses both
+search modes. The `ef find` command uses the index for configured roots and searches an
+unindexed `--in` folder live.
 
 Update (2026-09-26): the index file is now memory-mapped and compact (format `EFIDX003`), junk folders are skipped by default, and exclusions are editable in Settings → Search — measured on the laptop in [threading-freshness-and-next-optimizations.md](threading-freshness-and-next-optimizations.md). Numbers below are from the original cloud run.
 
