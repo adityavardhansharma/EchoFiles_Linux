@@ -427,3 +427,8 @@ body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--f
 .ef-share:hover { border-color: var(--world-network); }
 .ef-share-name { font-size: 15px; font-weight: 700; color: var(--ink-strong); }
 .ef-signin-retry .ef-field { border-color: var(--danger); }
+.ef-sec-fold { cursor: pointer; border-radius: var(--radius-1); transition: background-color var(--dur-fast) var(--ease-standard); }
+.ef-sec-fold:hover { background: var(--state-hover); }
+.ef-sec-fold:focus-visible { outline: 1px solid var(--focus-ring); outline-offset: -1px; }
+.ef-sec-fold .ef-sec-chev { color: var(--ink-muted); flex: none; }
+.ef-sec-title { flex: 1; }

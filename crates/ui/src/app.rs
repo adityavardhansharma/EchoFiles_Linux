@@ -77,6 +77,8 @@ pub enum Message {
     File(FileMsg),
     Drive(DriveMsg),
     Net(NetMsg),
+    /// Fold or unfold a sidebar section.
+    Fold(crate::view::Fold, bool),
     Ui(UiMsg),
     Thumb(PathBuf, Option<Pixels>),
     Preview(PathBuf, Arc<PreviewData>),
@@ -987,6 +989,13 @@ impl App {
             Message::File(m) => self.file_update(m),
             Message::Drive(m) => self.drive_update(m),
             Message::Net(m) => self.net_update(m),
+            Message::Fold(section, open) => {
+                match section {
+                    crate::view::Fold::Windows => self.settings.sidebar.windows_open = open,
+                    crate::view::Fold::Network => self.settings.sidebar.network_open = open,
+                }
+                self.persist_settings()
+            }
             Message::Ui(m) => self.ui_update(m),
             Message::Thumb(path, px) => {
                 let jobs = self.thumbs.done(path, px);

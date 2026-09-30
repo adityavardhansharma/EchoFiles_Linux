@@ -218,12 +218,20 @@
     return h("nav", { className: "ef-sidebar", "aria-label": "Places" }, p.children);
   }
   function SidebarSection(p) {
-    return h("section", null,
-      h("div", { className: "ef-sec-head" },
-        p.world ? h("span", { className: "ef-sec-mark", style: { background: "var(--world-" + p.world + ")" } }) : null,
-        p.title, p.count !== undefined ? h("span", { className: "ef-sec-count" }, p.count) : null,
-        p.action ? h("span", { className: "ef-sec-action" }, p.action) : null),
-      h("div", { className: "ef-sec-list" }, p.children));
+    var st = useState(!!p.defaultOpen);
+    var open = p.collapsible ? st[0] : true;
+    var headKids = [
+      p.collapsible ? h(Icon, { key: "c", name: open ? "chevron-down" : "chevron-right", size: 12, className: "ef-sec-chev" }) : null,
+      p.world ? h("span", { key: "m", className: "ef-sec-mark", style: { background: "var(--world-" + p.world + ")" } }) : null,
+      h("span", { key: "t", className: "ef-sec-title" }, p.title),
+      p.count !== undefined ? h("span", { key: "n", className: "ef-sec-count" }, p.count) : null,
+      p.action ? h("span", { key: "a", className: "ef-sec-action", onClick: function (e) { e.stopPropagation(); } }, p.action) : null];
+    var head = p.collapsible
+      ? h("div", { className: "ef-sec-head ef-sec-fold", role: "button", tabIndex: 0, "aria-expanded": String(open), title: open ? "Collapse" : "Expand", onClick: function () { st[1](!open); } }, headKids)
+      : h("div", { className: "ef-sec-head" }, headKids);
+    // Collapsed, only children marked `keep` (the place you're in) stay.
+    var kids = React.Children.toArray(p.children).filter(function (c) { return open || (c.props && c.props.keep); });
+    return h("section", null, head, kids.length ? h("div", { className: "ef-sec-list" }, kids) : null);
   }
   function SidebarItem(p) {
     return h("button", { type: "button", className: cx("ef-side-item", p.dropTarget && "ef-side-drop", p.indent && "ef-side-indent"), "aria-current": p.active ? "true" : undefined },
@@ -614,13 +622,13 @@
       h(SidebarSection, { title: "Pinned" },
         h(SidebarItem, { icon: "pin", label: "Work" }),
         h(SidebarItem, { icon: "pin", label: "EchoFiles_Linux" })),
-      h(SidebarSection, { title: "Windows", world: "windows", count: 3 },
+      h(SidebarSection, { title: "Windows", world: "windows", count: 3, collapsible: true, defaultOpen: true },
         h(DriveItem, { name: "Windows (C:)", state: "readonly", used: 76, world: "windows", meta: "NTFS", free: "88 GB free", active: p.active === "c" }),
         h(DriveItem, { name: "AVS (D:)", state: "mounted", used: 58, world: "windows", meta: "NTFS", free: "66 GB free", active: p.active === "d" }),
-        h(DriveItem, { name: "AVS (E:)", state: "unmounted", meta: "295 GB · click to mount" })),
-      h(SidebarItem, { icon: "sliders", label: "All drives" }),
-      h(SidebarSection, { title: "Network", world: "network", count: 1, action: h(IconButton, { icon: "plus", label: "Connect to server (Ctrl+Shift+S)" }) },
-        h(NetworkItem, { name: "Media", protocol: "SMB", where: "nas.local", state: "connected" }),
+        h(DriveItem, { name: "AVS (E:)", state: "unmounted", meta: "295 GB · click to mount" }),
+        h(SidebarItem, { icon: "sliders", label: "All drives" })),
+      h(SidebarSection, { title: "Network", world: "network", count: 1, collapsible: true, action: h(IconButton, { icon: "plus", label: "Connect to server (Ctrl+Shift+S)" }) },
+        h(NetworkItem, { name: "Media", protocol: "SMB", where: "nas.local", state: "connected", keep: true }),
         h(NetworkItem, { name: "build-box", protocol: "SFTP", where: "me@build-box" }),
         h(SidebarItem, { icon: "plus", label: "Connect to server…" })));
   }
@@ -848,7 +856,10 @@
           h("span", { className: "ef-swatches" }, ["--bg", "--bg-raised", "--ink", "--accent", "--world-linux", "--world-windows", "--success", "--warning", "--danger"].map(function (v) { return h("i", { key: v, style: { background: "var(" + v + ")" } }); })))),
       h(SettingsGroup, { key: "b", title: "Layout" },
         h(SettingRow, { label: "Row height", description: "How tightly the file list is packed." }, h(SegmentedControl, { label: "Row height", value: "default", options: [{ value: "compact", text: "Compact" }, { value: "default", text: "Default" }, { value: "comfortable", text: "Comfortable" }] })),
-        h(SettingRow, { label: "Folders open as", description: "Automatic uses a grid in Pictures, Videos and camera folders and a list everywhere else. Changing this resets views you switched by hand (Ctrl+1 / Ctrl+2)." }, h(SegmentedControl, { label: "Folders open as", value: "auto", options: [{ value: "auto", text: "Automatic" }, { value: "list", text: "List" }, { value: "grid", text: "Grid" }] })))];
+        h(SettingRow, { label: "Folders open as", description: "Automatic uses a grid in Pictures, Videos and camera folders and a list everywhere else. Changing this resets views you switched by hand (Ctrl+1 / Ctrl+2)." }, h(SegmentedControl, { label: "Folders open as", value: "auto", options: [{ value: "auto", text: "Automatic" }, { value: "list", text: "List" }, { value: "grid", text: "Grid" }] }))),
+      h(SettingsGroup, { key: "c", title: "Sidebar" },
+        h(SettingRow, { label: "Windows drives", description: "The Windows section with your NTFS and BitLocker drives. Click its heading to open or close it." }, h(Switch, { label: "Windows drives", defaultChecked: true })),
+        h(SettingRow, { label: "Network places", description: "The Network section with Windows shares, SSH and FTP servers. Ctrl+Shift+S connects to a server either way." }, h(Switch, { label: "Network places", defaultChecked: true })))];
     if (page === "about") return [
       h(PageHead, { key: "h", title: "About" }, "Where EchoFiles keeps things, and how to drive it from the keyboard."),
       h(SettingsGroup, { key: "a", title: "EchoFiles" },

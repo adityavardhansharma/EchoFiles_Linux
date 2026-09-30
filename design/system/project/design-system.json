@@ -1169,8 +1169,8 @@
   },
   "lastChange": {
     "by": "Aditya",
-    "at": "2026-09-30T22:17:13Z",
+    "at": "2026-09-30T22:31:21Z",
     "via": "Claude Code",
-    "note": "Network places: a Network section under Windows (NetworkItem, magenta world-network mark, + to connect), ConnectDialog (protocol, smart address field, recent and nearby servers), SignInDialog (EchoFiles' own GVfs sign-in and host-key questions) and SharesPage (an SMB server's shares). New token world-network."
+    "note": "Sidebar: Windows and Network sections fold — a chevron heading row opens and closes each, both start collapsed (state remembered), and a collapsed section still shows the place you're in. Settings → Appearance → Sidebar can hide either section."
   }
 }

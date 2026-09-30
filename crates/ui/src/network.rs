@@ -674,50 +674,44 @@ impl App {
 
     // ------------------------------------------------------------------ sidebar
 
-    /// Section head with the Connect button at its end.
-    fn net_section(&self) -> Element<'_, Message> {
-        let p = &self.palette;
-        let mark = color(p.world_network);
-        let connected = self.net.mounts.len();
-        let mut r = row![
-            container(Space::new()).width(6).height(6).style(move |_| container::Style { background: Some(Background::Color(mark)), ..Default::default() }),
-            text("NETWORK").size(style::LABEL).font(style::FONT_BOLD).color(color(p.ink_muted)).width(Length::Fill),
-        ]
-        .spacing(style::SPACE_3)
-        .align_y(Alignment::Center);
-        if connected > 0 {
-            r = r.push(text(connected.to_string()).size(style::LABEL).font(style::FONT).color(color(p.ink_muted)));
-        }
-        let add = self.tip(w::icon_button(p, &self.icons, "plus", Some(Message::Net(NetMsg::Open(None))), false), "Connect to server", Some("Ctrl+Shift+S"));
-        r = r.push(add);
-        container(r).padding(iced::Padding { left: 12.0, right: 4.0, top: 0.0, bottom: 0.0 }).height(24).align_y(Alignment::Center).into()
-    }
-
-    /// The Network section: saved servers and live connections (design system `NetworkItem`).
+    /// The Network section: saved servers and live connections (design system
+    /// `NetworkItem`). Its head folds it; collapsed, only the place you're in stays.
     pub(crate) fn network_section(&self) -> Element<'_, Message> {
         let p = &self.palette;
-        let mut col = column![self.net_section()].spacing(1);
+        let open = self.settings.sidebar.network_open;
+        let connected = self.net.mounts.len();
+        let add = self.tip(w::icon_button(p, &self.icons, "plus", Some(Message::Net(NetMsg::Open(None))), false), "Connect to server", Some("Ctrl+Shift+S"));
+        let mut col = column![self.fold_head("Network", color(p.world_network), (connected > 0).then_some(connected), open, crate::view::Fold::Network, Some(add))].spacing(1);
         let places = self.net_places();
-        if places.is_empty() {
+        if open && places.is_empty() {
             let hint = text("Windows shares, SSH and FTP servers you connect to appear here.").size(style::META).font(style::FONT).color(color(p.ink_muted));
             col = col.push(container(hint).padding([2, 12]));
         }
         for place in places {
-            col = col.push(self.net_item(place));
+            if open || self.net_place_active(&place) {
+                col = col.push(self.net_item(place));
+            }
         }
-        col = col.push(self.side_button("plus", "Connect to server…", Message::Net(NetMsg::Open(None)), self.net.form.is_some()));
+        if open {
+            col = col.push(self.side_button("plus", "Connect to server…", Message::Net(NetMsg::Open(None)), self.net.form.is_some()));
+        }
         col.into()
+    }
+
+    /// The active pane is showing this place (a folder in it, or its shares page).
+    fn net_place_active(&self, place: &Place<'_>) -> bool {
+        let pane = self.pane();
+        match (place.mount, &pane.shares) {
+            (_, Some(pg)) => place.address.as_ref().is_some_and(|a| a.share.is_none() && same_server(a, &pg.address)),
+            (Some(m), None) => !pane.special() && pane.location.starts_with(&m.root),
+            (None, None) => false,
+        }
     }
 
     fn net_item(&self, place: Place<'_>) -> Element<'_, Message> {
         let p = &self.palette;
-        let pane = self.pane();
         let connecting = place.address.as_ref().is_some_and(|a| self.is_connecting(a));
-        let active = match (place.mount, &pane.shares) {
-            (_, Some(pg)) => place.address.as_ref().is_some_and(|a| a.share.is_none() && same_server(a, &pg.address)),
-            (Some(m), None) => !pane.special() && pane.location.starts_with(&m.root),
-            (None, None) => false,
-        };
+        let active = self.net_place_active(&place);
         let connected = place.mount.is_some();
         let ink = if active { color(p.ink_strong) } else if connected { color(p.ink) } else { color(p.ink_muted) };
         let head = text(place.name.clone()).size(style::BODY).font(if active { style::FONT_BOLD } else { style::FONT }).color(ink).wrapping(text::Wrapping::None);

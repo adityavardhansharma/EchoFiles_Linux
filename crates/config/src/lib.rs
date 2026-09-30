@@ -29,6 +29,10 @@
 //! pinned = ["~/Projects"]     # the Pinned section, in order
 //! width = 236                 # 180–360, dragged at its edge
 //! hidden = false              # Ctrl+B
+//! windows = true              # show the Windows section (drives)
+//! network = true              # show the Network section
+//! windows_open = false        # sections start collapsed; the head row toggles them
+//! network_open = false
 //!
 //! [[network.servers]]           # the Network section, in order
 //! uri = "smb://nas.local/Media" # never holds a password (GVfs keeps those in the keyring)
@@ -173,11 +177,19 @@ pub struct Sidebar {
     pub pinned: Vec<String>,
     pub width: u16,
     pub hidden: bool,
+    /// Show the Windows section.
+    pub windows: bool,
+    /// Show the Network section.
+    pub network: bool,
+    /// The Windows section is expanded (collapsed by default).
+    pub windows_open: bool,
+    /// The Network section is expanded (collapsed by default).
+    pub network_open: bool,
 }
 
 impl Default for Sidebar {
     fn default() -> Self {
-        Sidebar { pinned: Vec::new(), width: 236, hidden: false }
+        Sidebar { pinned: Vec::new(), width: 236, hidden: false, windows: true, network: true, windows_open: false, network_open: false }
     }
 }
 

@@ -24,6 +24,13 @@ use crate::widgets::{self as w, Variant};
 
 const TABS_H: f32 = 32.0;
 
+/// A sidebar section that folds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fold {
+    Windows,
+    Network,
+}
+
 impl App {
     fn glyph<'a>(&self, name: &str, size: f32, tint: Color) -> Element<'a, Message> {
         w::glyph(&self.icons, name, size, tint)
@@ -379,21 +386,64 @@ impl App {
                 col = col.push(self.side_item("pin", label, path, true, 0.0));
             }
         }
-        col = col.push(Space::new().height(style::SPACE_5));
-        col = col.push(self.section("Windows", Some(color(p.world_windows)), (!self.volumes.is_empty()).then_some(self.volumes.len())));
-        if self.volumes.is_empty() {
-            col = col.push(container(text("No Windows drives found").size(style::META).font(style::FONT).color(color(p.ink_muted))).padding([4, 12]));
+        if self.settings.sidebar.windows {
+            col = col.push(Space::new().height(style::SPACE_5));
+            col = col.push(self.windows_section());
         }
-        for (i, v) in self.volumes.iter().enumerate() {
-            col = col.push(self.drive_item(i, v));
+        if self.settings.sidebar.network {
+            col = col.push(Space::new().height(style::SPACE_5));
+            col = col.push(self.network_section());
         }
-        col = col.push(Space::new().height(style::SPACE_4));
-        col = col.push(self.side_button("sliders", "All drives", Message::ShowDrives, self.pane().drives));
-        col = col.push(Space::new().height(style::SPACE_5));
-        col = col.push(self.network_section());
         // A thin scrollbar beside the rows, never over them.
         let bar = scrollable::Scrollbar::new().width(4).scroller_width(4).spacing(4);
         w::fill(scrollable(col).direction(scrollable::Direction::Vertical(bar)).height(Length::Fill), p.bg_sunken).width(self.settings.sidebar.width as f32).height(Length::Fill).padding([12, 8]).into()
+    }
+
+    /// A section head that folds its section: chevron, world mark, title, count, and an
+    /// optional action at the end (design system `SidebarSection` with `collapsible`).
+    pub(crate) fn fold_head<'a>(&'a self, title: &str, mark: Color, count: Option<usize>, open: bool, section: Fold, action: Option<Element<'a, Message>>) -> Element<'a, Message> {
+        let p = &self.palette;
+        let muted = color(p.ink_muted);
+        let mut r = row![
+            self.glyph(if open { "chevron-down" } else { "chevron-right" }, 12.0, muted),
+            container(Space::new()).width(6).height(6).style(move |_| container::Style { background: Some(Background::Color(mark)), ..Default::default() }),
+            text(title.to_uppercase()).size(style::LABEL).font(style::FONT_BOLD).color(muted).width(Length::Fill),
+        ]
+        .spacing(style::SPACE_3)
+        .align_y(Alignment::Center);
+        if let Some(n) = count {
+            r = r.push(text(n.to_string()).size(style::LABEL).font(style::FONT).color(muted));
+        }
+        if let Some(a) = action {
+            r = r.push(a);
+        }
+        let head = w::row_button(p, container(r).height(24).align_y(Alignment::Center).into(), false, Some(Message::Fold(section, !open)));
+        self.tip(head, if open { "Collapse" } else { "Expand" }, None)
+    }
+
+    /// Windows drives. Collapsed, only the drive you're in (or All drives, when that's
+    /// open) stays, so the sidebar always shows where you are.
+    fn windows_section(&self) -> Element<'_, Message> {
+        let p = &self.palette;
+        let open = self.settings.sidebar.windows_open;
+        let pane = self.pane();
+        let mut col = column![self.fold_head("Windows", color(p.world_windows), (!self.volumes.is_empty()).then_some(self.volumes.len()), open, Fold::Windows, None)].spacing(1);
+        if open && self.volumes.is_empty() {
+            col = col.push(container(text("No Windows drives found").size(style::META).font(style::FONT).color(color(p.ink_muted))).padding([4, 12]));
+        }
+        let here = if pane.special() { None } else { self.volume_at(&pane.location).map(|(i, _)| i) };
+        for (i, v) in self.volumes.iter().enumerate() {
+            if open || here == Some(i) {
+                col = col.push(self.drive_item(i, v));
+            }
+        }
+        if open || pane.drives {
+            if open {
+                col = col.push(Space::new().height(style::SPACE_4));
+            }
+            col = col.push(self.side_button("sliders", "All drives", Message::ShowDrives, pane.drives));
+        }
+        col.into()
     }
 
     pub(crate) fn side_button<'a>(&'a self, icon: &str, label: &str, msg: Message, active: bool) -> Element<'a, Message> {

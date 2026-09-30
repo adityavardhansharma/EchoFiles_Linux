@@ -238,20 +238,23 @@ return h("div", {className:"ef", style:{display:"flex", height:590}},
     h(E.SidebarSection, {title:"Pinned"},
       h(E.SidebarItem, {icon:"pin", label:"Work"}),
       h(E.SidebarItem, {icon:"pin", label:"EchoFiles_Linux"})),
-    h(E.SidebarSection, {title:"Windows", world:"windows", count:3},
+    h(E.SidebarSection, {title:"Windows", world:"windows", count:3, collapsible:true, defaultOpen:true},
       h(E.DriveItem, {name:"Windows (C:)", state:"readonly", used:76, world:"windows", meta:"NTFS", free:"88 GB free"}),
       h(E.DriveItem, {name:"AVS (D:)", state:"mounted", used:58, world:"windows", meta:"NTFS", free:"66 GB free"}),
-      h(E.DriveItem, {name:"AVS (E:)", state:"unmounted", meta:"295 GB · click to mount"})),
-    h(E.SidebarItem, {icon:"sliders", label:"All drives"}),
-    h(E.SidebarSection, {title:"Network", world:"network", count:1, action:h(E.IconButton, {icon:"plus", label:"Connect to server (Ctrl+Shift+S)"})},
-      h(E.NetworkItem, {name:"Media", protocol:"SMB", where:"nas.local", state:"connected"}),
+      h(E.DriveItem, {name:"AVS (E:)", state:"unmounted", meta:"295 GB · click to mount"}),
+      h(E.SidebarItem, {icon:"sliders", label:"All drives"})),
+    h(E.SidebarSection, {title:"Network", world:"network", count:1, collapsible:true, action:h(E.IconButton, {icon:"plus", label:"Connect to server (Ctrl+Shift+S)"})},
+      h(E.NetworkItem, {name:"Media", protocol:"SMB", where:"nas.local", state:"connected", keep:true}),
       h(E.NetworkItem, {name:"build-box", protocol:"SFTP", where:"me@build-box"}),
       h(E.SidebarItem, {icon:"plus", label:"Connect to server…"}))));
 """, """# Sidebar
 
 The place list on `bg-sunken`: Linux, Pinned (when anything is pinned), Windows, **All drives**, then Network (later Phone).
 
-**Provide** `Sidebar` > `SidebarSection` (`title`, optional `world`: `linux`, `windows`, `network`, `phone`, optional `count`, optional `action` at the end of the head) > `SidebarItem` (`icon`, `label`, `active`, `trail`, `dropTarget`), `DriveItem` or `NetworkItem`.
+**Provide** `Sidebar` > `SidebarSection` (`title`, optional `world`: `linux`, `windows`, `network`, `phone`, optional `count`, optional `action` at the end of the head, `collapsible` + `defaultOpen`) > `SidebarItem` (`icon`, `label`, `active`, `trail`, `dropTarget`), `DriveItem` or `NetworkItem` (`keep` = still shown while collapsed).
+
+- **Windows** and **Network** fold. Their head is a 24px row — chevron (`chevron-right` / `chevron-down`, 12px `ink-muted`), world mark, title, count, and Network's `+` — with the standard hover; clicking it opens or closes the section. Both start **collapsed**, and the open/closed state is remembered (`settings.toml` `[sidebar] windows_open`, `network_open`). Collapsed, the section still shows the one place you're in (the drive or share holding the open folder, or All drives while that page is open), so the sidebar always says where you are. Everything the section held (All drives, Connect to server…) folds with it.
+- **Settings → Appearance → Sidebar** hides either section entirely (*Windows drives*, *Network places*; both on by default). Hidden, the section's head goes too; Ctrl+Shift+D and Ctrl+Shift+S still reach drives and servers.
 
 - A world is marked by a 6px square in `world-linux`, `world-windows`, `world-network` or `world-phone` — the only place world colours appear besides drive usage bars and network glyphs.
 - **Network** lists saved servers (in the order saved) and then live connections made elsewhere (Nautilus, `gio mount`, a link). Its head counts live connections and ends with a `+` that opens `ConnectDialog`; a **Connect to server…** row always closes the section. With nothing saved it says "Windows shares, SSH and FTP servers you connect to appear here."
@@ -781,7 +784,7 @@ Settings is its own screen (Ctrl+, or the gear): a top bar with a ghost **← Fi
 - **General** — Running: Keep running in the background (close hides the window; later launches reuse it) · Start at login (disabled unless running in the background). Windows: New windows open at Home / Last folder · Show hidden files.
 - **Search & index** — Index: Search index switch (off deletes the index) + `IndexStatus`. Search box: Search looks in (This folder / Everywhere). Indexed folders and Never show in search (`PathListEditor`). Skip contents of: Skip cache folders + `NameChips`.
 - **AI agents** — Allow EchoFiles commands (when off, `ef` exits 3 with "turned off"), ef location, Teach AI agents about ef (links the skill into ~/.claude/skills; off removes only that link), `CommandList` of examples. A `warning` note appears if `ef` is allowed but the index is off.
-- **Appearance** — the Omarchy theme's name and swatches (it follows the system); Row height Compact / Default / Comfortable (24 / 28 / 34px); Folders open as Automatic / List / Grid (resets per-folder choices).
+- **Appearance** — the Omarchy theme's name and swatches (it follows the system); Row height Compact / Default / Comfortable (24 / 28 / 34px); Folders open as Automatic / List / Grid (resets per-folder choices). Sidebar: show or hide the Windows drives and Network places sections.
 - **About** — version, settings file and index folder with **Show**, keyboard shortcuts.
 - Everything saves to `~/.config/echofiles/settings.toml` the moment it changes (shared with `ef`). Only settings that work today appear.
 """, extra=' width=1100 page')

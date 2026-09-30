@@ -2,7 +2,10 @@
 
 The place list on `bg-sunken`: Linux, Pinned (when anything is pinned), Windows, **All drives**, then Network (later Phone).
 
-**Provide** `Sidebar` > `SidebarSection` (`title`, optional `world`: `linux`, `windows`, `network`, `phone`, optional `count`, optional `action` at the end of the head) > `SidebarItem` (`icon`, `label`, `active`, `trail`, `dropTarget`), `DriveItem` or `NetworkItem`.
+**Provide** `Sidebar` > `SidebarSection` (`title`, optional `world`: `linux`, `windows`, `network`, `phone`, optional `count`, optional `action` at the end of the head, `collapsible` + `defaultOpen`) > `SidebarItem` (`icon`, `label`, `active`, `trail`, `dropTarget`), `DriveItem` or `NetworkItem` (`keep` = still shown while collapsed).
+
+- **Windows** and **Network** fold. Their head is a 24px row — chevron (`chevron-right` / `chevron-down`, 12px `ink-muted`), world mark, title, count, and Network's `+` — with the standard hover; clicking it opens or closes the section. Both start **collapsed**, and the open/closed state is remembered (`settings.toml` `[sidebar] windows_open`, `network_open`). Collapsed, the section still shows the one place you're in (the drive or share holding the open folder, or All drives while that page is open), so the sidebar always says where you are. Everything the section held (All drives, Connect to server…) folds with it.
+- **Settings → Appearance → Sidebar** hides either section entirely (*Windows drives*, *Network places*; both on by default). Hidden, the section's head goes too; Ctrl+Shift+D and Ctrl+Shift+S still reach drives and servers.
 
 - A world is marked by a 6px square in `world-linux`, `world-windows`, `world-network` or `world-phone` — the only place world colours appear besides drive usage bars and network glyphs.
 - **Network** lists saved servers (in the order saved) and then live connections made elsewhere (Nautilus, `gio mount`, a link). Its head counts live connections and ends with a `+` that opens `ConnectDialog`; a **Connect to server…** row always closes the section. With nothing saved it says "Windows shares, SSH and FTP servers you connect to appear here."

@@ -43,7 +43,7 @@ export declare function ViewButton(props: { grid?: boolean; open?: boolean }): R
 export declare function ViewMenu(props: { grid?: boolean; dual?: boolean; preview?: boolean; hidden?: boolean }): React.ReactElement;
 export declare function Toolbar(props: ToolbarProps): React.ReactElement;
 export declare function Sidebar(props: { children?: React.ReactNode }): React.ReactElement;
-export interface SidebarSectionProps { title: string; world?: World; count?: number; action?: React.ReactNode; children?: React.ReactNode }
+export interface SidebarSectionProps { title: string; world?: World; count?: number; action?: React.ReactNode; collapsible?: boolean; defaultOpen?: boolean; children?: React.ReactNode }
 export declare function SidebarSection(props: SidebarSectionProps): React.ReactElement;
 export interface SidebarItemProps { icon?: GlyphName; label: string; active?: boolean; trail?: string; dropTarget?: boolean }
 export declare function SidebarItem(props: SidebarItemProps): React.ReactElement;
