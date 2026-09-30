@@ -44,7 +44,7 @@ omarchy pkg add rust pkgconf fontconfig libxkbcommon wayland libx11 libxcursor l
 bash scripts/install.sh
 ```
 
-Rust 1.90 or newer is required. If your Rust is managed by rustup, update it with `rustup update stable`. On plain Arch, install the same dependencies with `sudo pacman -S rust pkgconf fontconfig libxkbcommon wayland libx11 libxcursor libxi libxrandr vulkan-icd-loader`, then run the installer. Optional drive mounting uses `udisks2` and `polkit`.
+Rust 1.90 or newer is required. If your Rust is managed by rustup, update it with `rustup update stable`. On plain Arch, install the same dependencies with `sudo pacman -S rust pkgconf fontconfig libxkbcommon wayland libx11 libxcursor libxi libxrandr vulkan-icd-loader`, then run the installer. Optional drive mounting uses `udisks2` and `polkit`. Network places use `gvfs` (plus `gvfs-smb` for Windows shares), and finding servers nearby uses `avahi`.
 
 The installer adds the **EchoFiles** app launcher and installs `echofiles` and `ef` in `~/.local/bin`. To update later, run `git pull` in the cloned repository and run `bash scripts/install.sh` again.
 
@@ -71,6 +71,7 @@ The installer adds the **EchoFiles** app launcher and installs `echofiles` and `
 - **Preview before opening.** Image and text previews, file properties and folder sizes are close at hand.
 - **Move with confidence.** Copy, move, rename, trash and undo are built into the file manager.
 - **Connect to Windows volumes.** Inspect mounted drives, assign letters and choose when a drive can be written to.
+- **Open network places.** Connect to Windows shares (SMB), SSH servers (SFTP) and FTP/FTPS servers from the sidebar's Network section or Ctrl+Shift+S, then browse, copy and rename there like any folder. Addresses such as `smb://nas/Media` or `\\nas\Media` also work in the path bar and from other apps.
 - **Use `ef` from the terminal.** Search an index, narrow results by extension or scope, and pipe paths into other commands.
 
 ## Speed, measured against Nautilus

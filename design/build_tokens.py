@@ -106,7 +106,7 @@ def derive(p):
         out[f"{name}-soft"] = soft
         out[f"{name}-ink"] = ensure(c, [bg, raised, soft], 4.5, extreme)
         out[f"on-{name}"] = best_on(c, [deep, "#ffffff", "#000000"])
-    for name, key in (("world-linux", "orange"), ("world-windows", "blue"), ("world-phone", "green")):
+    for name, key in (("world-linux", "orange"), ("world-windows", "blue"), ("world-phone", "green"), ("world-network", "magenta")):
         out[name] = ensure(p[key], [sunken, bg, raised], 3.0, extreme)
     # icon palette slots (see design/build_icons.py)
     y = p["yellow"]
@@ -139,7 +139,7 @@ def checks(name, t):
         c = contrast(t[a], t[b])
         if c < target:
             fails.append(f"{a} on {b} {c:.2f}")
-    for a, b in [("focus-ring", g) for g in ("bg", "bg-raised", "selection")] + [("line-strong", "bg"), ("world-linux", "bg-sunken"), ("world-windows", "bg-sunken"), ("world-phone", "bg-sunken")]:
+    for a, b in [("focus-ring", g) for g in ("bg", "bg-raised", "selection")] + [("line-strong", "bg"), ("world-linux", "bg-sunken"), ("world-windows", "bg-sunken"), ("world-phone", "bg-sunken"), ("world-network", "bg-sunken")]:
         c = contrast(t[a], t[b])
         if c < 3.0:
             fails.append(f"{a} on {b} {c:.2f}")
@@ -186,6 +186,7 @@ USAGE = {
     "world-linux": "Linux section mark and Linux drive usage bars. Omarchy `orange`; 3:1 on the sidebar.",
     "world-windows": "Windows section mark and NTFS drive usage bars. Omarchy `blue`; 3:1 on the sidebar.",
     "world-phone": "Phone section mark (v0.3+). Omarchy `green`; 3:1 on the sidebar.",
+    "world-network": "Network section mark and network places (SMB, SFTP, FTP). Omarchy `magenta`; 3:1 on the sidebar.",
     "brand-ember": "Logo back sheet. Brand surfaces only (About, onboarding, app icon) — never UI state.",
     "brand-violet": "Logo middle sheet. Brand surfaces only.",
     "brand-sky": "Logo front sheet. Brand surfaces only.",

@@ -12,6 +12,7 @@ ef-theme.workspace = true
 ef-vfs.workspace = true
 ef-index.workspace = true
 ef-config.workspace = true
+ef-net.workspace = true
 iced = { workspace = true, features = ["wayland", "x11", "smol", "crisp", "image-without-codecs"] }
 mimalloc.workspace = true
 rayon.workspace = true

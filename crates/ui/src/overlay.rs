@@ -42,7 +42,7 @@ pub struct MenuItem {
     pub checked: bool,
 }
 
-fn item(icon: &'static str, label: impl Into<String>, kbd: Option<&'static str>, msg: Message) -> Entry {
+pub(crate) fn item(icon: &'static str, label: impl Into<String>, kbd: Option<&'static str>, msg: Message) -> Entry {
     Entry::Item(MenuItem { icon, label: label.into(), kbd, hint: None, msg: Some(msg), danger: false, submenu: Vec::new(), checked: false })
 }
 
@@ -84,6 +84,8 @@ pub enum MenuFor {
     Crumbs(Vec<(String, PathBuf)>),
     /// The toolbar's View dropdown.
     View,
+    /// A place in the sidebar's Network section, by key.
+    Network(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +112,10 @@ pub enum Dialog {
     BadNames { id: u64, opened: Instant },
     Password { prompt: ef_disks::polkit::Prompt, value: String, opened: Instant },
     WriteSystem { drive: usize, opened: Instant },
+    /// A server wants a user name and password (design system `SignInDialog`).
+    Login { ask: ef_net::LoginAsk, user: String, domain: String, password: String, guest: bool, remember: bool, opened: Instant },
+    /// A server connection has a question, e.g. an unknown SSH host key.
+    Question { ask: ef_net::QuestionAsk, opened: Instant },
     EmptyTrash { opened: Instant },
     /// Properties (Alt+Enter): facts only, closed with × or Esc.
     Properties { paths: Vec<PathBuf>, data: Option<std::sync::Arc<crate::preview::PreviewData>>, total: Option<std::sync::Arc<ef_core::ops::DirSize>>, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>, opened: Instant },
@@ -123,6 +129,8 @@ impl Dialog {
             | Dialog::BadNames { opened, .. }
             | Dialog::Password { opened, .. }
             | Dialog::WriteSystem { opened, .. }
+            | Dialog::Login { opened, .. }
+            | Dialog::Question { opened, .. }
             | Dialog::EmptyTrash { opened }
             | Dialog::Properties { opened, .. } => *opened,
         }
@@ -221,6 +229,8 @@ impl App {
                 self.transfers.retain(|t| t.id != id);
             }
             Dialog::Password { prompt, .. } => prompt.answer(None),
+            Dialog::Login { ask, .. } => ask.answer(None),
+            Dialog::Question { ask, .. } => ask.answer(None),
             Dialog::Properties { cancel, data, .. } => {
                 cancel.store(true, Ordering::Relaxed);
                 if let Some(d) = data {
@@ -392,6 +402,7 @@ impl App {
                 e.push(item("sliders", "All drives", Some("Ctrl+Shift+D"), Message::ShowDrives));
                 e
             }
+            MenuFor::Network(key) => self.net_menu(&key),
             MenuFor::Crumbs(segs) => segs.into_iter().map(|(label, p)| item("folder", label, None, Message::Navigate(p))).collect(),
             MenuFor::View => {
                 let grid = self.pane().grid;
@@ -466,6 +477,7 @@ impl App {
             ("grid", "View as grid", Some("Ctrl+2"), Message::SetGrid(true)),
             ("list", "View as list", Some("Ctrl+1"), Message::SetGrid(false)),
             ("drive", "Show all drives", Some("Ctrl+Shift+D"), Message::ShowDrives),
+            ("network", "Connect to server…", Some("Ctrl+Shift+S"), Message::Net(crate::network::NetMsg::Open(None))),
             ("terminal", "Open terminal here", None, f(FileMsg::OpenTerminal)),
             ("link", "Copy path", Some("Ctrl+Shift+C"), f(FileMsg::CopyPath)),
             ("search", "Search everywhere", Some("Ctrl+E"), Message::SetScope(Scope::Everywhere)),
@@ -490,6 +502,17 @@ impl App {
             } else {
                 add("Actions", "drive", format!("Mount {name}"), Some(format!("{size} NTFS")), None, Message::Drive(DriveMsg::Click(i)));
             }
+        }
+        for place in self.net_places() {
+            let (icon, label) = match place.mount {
+                Some(_) => ("network", format!("Open {}", place.name)),
+                None => ("network", format!("Connect to {}", place.name)),
+            };
+            let hint = place.address.as_ref().map(|a| format!("{} · {}", a.protocol.label(), a.who_where()));
+            if place.mount.is_some() {
+                add("Actions", "arrow-up", format!("Disconnect {}", place.name), hint.clone(), None, Message::Net(crate::network::NetMsg::Disconnect(place.key.clone())));
+            }
+            add("Go to", icon, label, hint, None, Message::Net(crate::network::NetMsg::Click(place.key.clone())));
         }
         let home = config::home();
         let mut places: Vec<(&'static str, PathBuf)> = vec![("home", home.clone())];
@@ -603,6 +626,7 @@ impl App {
                 }
                 Some(Dialog::BadNames { .. }) => self.file_update(FileMsg::FixNames(true)),
                 Some(Dialog::Password { .. }) => self.ui_update(UiMsg::PasswordSubmit),
+                Some(Dialog::Login { .. }) => self.net_update(crate::network::NetMsg::LoginSubmit),
                 Some(Dialog::Properties { .. }) => self.ui_update(UiMsg::CloseDialog),
                 // Destructive dialogs never act on Enter.
                 _ => Task::none(),
@@ -927,6 +951,8 @@ impl App {
                 self.dialog_frame("lock", "Password needed".into(), body.into(), foot, false, *opened)
             }
             Dialog::Properties { .. } => self.properties_dialog()?,
+            Dialog::Login { ask, user, domain, password, guest, remember, opened } => self.login_dialog(ask, user, domain, password, *guest, *remember, *opened),
+            Dialog::Question { ask, opened } => self.question_dialog(ask, *opened),
             Dialog::WriteSystem { drive, opened } => {
                 let name = self.volumes.get(*drive).map(|v| crate::drives::display_name(v, &self.volumes)).unwrap_or_default();
                 let foot = vec![cancel(), self.btn("Allow writing", Some("unlock"), None, Variant::Danger, Message::Ui(UiMsg::Pick(Box::new(Message::Drive(DriveMsg::AllowWrite(*drive))))))];

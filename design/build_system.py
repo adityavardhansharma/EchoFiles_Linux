@@ -242,14 +242,19 @@ return h("div", {className:"ef", style:{display:"flex", height:590}},
       h(E.DriveItem, {name:"Windows (C:)", state:"readonly", used:76, world:"windows", meta:"NTFS", free:"88 GB free"}),
       h(E.DriveItem, {name:"AVS (D:)", state:"mounted", used:58, world:"windows", meta:"NTFS", free:"66 GB free"}),
       h(E.DriveItem, {name:"AVS (E:)", state:"unmounted", meta:"295 GB · click to mount"})),
-    h(E.SidebarItem, {icon:"sliders", label:"All drives"})));
+    h(E.SidebarItem, {icon:"sliders", label:"All drives"}),
+    h(E.SidebarSection, {title:"Network", world:"network", count:1, action:h(E.IconButton, {icon:"plus", label:"Connect to server (Ctrl+Shift+S)"})},
+      h(E.NetworkItem, {name:"Media", protocol:"SMB", where:"nas.local", state:"connected"}),
+      h(E.NetworkItem, {name:"build-box", protocol:"SFTP", where:"me@build-box"}),
+      h(E.SidebarItem, {icon:"plus", label:"Connect to server…"}))));
 """, """# Sidebar
 
-The place list on `bg-sunken`: Linux, Pinned (when anything is pinned), Windows, later Phone, and **All drives** at the end.
+The place list on `bg-sunken`: Linux, Pinned (when anything is pinned), Windows, **All drives**, then Network (later Phone).
 
-**Provide** `Sidebar` > `SidebarSection` (`title`, optional `world`: `linux`, `windows`, `phone`, optional `count`) > `SidebarItem` (`icon`, `label`, `active`, `trail`, `dropTarget`) or `DriveItem`.
+**Provide** `Sidebar` > `SidebarSection` (`title`, optional `world`: `linux`, `windows`, `network`, `phone`, optional `count`, optional `action` at the end of the head) > `SidebarItem` (`icon`, `label`, `active`, `trail`, `dropTarget`), `DriveItem` or `NetworkItem`.
 
-- A world is marked by a 6px square in `world-linux`, `world-windows` or `world-phone` — the only place world colours appear besides drive usage bars.
+- A world is marked by a 6px square in `world-linux`, `world-windows`, `world-network` or `world-phone` — the only place world colours appear besides drive usage bars and network glyphs.
+- **Network** lists saved servers (in the order saved) and then live connections made elsewhere (Nautilus, `gio mount`, a link). Its head counts live connections and ends with a `+` that opens `ConnectDialog`; a **Connect to server…** row always closes the section. With nothing saved it says "Windows shares, SSH and FTP servers you connect to appear here."
 - Active item: `state-active` ground, `ink-strong` bold label, `accent-ink` glyph. No side rail.
 - Sections are data-driven (the phone section plugs in later). Drag a file onto an item → `accent-soft` with a 1px `accent` inset.
 - Width `sidebar-width` (236px), resizable 180–360 by dragging its right edge (the edge turns `accent` while dragged), hidden with Ctrl+B; both are remembered in settings.
@@ -278,6 +283,57 @@ A drive in the sidebar: name, state, usage bar and free space in two lines.
 - With a pill, the second line shows only the free space ("38 GB free"); without one, "61 GB free of 295 GB". The total is always in the tooltip.
 - Pills: **Mounting…** (`info`) while udisks works — the password dialog appears if Linux asks for one; **Read-only** (`warning`) for C: and anything mounted read-only; **Needs check** (`warning`) when Windows didn't shut down fully and the drive fell back to read-only; **Locked** (`danger`) for BitLocker; **Not mounted** (neutral).
 - Tooltip: the mount path and driver (`/run/media/…/AVS · ntfs3`), or the device when unmounted. Right-click: Open, Open in new tab, **Allow writing…** (C: only, `danger`), **Unmount**, All drives.
+""")
+
+comp("NetworkItem", "Navigation", 190, """
+return h("div", {className:"ef", style:{width:236, padding:8, background:"var(--bg-sunken)"}},
+  h(E.NetworkItem, {name:"Media", protocol:"SMB", where:"nas.local", state:"connected", active:true}),
+  h(E.NetworkItem, {name:"Photos", protocol:"SMB", where:"nas.local", state:"connecting"}),
+  h(E.NetworkItem, {name:"build-box", protocol:"SFTP", where:"me@build-box"}),
+  h(E.NetworkItem, {name:"ftp.example.com", protocol:"FTP", where:"ftp.example.com:2121"}));
+""", """# NetworkItem
+
+A network place in the sidebar: its short name, then how and where — "SMB · nas.local", "SFTP · me@build-box".
+
+**Provide** `name` (the saved name, else the share, else the host — never GVfs' `smb-share:server=…` folder), `protocol`, `where` (`user@host:port`, the port only when it isn't the usual one), `state` (`connected`, `connecting`, or nothing for not connected), `active`.
+
+- Connected: the glyph turns `world-network` and a 24px **Disconnect** (`arrow-up`) button sits at the row's end, inside the row so the highlight covers it. Not connected: glyph and name are `ink-muted` and there is no pill — the row itself says it.
+- Connecting: a `Connecting…` `info` pill replaces the second line while GVfs works; the sign-in dialog appears if the server asks.
+- Click: connected → opens it (SFTP lands in the home folder on the server); not connected → connects and opens; a bare SMB server → `SharesPage`. Right-click: Open / Open in new tab / Disconnect, or Connect; Copy address; Edit address…; Remove from sidebar (saved) or Keep in sidebar (live).
+- Glyphs: `network` for SMB, `server` for SFTP and FTP. The tooltip is the full address and its state.
+- When a server goes away, GVfs drops the connection: panes inside it go home and a toast says "Lost the connection to Media".
+""")
+
+comp("ConnectDialog", "Overlays", 600, """
+return h("div", {className:"ef"}, h(E.ConnectDialog, {value:"nas.local:4445/Media", parsed:"ok", describe:"Windows share “Media” on nas.local · port 4445", recent:[["Media on nas.local","smb://nas.local/Media/","network"],["me on build-box","sftp://me@build-box/","server"]], nearby:[["Living Room NAS","SMB · nas.local","network"]]}));
+""", """# ConnectDialog
+
+**Connect to server** (Ctrl+Shift+S, the Network `+`, the command palette): pick a protocol, type or paste an address, connect.
+
+**Provide** `protocol`, `value`, `parsed` (`ok` | `error`), `describe` (the parse, in words), `state` (`connecting`), `error` (why the last try failed), `recent`, `nearby`.
+
+- **Protocol** `SegmentedControl`: SMB · SFTP · FTP · FTPS, with what it is beside it ("Windows share"). A scheme typed or pasted (`sftp://…`) switches it; switching rewrites a typed scheme.
+- **Address**: one field that takes every form people have — `nas.local/Media`, `\\\\nas\\Media` (UNC), `smb://WORK;alice@nas:4445/Media`, `me@host:/srv` (scp style), `ftp://[::1]:2121`. Without a scheme a chip shows the one that will be used. Passwords in an address are ignored; the sign-in dialog asks.
+- Under the field, live: a `success-ink` check and the parse in words ("Windows share “Media” on nas.local · port 4445 · as alice"), or a `warning-ink` reason ("“99999” isn't a port number (1–65535)"). **Connect** is disabled until it parses.
+- **Add to sidebar** (on by default) saves the server — never a password — to `settings.toml` `[[network.servers]]`.
+- **Recent** (up to 4, one per server) and **On this network** (mDNS/Avahi: `_smb._tcp`, `_sftp-ssh._tcp`, `_ftp._tcp`, with a rescan button): one click connects.
+- Connecting: the button reads **Connecting…**; if the server asks for a password the dialog steps aside for `SignInDialog`. Failures stay in the dialog in a `danger-soft` box, in words that say what to do: "Nothing answered on nas:4445. Check the address and port, and that the server is running." / "Couldn't find a server called “nas”…" / "nas has no share called “Media”. Leave the share out to see the ones it has."
+- If `gvfs-smb` isn't installed, choosing SMB says how to get it. Esc cancels (a connection already on its way finishes quietly).
+""")
+
+comp("SignInDialog", "Overlays", 500, """
+return h("div", {className:"ef"}, h(E.SignInDialog, {retry:true}));
+""", """# SignInDialog
+
+The server wants a user name and password — asked in EchoFiles' own dialog (EchoFiles serves GVfs' `MountOperation`), never a terminal prompt.
+
+**Provide** `title` ("Sign in to Media on nas.local"), `detail` (GVfs' sentence), `user`, `domain` (SMB only), `anonymous` (the server allows guests), `guest`, `retry`.
+
+- **Registered user / Guest** `SegmentedControl` only when the server allows guests; Guest hides the fields and the button reads **Connect as guest**.
+- Fields as the server needs them: User name (pre-filled from the address, else the login name) and Domain (`WORKGROUP`) side by side for SMB; Password below. Focus starts in the first empty field; Tab moves between them, Enter signs in.
+- **Remember password in the keyring** (off by default): on saves it permanently through GVfs and the Secret Service; off keeps it until logout, so reconnecting in the same session doesn't ask again.
+- A wrong password reopens the dialog with the field in `danger` and "That didn't work. Check the user name and password and try again."
+- Questions go through the same channel: an unknown SSH host key shows GVfs' message in a `bg-deep` well with its choices as buttons (**Log In Anyway** primary, **Cancel Login** ghost). Nothing is ever accepted on Enter.
 """)
 
 # ------------------------------------------------------------------ Files
@@ -700,6 +756,19 @@ The Settings page list, in the sidebar's place: General · Search & index · AI 
 
 - 236px on `bg-sunken`, 32px rows with a glyph; the current page uses the sidebar's active style (`state-active`, `accent-ink` glyph, bold).
 """)
+
+comp("SharesPage", "Pages", 380, """
+return h("div", {className:"ef"}, h(E.SharesPage, {host:"nas.local"}));
+""", """# SharesPage
+
+An SMB server's shares, when an address names no share (`smb://nas.local`, a server found nearby, a saved bare server).
+
+**Provide** `host`, `shares` (`[name, state]`), `state` (`loading`).
+
+- Shown in the pane like the Drives page: breadcrumb and tab carry the server with a `network` glyph; the status bar counts shares. Hidden `$` shares (IPC$, ADMIN$) are left out.
+- Cards: `folder-share` icon, name, and **Connected** (`success`) / **Connecting…** (`info`) / "Windows share". Hover draws a `world-network` border. Click connects and opens.
+- Asking the server may need a sign-in first (`SignInDialog`). Errors show in words with **Try again**.
+""", extra=' width=1100 page')
 
 comp("SettingsPage", "Pages", 900, """
 return h(E.SettingsPage, {height:880});

@@ -1,0 +1,17 @@
+<!-- @dsCard group="Pages" height=380 width=1100 page -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>SharesPage</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef"}, h(E.SharesPage, {host:"nas.local"}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

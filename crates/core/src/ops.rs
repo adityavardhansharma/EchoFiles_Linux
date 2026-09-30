@@ -405,7 +405,9 @@ pub fn plan(kind: Kind, sources: &[PathBuf], dest: &Path, progress: &Progress) -
             return Err("Cancelled.".into());
         }
     }
-    if let Some(f) = &dest_fs
+    // A filesystem reporting no size at all (GVfs' FUSE bridge for network places, some
+    // FUSE mounts) doesn't know its free space; let the copy find out instead.
+    if let Some(f) = dest_fs.as_ref().filter(|f| f.total > 0)
         && cross_fs_bytes > f.free {
             let mut need = String::new();
             crate::fmt::size(cross_fs_bytes, &mut need);

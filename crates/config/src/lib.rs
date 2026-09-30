@@ -29,6 +29,10 @@
 //! pinned = ["~/Projects"]     # the Pinned section, in order
 //! width = 236                 # 180–360, dragged at its edge
 //! hidden = false              # Ctrl+B
+//!
+//! [[network.servers]]           # the Network section, in order
+//! uri = "smb://nas.local/Media" # never holds a password (GVfs keeps those in the keyring)
+//! name = "Media"                # optional; the address's own name otherwise
 //! ```
 
 use std::io;
@@ -177,6 +181,20 @@ impl Default for Sidebar {
     }
 }
 
+/// A saved network place.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Server {
+    pub uri: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Network {
+    pub servers: Vec<Server>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -185,6 +203,7 @@ pub struct Settings {
     pub agents: Agents,
     pub appearance: Appearance,
     pub sidebar: Sidebar,
+    pub network: Network,
 }
 
 pub fn home() -> PathBuf {
@@ -303,6 +322,8 @@ mod tests {
         s.search.index = false;
         s.agents.cli = false;
         s.appearance.density = Density::Compact;
+        s.network.servers.push(Server { uri: "smb://nas/Media".into(), name: None });
+        s.network.servers.push(Server { uri: "sftp://me@box/".into(), name: Some("Box".into()) });
         s.save_to(&file).unwrap();
         assert_eq!(Settings::load_from(&file).unwrap(), s);
         // A file with only one section keeps defaults for the rest.

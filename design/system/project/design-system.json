@@ -1169,8 +1169,8 @@
   },
   "lastChange": {
     "by": "Aditya",
-    "at": "2026-09-27T15:20:00Z",
+    "at": "2026-09-30T22:17:13Z",
     "via": "Claude Code",
-    "note": "Toolbar: List, Grid, Dual pane, Preview pane and Hidden files fold into one View ▾ dropdown (ViewButton + ViewMenu) that shows the current layout's glyph; menu items can carry a trailing check. Command palette glyph is now ⌘ instead of a terminal."
+    "note": "Network places: a Network section under Windows (NetworkItem, magenta world-network mark, + to connect), ConnectDialog (protocol, smart address field, recent and nearby servers), SignInDialog (EchoFiles' own GVfs sign-in and host-key questions) and SharesPage (an SMB server's shares). New token world-network."
   }
 }

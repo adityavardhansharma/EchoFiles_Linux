@@ -52,6 +52,19 @@ fn ms(t: Instant) -> f64 {
 
 /// Error text per the design system: name the thing, the reason, and the fix.
 fn describe(dir: &std::path::Path, e: &std::io::Error) -> String {
+    // A network place: name the server, never GVfs' FUSE path, and say how to recover.
+    let root = ef_net::gvfs::fuse_root();
+    if let Ok(rest) = dir.strip_prefix(&root) {
+        let mut parts = rest.components();
+        let server = parts.next().and_then(|c| ef_net::gvfs::folder_name(&root.join(c))).unwrap_or_else(|| "the server".into());
+        let inside: Vec<String> = parts.map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+        let what = if inside.is_empty() { server.clone() } else { format!("{} on {server}", inside.join("/")) };
+        return match e.kind() {
+            std::io::ErrorKind::PermissionDenied => format!("Couldn't open {what} — the server doesn't let you read it."),
+            std::io::ErrorKind::NotFound if !inside.is_empty() => format!("{what} doesn't exist (any more)."),
+            _ => format!("Lost the connection to {server}. Reconnect it from the Network section in the sidebar."),
+        };
+    }
     let name = ef_config::tilde(dir);
     match e.kind() {
         std::io::ErrorKind::PermissionDenied => format!("Couldn't open {name} — you don't have permission to read it."),
@@ -108,6 +121,8 @@ pub struct Pane {
     pub grid: bool,
     /// Showing the Drives overview instead of a folder.
     pub drives: bool,
+    /// Showing an SMB server's shares instead of a folder.
+    pub shares: Option<crate::network::SharesPage>,
 }
 
 impl Pane {
@@ -141,6 +156,7 @@ impl Pane {
             search_cancel: Arc::new(AtomicBool::new(false)),
             grid: false,
             drives: false,
+            shares: None,
         }
     }
 
@@ -378,10 +394,21 @@ impl Pane {
         self.search_cancel.store(true, Ordering::Relaxed);
     }
 
+    /// A page that isn't a folder (Drives, an SMB server's shares).
+    pub fn special(&self) -> bool {
+        self.drives || self.shares.is_some()
+    }
+
     /// Short label for tabs and the window title.
     pub fn title(&self) -> String {
         if self.drives {
             return "Drives".into();
+        }
+        if let Some(page) = &self.shares {
+            return page.address.host.clone();
+        }
+        if let Some(n) = ef_net::gvfs::folder_name(&self.location) {
+            return n;
         }
         if self.location == ef_config::home() {
             return "Home".into();

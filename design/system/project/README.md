@@ -4,7 +4,7 @@ EchoFiles is a native file manager for Omarchy that treats Linux folders and dua
 
 1. **Omarchy is the design system above this one.** Colours, font, corner radius and borders come from the running Omarchy theme and Hyprland config. EchoFiles adds roles (selection, drop target, world marks), never a competing look. Switching Omarchy themes restyles the app live.
 2. **Speed is the design.** Anything that could make a frame late is not allowed: no blur, no per-row shadows, no animated layout in lists, no variable row heights. Navigation, selection and typing never animate; only the UI's *response* does.
-3. **Three worlds, one window.** Linux, Windows and (later) Phone are told apart by a 6px square world mark and drive names that match what Windows shows ("AVS (D:)"), never by different styling.
+3. **One window for every world.** Linux, Windows, Network (SMB, SFTP and FTP servers) and (later) Phone are told apart by a 6px square world mark and names people recognise — drive names that match what Windows shows ("AVS (D:)"), shares by their name ("Media") — never by different styling or raw mount paths.
 4. **Keyboard first, mouse welcome.** Every action has a shortcut, and every surface that offers an action shows its key hint (`Kbd`). The command palette (Ctrl+K) reaches everything.
 5. **Honest states.** Read-only, dirty, locked, cloud-only, broken link and "flushed to disk" are always visible — as a word *and* a mark, never colour alone.
 
@@ -24,7 +24,7 @@ EchoFiles reads `~/.local/state/omarchy/current/theme/colors.toml` at startup an
 | `accent` | `accent`, `accent-ink`, `focus-ring`, `accent-soft`, `on-accent` | text use pushed to 4.5:1, rings to 3:1, soft = 16% over bg |
 | `selection` | `selection` | as is, adjusted only if `ink` falls below 7:1 on it |
 | `green` `yellow` `red` `cyan` | `success` `warning` `danger` `info` (+ `-soft`, `-ink`, `on-`) | soft = 14% over bg; ink pushed to 4.5:1 on bg, raised and soft |
-| `orange` `blue` `green` | `world-linux` `world-windows` `world-phone` | pushed to 3:1 on the sidebar |
+| `orange` `blue` `magenta` `green` | `world-linux` `world-windows` `world-network` `world-phone` | pushed to 3:1 on the sidebar |
 | `yellow` `blue` `green` `red` `orange` `magenta` | `icon-*` slots | colour icons recolour per theme |
 
 Beyond colour:
@@ -56,7 +56,7 @@ Colour means something or it isn't there. The ground is Omarchy's own; EchoFiles
 - `accent` — the one active thing: the primary button, the active tab's top bar, the focus ring, progress fills, drop targets.
 - `selection` — selected rows and tiles (Omarchy's own selection colour, so selection looks the same as in the terminal and launcher).
 - **Semantic** `success` / `warning` / `danger` / `info` — states and results, always paired with a word or glyph.
-- **World marks** `world-linux` / `world-windows` / `world-phone` — the 6px squares on sidebar sections and pane heads, and drive usage bars. Nowhere else.
+- **World marks** `world-linux` / `world-windows` / `world-network` / `world-phone` — the 6px squares on sidebar sections and pane heads, drive usage bars, and the glyph of a connected network place. Nowhere else.
 
 `brand-*` colours belong to the logo, About and onboarding only; they never mean state.
 
@@ -181,6 +181,15 @@ Settings is its own screen (Ctrl+, or the toolbar gear): top bar with **← File
 ## Search
 
 The search box has two scopes (`SearchScope`, Ctrl+E): **Folder** filters the open folder as you type ("12 of 40 match" in the status bar); **Everywhere** shows `SearchResults` from the index. Esc clears the search from anywhere, even while typing, and navigating anywhere clears it too.
+
+## Network places
+
+Windows shares (SMB), SSH servers (SFTP) and FTP/FTPS servers open like any folder. EchoFiles connects through GVfs (the engine Nautilus uses) and answers its sign-in and host-key questions in its own dialogs.
+
+- **Network** is the last sidebar section (`world-network`, Omarchy `magenta`): saved servers, then live connections made anywhere. `NetworkItem` rows name the place ("Media") and say how and where ("SMB · nas.local"); a connected row carries a Disconnect button.
+- **Connect to server** (Ctrl+Shift+S, the section's `+`, the palette) is `ConnectDialog`; addresses also work in the path bar (Ctrl+L), from the command line and from `smb://`, `sftp://`, `ftp://` links.
+- Sign-in is `SignInDialog`; a bare SMB server opens `SharesPage`.
+- Breadcrumbs, tabs, the status bar and errors use the place's name, never GVfs' `/run/user/…/gvfs/smb-share:server=…` folders. Network files get no thumbnails and never go to the Trash (Delete asks to delete permanently). A server that stops answering closes its folders with a toast saying so.
 
 ## How the pieces come together
 

@@ -1,0 +1,17 @@
+<!-- @dsCard group="Overlays" height=500 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>SignInDialog</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef"}, h(E.SignInDialog, {retry:true}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>
