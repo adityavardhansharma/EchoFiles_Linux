@@ -803,6 +803,7 @@ dependencies = [
  "echofiles-core",
  "echofiles-disks",
  "echofiles-index",
+ "echofiles-net",
  "echofiles-theme",
  "echofiles-vfs",
  "iced",
@@ -856,6 +857,14 @@ dependencies = [
  "rustix 1.1.5",
  "tempfile",
  "unicode-normalization",
+]
+
+[[package]]
+name = "echofiles-net"
+version = "0.1.0"
+dependencies = [
+ "futures-channel",
+ "zbus",
 ]
 
 [[package]]

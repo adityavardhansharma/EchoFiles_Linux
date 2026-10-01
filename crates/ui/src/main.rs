@@ -15,6 +15,7 @@ mod drives;
 mod file_list;
 mod gpu;
 mod indexer;
+mod network;
 mod kinds;
 mod overlay;
 mod pane;
@@ -59,7 +60,7 @@ fn main() -> iced::Result {
         let request = if args.iter().any(|a| a == "--settings") {
             system::Request::Settings
         } else {
-            system::Request::Open(args.iter().find(|a| !a.starts_with("--")).map(|a| ef_config::expand(a)).map(|p| std::fs::canonicalize(&p).unwrap_or(p)))
+            args.iter().find(|a| !a.starts_with("--")).map(|a| system::request_for(a)).unwrap_or(system::Request::Open(None))
         };
         if system::forward_to_running(&request) {
             return Ok(());

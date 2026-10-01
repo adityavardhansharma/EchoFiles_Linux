@@ -65,6 +65,8 @@ pub enum SettingsMsg {
     Skill(bool),
     Density(Density),
     DefaultView(DefaultView),
+    ShowWindows(bool),
+    ShowNetwork(bool),
     Reveal(PathBuf),
     Saved(Result<(), String>),
 }
@@ -313,6 +315,14 @@ impl App {
             SettingsMsg::DefaultView(v) => {
                 self.settings.appearance.view = v;
                 self.apply_default_view();
+                self.save_settings()
+            }
+            SettingsMsg::ShowWindows(on) => {
+                self.settings.sidebar.windows = on;
+                self.save_settings()
+            }
+            SettingsMsg::ShowNetwork(on) => {
+                self.settings.sidebar.network = on;
                 self.save_settings()
             }
             SettingsMsg::Density(d) => {
@@ -853,7 +863,15 @@ impl App {
                 ),
             )],
         );
-        self.page(self.page_head("Appearance", "EchoFiles looks like the rest of your desktop."), vec![theme, layout])
+        let sb = &self.settings.sidebar;
+        let sidebar = self.group(
+            "Sidebar",
+            vec![
+                self.setting("Windows drives", "The Windows section with your NTFS and BitLocker drives. Click its heading to open or close it.", self.toggle(sb.windows, SettingsMsg::ShowWindows)),
+                self.setting("Network places", "The Network section with Windows shares, SSH and FTP servers. Ctrl+Shift+S connects to a server either way.", self.toggle(sb.network, SettingsMsg::ShowNetwork)),
+            ],
+        );
+        self.page(self.page_head("Appearance", "EchoFiles looks like the rest of your desktop."), vec![theme, layout, sidebar])
     }
 
     fn page_about(&self) -> Element<'_, Message> {

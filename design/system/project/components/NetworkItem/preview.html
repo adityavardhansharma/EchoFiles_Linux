@@ -1,0 +1,21 @@
+<!-- @dsCard group="Navigation" height=190 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>NetworkItem</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef", style:{width:236, padding:8, background:"var(--bg-sunken)"}},
+  h(E.NetworkItem, {name:"Media", protocol:"SMB", where:"nas.local", state:"connected", active:true}),
+  h(E.NetworkItem, {name:"Photos", protocol:"SMB", where:"nas.local", state:"connecting"}),
+  h(E.NetworkItem, {name:"build-box", protocol:"SFTP", where:"me@build-box"}),
+  h(E.NetworkItem, {name:"ftp.example.com", protocol:"FTP", where:"ftp.example.com:2121"}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

@@ -96,6 +96,9 @@ pub fn place_name(p: &Path) -> String {
     if p == config::home() {
         return "Home".into();
     }
+    if let Some(n) = ef_net::gvfs::folder_name(p) {
+        return n;
+    }
     p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string())
 }
 
@@ -517,6 +520,12 @@ impl App {
                 // Items already in a trash can only be deleted for good.
                 if paths.iter().any(|p| p.parent().is_some_and(trash::is_trash_files)) {
                     return self.file_update(FileMsg::AskDelete);
+                }
+                // Network servers have no Trash (and a `.Trash-1000` folder left on someone's
+                // share would be rude): say so and offer deleting for good.
+                if paths.iter().any(|p| ef_net::gvfs::is_network_path(p)) {
+                    self.dialog = Some(Dialog::Delete { paths, reason: Some("Files on network servers can't go to the Trash.".into()), opened: Instant::now() });
+                    return Task::none();
                 }
                 self.select_after_removal();
                 background(move || Arc::new(ops::trash_all(&paths)), |r| Message::File(FileMsg::Trashed(r)))

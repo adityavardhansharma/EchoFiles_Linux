@@ -1,0 +1,17 @@
+<!-- @dsCard group="Overlays" height=600 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>ConnectDialog</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef"}, h(E.ConnectDialog, {value:"nas.local:4445/Media", parsed:"ok", describe:"Windows share “Media” on nas.local · port 4445", recent:[["Media on nas.local","smb://nas.local/Media/","network"],["me on build-box","sftp://me@build-box/","server"]], nearby:[["Living Room NAS","SMB · nas.local","network"]]}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

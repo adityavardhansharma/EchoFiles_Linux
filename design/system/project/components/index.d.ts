@@ -4,7 +4,7 @@ import type * as React from 'react';
 export type GlyphName = string;
 /** Colour icon names shipped in assets/icons/color (71). */
 export type ColorIconName = string;
-export type World = 'linux' | 'windows' | 'phone';
+export type World = 'linux' | 'windows' | 'network' | 'phone';
 export type DriveState = 'mounted' | 'readonly' | 'dirty' | 'locked' | 'unmounted' | 'mounting';
 
 export interface IconProps { name: GlyphName; size?: number; strokeWidth?: number; label?: string; className?: string }
@@ -43,7 +43,7 @@ export declare function ViewButton(props: { grid?: boolean; open?: boolean }): R
 export declare function ViewMenu(props: { grid?: boolean; dual?: boolean; preview?: boolean; hidden?: boolean }): React.ReactElement;
 export declare function Toolbar(props: ToolbarProps): React.ReactElement;
 export declare function Sidebar(props: { children?: React.ReactNode }): React.ReactElement;
-export interface SidebarSectionProps { title: string; world?: World; count?: number; children?: React.ReactNode }
+export interface SidebarSectionProps { title: string; world?: World; count?: number; action?: React.ReactNode; collapsible?: boolean; defaultOpen?: boolean; children?: React.ReactNode }
 export declare function SidebarSection(props: SidebarSectionProps): React.ReactElement;
 export interface SidebarItemProps { icon?: GlyphName; label: string; active?: boolean; trail?: string; dropTarget?: boolean }
 export declare function SidebarItem(props: SidebarItemProps): React.ReactElement;
@@ -73,7 +73,7 @@ export interface DriveCardProps { name: string; icon?: ColorIconName; fs: string
 export declare function DriveCard(props: DriveCardProps): React.ReactElement;
 export interface UsageBarProps { value: number; world?: World; color?: string; large?: boolean; label?: string }
 export declare function UsageBar(props: UsageBarProps): React.ReactElement;
-export interface StatePillProps { state?: DriveState | 'cloud' | 'ads' | 'hidden' | 'system'; tone?: 'success' | 'warning' | 'danger' | 'info' | 'accent' | null; children?: React.ReactNode }
+export interface StatePillProps { state?: DriveState | 'connecting' | 'cloud' | 'ads' | 'hidden' | 'system'; tone?: 'success' | 'warning' | 'danger' | 'info' | 'accent' | null; children?: React.ReactNode }
 export declare function StatePill(props: StatePillProps): React.ReactElement;
 
 export declare function Spinner(props: { large?: boolean; label?: string }): React.ReactElement;
@@ -119,3 +119,12 @@ export declare function DualPane(props: { height?: number }): React.ReactElement
 export declare function MotionSpec(props: {}): React.ReactElement;
 
 declare global { interface Window { Echo: typeof import('./index') } }
+
+/** A saved or connected network place in the sidebar (SMB, SFTP, FTP). */
+export declare function NetworkItem(props: { name: string; protocol: "SMB" | "SFTP" | "FTP" | "FTPS"; where: string; state?: "connected" | "disconnected" | "connecting"; active?: boolean }): any;
+/** Connect to Server (Ctrl+Shift+S): protocol, smart address field, recent and nearby servers. */
+export declare function ConnectDialog(props: { protocol?: "SMB" | "SFTP" | "FTP" | "FTPS"; value?: string; parsed?: "ok" | "error"; describe?: string; state?: "connecting"; error?: string; recent?: [string, string, string?][]; nearby?: [string, string, string?][]; height?: number }): any;
+/** A server asks for a user name and password (from GVfs' mount operation). */
+export declare function SignInDialog(props: { title?: string; detail?: string; user?: string; domain?: boolean; anonymous?: boolean; guest?: boolean; retry?: boolean; height?: number }): any;
+/** An SMB server's shares, shown in a pane when an address has no share. */
+export declare function SharesPage(props: { host?: string; shares?: [string, ("connected" | "connecting")?][]; state?: "loading" }): any;

@@ -58,13 +58,13 @@ Type=Application
 Name=EchoFiles
 GenericName=File Manager
 Comment=Fast file manager for Linux and Windows drives
-Exec=$(exec_arg "$BIN/echofiles") %F
+Exec=$(exec_arg "$BIN/echofiles") %U
 Icon=echofiles
 Terminal=false
 Categories=System;FileTools;FileManager;Utility;
-MimeType=inode/directory;
+MimeType=inode/directory;x-scheme-handler/smb;x-scheme-handler/sftp;x-scheme-handler/ftp;x-scheme-handler/ftps;
 StartupWMClass=echofiles
-Keywords=files;folders;search;explorer;
+Keywords=files;folders;search;explorer;network;smb;sftp;ftp;
 Actions=Settings;
 
 [Desktop Action Settings]

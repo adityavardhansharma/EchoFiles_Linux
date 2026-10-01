@@ -24,6 +24,13 @@ use crate::widgets::{self as w, Variant};
 
 const TABS_H: f32 = 32.0;
 
+/// A sidebar section that folds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fold {
+    Windows,
+    Network,
+}
+
 impl App {
     fn glyph<'a>(&self, name: &str, size: f32, tint: Color) -> Element<'a, Message> {
         w::glyph(&self.icons, name, size, tint)
@@ -52,6 +59,10 @@ impl App {
         let home = config::home();
         let (base, mut out) = if let Ok(rest) = location.strip_prefix(&home) {
             (rest.to_path_buf(), vec![(Some("home"), "Home".to_string(), home.clone())])
+        } else if let Some((m, name)) = self.net_place_at(location) {
+            // A network place: its name, never GVfs' `smb-share:server=…` folder.
+            let rest = location.strip_prefix(&m.root).unwrap_or(Path::new("")).to_path_buf();
+            (rest, vec![(Some("network"), name, m.root.clone())])
         } else if let Some((v, mp)) = self.volumes.iter().find_map(|v| v.mount_points.iter().find(|m| location.starts_with(m.as_str())).map(|m| (v, m.clone()))) {
             let rest = location.strip_prefix(&mp).unwrap_or(Path::new("")).to_path_buf();
             (rest, vec![(Some("drive"), display_name(v, &self.volumes), PathBuf::from(mp))])
@@ -88,7 +99,7 @@ impl App {
             body = body.push(self.resize_handle());
         }
         body = body.push(center);
-        if self.settings.appearance.preview && !self.pane().drives {
+        if self.settings.appearance.preview && !self.pane().special() {
             body = body.push(w::vline(p.line));
             body = body.push(self.preview_view());
         }
@@ -105,6 +116,9 @@ impl App {
             layers.push(m);
         }
         if let Some(c) = self.command_layer() {
+            layers.push(c);
+        }
+        if let Some(c) = self.connect_layer() {
             layers.push(c);
         }
         if let Some(d) = self.dialog_layer() {
@@ -143,8 +157,16 @@ impl App {
         for (i, t) in self.tabs.iter().enumerate() {
             let active = i == self.tab;
             let pane = &t.panes[t.active];
-            let icon = if pane.drives { "drive" } else if pane.location == config::home() { "home" } else { "folder" };
-            let mut content = row![self.glyph(icon, 14.0, color(if active { p.accent_ink } else { p.ink_muted })), text(t.title()).size(style::META).font(if active { style::FONT_BOLD } else { style::FONT }).color(color(if active { p.ink_strong } else { p.ink_muted })).wrapping(text::Wrapping::None)]
+            let icon = if pane.drives {
+                "drive"
+            } else if pane.shares.is_some() || ef_net::gvfs::is_network_path(&pane.location) {
+                "network"
+            } else if pane.location == config::home() {
+                "home"
+            } else {
+                "folder"
+            };
+            let mut content = row![self.glyph(icon, 14.0, color(if active { p.accent_ink } else { p.ink_muted })), text(self.pane_title(pane)).size(style::META).font(if active { style::FONT_BOLD } else { style::FONT }).color(color(if active { p.ink_strong } else { p.ink_muted })).wrapping(text::Wrapping::None)]
                 .spacing(6)
                 .align_y(Alignment::Center);
             if t.panes.len() == 2 {
@@ -190,7 +212,13 @@ impl App {
                 .into();
         }
         let pane = self.pane();
-        let mut crumbs = if pane.drives { vec![(Some("drive"), "Drives".to_string(), PathBuf::new())] } else { self.crumbs_for(&pane.location) };
+        let mut crumbs = if pane.drives {
+            vec![(Some("drive"), "Drives".to_string(), PathBuf::new())]
+        } else if let Some(page) = &pane.shares {
+            vec![(Some("network"), page.address.host_port(), PathBuf::new())]
+        } else {
+            self.crumbs_for(&pane.location)
+        };
         // Overflow: middle segments fold into "…" (a menu) when the path is long.
         let budget = (self.window_size.width - if self.settings.sidebar.hidden { 0.0 } else { self.settings.sidebar.width as f32 } - 720.0).max(160.0);
         let width = |c: &[(Option<&'static str>, String, PathBuf)]| c.iter().map(|(i, l, _)| l.chars().count() as f32 * 7.8 + 12.0 + if i.is_some() { 20.0 } else { 0.0 } + 16.0).sum::<f32>();
@@ -358,22 +386,67 @@ impl App {
                 col = col.push(self.side_item("pin", label, path, true, 0.0));
             }
         }
-        col = col.push(Space::new().height(style::SPACE_5));
-        col = col.push(self.section("Windows", Some(color(p.world_windows)), (!self.volumes.is_empty()).then_some(self.volumes.len())));
-        if self.volumes.is_empty() {
-            col = col.push(container(text("No Windows drives found").size(style::META).font(style::FONT).color(color(p.ink_muted))).padding([4, 12]));
+        if self.settings.sidebar.windows {
+            col = col.push(Space::new().height(style::SPACE_5));
+            col = col.push(self.windows_section());
         }
-        for (i, v) in self.volumes.iter().enumerate() {
-            col = col.push(self.drive_item(i, v));
+        if self.settings.sidebar.network {
+            col = col.push(Space::new().height(style::SPACE_5));
+            col = col.push(self.network_section());
         }
-        col = col.push(Space::new().height(style::SPACE_4));
-        col = col.push(self.side_button("sliders", "All drives", Message::ShowDrives, self.pane().drives));
         // A thin scrollbar beside the rows, never over them.
         let bar = scrollable::Scrollbar::new().width(4).scroller_width(4).spacing(4);
         w::fill(scrollable(col).direction(scrollable::Direction::Vertical(bar)).height(Length::Fill), p.bg_sunken).width(self.settings.sidebar.width as f32).height(Length::Fill).padding([12, 8]).into()
     }
 
-    fn side_button<'a>(&'a self, icon: &str, label: &str, msg: Message, active: bool) -> Element<'a, Message> {
+    /// A section head that folds its section: chevron, world mark, title, count, and an
+    /// optional action at the end (design system `SidebarSection` with `collapsible`).
+    pub(crate) fn fold_head<'a>(&'a self, title: &str, mark: Color, count: Option<usize>, open: bool, section: Fold, action: Option<Element<'a, Message>>) -> Element<'a, Message> {
+        let p = &self.palette;
+        let muted = color(p.ink_muted);
+        let mut r = row![
+            self.glyph(if open { "chevron-down" } else { "chevron-right" }, 12.0, muted),
+            container(Space::new()).width(6).height(6).style(move |_| container::Style { background: Some(Background::Color(mark)), ..Default::default() }),
+            text(title.to_uppercase()).size(style::LABEL).font(style::FONT_BOLD).color(muted).width(Length::Fill),
+        ]
+        .spacing(style::SPACE_3)
+        .align_y(Alignment::Center);
+        if let Some(n) = count {
+            r = r.push(text(n.to_string()).size(style::LABEL).font(style::FONT).color(muted));
+        }
+        if let Some(a) = action {
+            r = r.push(a);
+        }
+        let head = w::row_button(p, container(r).height(24).align_y(Alignment::Center).into(), false, Some(Message::Fold(section, !open)));
+        self.tip(head, if open { "Collapse" } else { "Expand" }, None)
+    }
+
+    /// Windows drives. Collapsed, only the drive you're in (or All drives, when that's
+    /// open) stays, so the sidebar always shows where you are.
+    fn windows_section(&self) -> Element<'_, Message> {
+        let p = &self.palette;
+        let open = self.settings.sidebar.windows_open;
+        let pane = self.pane();
+        let mut col = column![self.fold_head("Windows", color(p.world_windows), (!self.volumes.is_empty()).then_some(self.volumes.len()), open, Fold::Windows, None)].spacing(1);
+        if open && self.volumes.is_empty() {
+            col = col.push(container(text("No Windows drives found").size(style::META).font(style::FONT).color(color(p.ink_muted))).padding([4, 12]));
+        }
+        let here = if pane.special() { None } else { self.volume_at(&pane.location).map(|(i, _)| i) };
+        for (i, v) in self.volumes.iter().enumerate() {
+            if open || here == Some(i) {
+                col = col.push(self.drive_item(i, v));
+            }
+        }
+        if open || pane.drives {
+            if open {
+                col = col.push(Space::new().height(style::SPACE_4));
+            }
+            col = col.push(self.side_button("sliders", "All drives", Message::ShowDrives, pane.drives));
+        }
+        col.into()
+    }
+
+    pub(crate) fn side_button<'a>(&'a self, icon: &str, label: &str, msg: Message, active: bool) -> Element<'a, Message> {
         let p = &self.palette;
         let tint = if active { color(p.accent_ink) } else { color(p.ink_muted) };
         let r = row![self.glyph(icon, 16.0, tint), text(label.to_string()).size(style::BODY).font(if active { style::FONT_BOLD } else { style::FONT }).color(color(if active { p.ink_strong } else { p.ink })).width(Length::Fill)]
@@ -386,7 +459,7 @@ impl App {
     fn side_item<'a>(&'a self, icon: &str, label: String, path: PathBuf, pinned: bool, indent: f32) -> Element<'a, Message> {
         let p = &self.palette;
         let pane = self.pane();
-        let active = pane.location == path && !self.everywhere() && !pane.drives;
+        let active = pane.location == path && !self.everywhere() && !pane.special();
         let drop = self.drag.is_some() && self.drop_place.as_ref() == Some(&path);
         let tint = if active || drop { color(p.accent_ink) } else { color(p.ink_muted) };
         let ink = if active { color(p.ink_strong) } else { color(p.ink) };
@@ -434,6 +507,8 @@ impl App {
         let p = &self.palette;
         let content: Element<'a, Message> = if pane.drives {
             self.drives_view()
+        } else if let Some(page) = &pane.shares {
+            self.shares_view(page)
         } else if pane.everywhere() {
             self.results_view(pane)
         } else {
@@ -443,13 +518,19 @@ impl App {
         if dual {
             // Each pane says where it is and which world it's in; the active one carries
             // the accent edge.
-            let world = if self.volume_at(&pane.location).is_some() { p.world_windows } else { p.world_linux };
+            let world = if pane.shares.is_some() || ef_net::gvfs::is_network_path(&pane.location) {
+                p.world_network
+            } else if self.volume_at(&pane.location).is_some() {
+                p.world_windows
+            } else {
+                p.world_linux
+            };
             let edge = if active { color(p.accent) } else { color(p.line) };
             col = col.push(container(Space::new()).width(Length::Fill).height(2).style(move |_| container::Style { background: Some(Background::Color(edge)), ..Default::default() }));
             let wc = color(world);
             let head = row![
                 container(Space::new()).width(6).height(6).style(move |_| container::Style { background: Some(Background::Color(wc)), ..Default::default() }),
-                text(if pane.drives { "Drives".to_string() } else { config::tilde(&pane.location) }).size(style::META).font(if active { style::FONT_BOLD } else { style::FONT }).color(color(if active { p.ink_strong } else { p.ink_muted })).wrapping(text::Wrapping::None),
+                text(if pane.special() { pane.title() } else { self.net_uri_for(&pane.location).unwrap_or_else(|| config::tilde(&pane.location)) }).size(style::META).font(if active { style::FONT_BOLD } else { style::FONT }).color(color(if active { p.ink_strong } else { p.ink_muted })).wrapping(text::Wrapping::None),
             ]
             .spacing(style::SPACE_3)
             .align_y(Alignment::Center);
@@ -633,6 +714,12 @@ impl App {
         let mut left = String::new();
         if pane.drives {
             left.push_str(&format!("{} Windows {}", self.volumes.len(), if self.volumes.len() == 1 { "drive" } else { "drives" }));
+        } else if let Some(page) = &pane.shares {
+            match &page.shares {
+                Some(Ok(v)) => left.push_str(&format!("{} {}", v.len(), if v.len() == 1 { "share" } else { "shares" })),
+                Some(Err(_)) => left.push_str("Couldn't read the shares"),
+                None => left.push_str("Reading shares…"),
+            }
         } else if pane.everywhere() {
             match &pane.results {
                 Some(r) => {
@@ -699,7 +786,16 @@ impl App {
         }
         // The volume: its name, driver and state repeat here so read-only is never a surprise.
         let mut pill: Option<Element<'_, Message>> = None;
-        if let Some(f) = pane.fs.as_ref().filter(|_| !pane.drives) {
+        let net = if pane.special() { None } else { self.net_place_at(&pane.location) };
+        if let Some((m, name)) = &net {
+            // Network: which server and how, instead of FUSE's made-up free space.
+            right.push_str(name);
+            right.push_str(" · ");
+            right.push_str(m.protocol().map_or(m.kind.as_str(), |p| p.label()));
+            if pane.fs.as_ref().is_some_and(|f| f.read_only) {
+                pill = Some(w::pill(p, "Read-only", Some(p.warning)));
+            }
+        } else if let Some(f) = pane.fs.as_ref().filter(|_| !pane.special()) {
             match self.volume_at(&pane.location) {
                 Some((_, v)) => {
                     right.push_str(&display_name(v, &self.volumes));

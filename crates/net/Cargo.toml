@@ -1,0 +1,15 @@
+[package]
+name = "echofiles-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "ef_net"
+
+[dependencies]
+futures-channel = "0.3.34"
+zbus.workspace = true
+
+[[example]]
+name = "netprobe"

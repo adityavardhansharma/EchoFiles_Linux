@@ -29,6 +29,14 @@
 //! pinned = ["~/Projects"]     # the Pinned section, in order
 //! width = 236                 # 180–360, dragged at its edge
 //! hidden = false              # Ctrl+B
+//! windows = true              # show the Windows section (drives)
+//! network = true              # show the Network section
+//! windows_open = false        # sections start collapsed; the head row toggles them
+//! network_open = false
+//!
+//! [[network.servers]]           # the Network section, in order
+//! uri = "smb://nas.local/Media" # never holds a password (GVfs keeps those in the keyring)
+//! name = "Media"                # optional; the address's own name otherwise
 //! ```
 
 use std::io;
@@ -169,12 +177,34 @@ pub struct Sidebar {
     pub pinned: Vec<String>,
     pub width: u16,
     pub hidden: bool,
+    /// Show the Windows section.
+    pub windows: bool,
+    /// Show the Network section.
+    pub network: bool,
+    /// The Windows section is expanded (collapsed by default).
+    pub windows_open: bool,
+    /// The Network section is expanded (collapsed by default).
+    pub network_open: bool,
 }
 
 impl Default for Sidebar {
     fn default() -> Self {
-        Sidebar { pinned: Vec::new(), width: 236, hidden: false }
+        Sidebar { pinned: Vec::new(), width: 236, hidden: false, windows: true, network: true, windows_open: false, network_open: false }
     }
+}
+
+/// A saved network place.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Server {
+    pub uri: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Network {
+    pub servers: Vec<Server>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,6 +215,7 @@ pub struct Settings {
     pub agents: Agents,
     pub appearance: Appearance,
     pub sidebar: Sidebar,
+    pub network: Network,
 }
 
 pub fn home() -> PathBuf {
@@ -303,6 +334,8 @@ mod tests {
         s.search.index = false;
         s.agents.cli = false;
         s.appearance.density = Density::Compact;
+        s.network.servers.push(Server { uri: "smb://nas/Media".into(), name: None });
+        s.network.servers.push(Server { uri: "sftp://me@box/".into(), name: Some("Box".into()) });
         s.save_to(&file).unwrap();
         assert_eq!(Settings::load_from(&file).unwrap(), s);
         // A file with only one section keeps defaults for the rest.

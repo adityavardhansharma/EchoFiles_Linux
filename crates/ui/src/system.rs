@@ -19,7 +19,24 @@ use iced::futures::channel::mpsc;
 pub enum Request {
     /// Show a window (at this folder, if given).
     Open(Option<PathBuf>),
+    /// Connect to a network address (`smb://nas/Media`) and show it.
+    Connect(String),
     Settings,
+}
+
+/// What a launch argument asks for: a network address, a `file://` URI (desktop entries
+/// pass `%U`) or a path.
+pub fn request_for(arg: &str) -> Request {
+    let is_net = arg.starts_with("\\\\") || arg.split_once("://").is_some_and(|(s, _)| ef_net::Protocol::from_scheme(s).is_some());
+    if is_net {
+        return Request::Connect(arg.to_string());
+    }
+    let path = match arg.strip_prefix("file://") {
+        // file:///home/me or file://localhost/home/me
+        Some(rest) => PathBuf::from(ef_net::address::decode(rest.strip_prefix("localhost").unwrap_or(rest))),
+        None => ef_config::expand(arg),
+    };
+    Request::Open(Some(std::fs::canonicalize(&path).unwrap_or(path)))
 }
 
 /// If EchoFiles is already running, hand it this launch's request and return `true`.
@@ -28,6 +45,7 @@ pub fn forward_to_running(req: &Request) -> bool {
     let line = match req {
         Request::Open(Some(p)) => format!("open\t{}\n", p.display()),
         Request::Open(None) => "open\n".into(),
+        Request::Connect(uri) => format!("connect\t{uri}\n"),
         Request::Settings => "settings\n".into(),
     };
     s.write_all(line.as_bytes()).is_ok()
@@ -56,6 +74,7 @@ pub fn listen() -> bool {
                 let line = line.trim_end_matches('\n');
                 let req = match line.split_once('\t') {
                     Some(("open", p)) if !p.is_empty() => Request::Open(Some(PathBuf::from(p))),
+                    Some(("connect", u)) if !u.is_empty() => Request::Connect(u.to_string()),
                     _ if line == "settings" => Request::Settings,
                     _ => Request::Open(None),
                 };

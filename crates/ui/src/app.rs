@@ -1,5 +1,5 @@
 //! Application state and update loop. The folder views live in `pane.rs`; what the app
-//! does to files in `actions.rs`; drives in `drives.rs`; menus, dialogs, toasts and the
+//! does to files in `actions.rs`; drives in `drives.rs`; network places in `network.rs`; menus, dialogs, toasts and the
 //! command palette in `overlay.rs`; the preview pane in `preview.rs`; the files screen in
 //! `view.rs` and Settings in `settings.rs`.
 
@@ -24,6 +24,7 @@ use crate::actions::{Clip, FileMsg, Rename, Transfer};
 use crate::drives::{DriveMsg, DriveState};
 use crate::file_list::{self, Action};
 use crate::indexer::{self, IndexState, RootIndex, Watcher};
+use crate::network::{NetMsg, NetState};
 use crate::overlay::{Command, Dialog, Menu, MenuFor, Toast, UiMsg};
 use crate::pane::{Loaded, Pane};
 use crate::preview::PreviewData;
@@ -75,6 +76,9 @@ pub enum Message {
     // subsystems
     File(FileMsg),
     Drive(DriveMsg),
+    Net(NetMsg),
+    /// Fold or unfold a sidebar section.
+    Fold(crate::view::Fold, bool),
     Ui(UiMsg),
     Thumb(PathBuf, Option<Pixels>),
     Preview(PathBuf, Arc<PreviewData>),
@@ -141,6 +145,7 @@ pub struct App {
     pub(crate) volumes: Vec<Volume>,
     pub(crate) volume_fs: Vec<Option<FsInfo>>,
     pub(crate) drive_state: HashMap<String, DriveState>,
+    pub(crate) net: NetState,
     pub(crate) notice: Option<String>,
     bench: Option<Bench>,
     first_frame_logged: bool,
@@ -251,12 +256,15 @@ impl App {
         let palette = ef_theme::load_active();
         let icons = Icons::new(&palette);
         let bench_dir = std::env::var_os("ECHOFILES_BENCH").map(PathBuf::from);
-        let path_arg = args.iter().find(|a| !a.starts_with("--")).map(|a| config::expand(a));
-        let start = bench_dir
-            .clone()
-            .or(path_arg)
-            .or_else(|| (settings.general.open_to == config::OpenTo::Last).then(system::last_folder).flatten())
-            .unwrap_or_else(config::home);
+        let launch = args.iter().find(|a| !a.starts_with("--")).map(|a| system::request_for(a));
+        let path_arg = match &launch {
+            Some(Request::Open(Some(p))) => Some(p.clone()),
+            _ => None,
+        };
+        // A network folder from last time may not be connected now (and asking a gone
+        // server can stall), so those start at home.
+        let last = (settings.general.open_to == config::OpenTo::Last).then(system::last_folder).flatten().filter(|p| !ef_net::gvfs::is_network_path(p));
+        let start = bench_dir.clone().or(path_arg).or(last).unwrap_or_else(config::home);
 
         let (tx, rx) = mpsc::unbounded();
         CHANGES.get_or_init(|| Mutex::new(Some(rx)));
@@ -284,6 +292,7 @@ impl App {
             volumes: Vec::new(),
             volume_fs: Vec::new(),
             drive_state: HashMap::new(),
+            net: NetState { recent: crate::network::load_recent(), ..Default::default() },
             notice: None,
             bench: bench_dir.map(|_| Bench { frames: Vec::with_capacity(700), last: None, started: false }),
             first_frame_logged: false,
@@ -319,6 +328,13 @@ impl App {
         let mut tasks = vec![app.load_active(start)];
         tasks.push(background(|| ef_disks::windows_volumes().map_err(|e| e.to_string()), |r| Message::Drive(DriveMsg::Volumes(r))));
         tasks.push(background(animations_enabled, |on| Message::Drive(DriveMsg::Animations(on))));
+        tasks.push(crate::network::boot_tasks());
+        if let Some(Request::Connect(uri)) = launch {
+            match ef_net::Address::parse(&uri, ef_net::Protocol::Smb) {
+                Ok(address) => tasks.push(app.net_update(NetMsg::Connect { address, save: false })),
+                Err(e) => app.toast_error(format!("Can't open {uri}"), e),
+            }
+        }
         if app.settings.search.index {
             let cfg = app.settings.search.clone();
             tasks.push(background(move || indexer::open_existing(&cfg), Message::IndexOpened));
@@ -333,8 +349,20 @@ impl App {
     pub fn title(&self, _window: window::Id) -> String {
         match self.mode {
             Mode::Settings => "Settings — EchoFiles".into(),
-            Mode::Files => format!("{} — EchoFiles", self.pane().title()),
+            Mode::Files => format!("{} — EchoFiles", self.pane_title(self.pane())),
         }
+    }
+
+    /// A pane's name for tabs and the window title; network roots use the name people
+    /// gave the place, not GVfs' folder name.
+    pub(crate) fn pane_title(&self, pane: &Pane) -> String {
+        if !pane.special()
+            && let Some((m, name)) = self.net_place_at(&pane.location)
+            && pane.location == m.root
+        {
+            return name;
+        }
+        pane.title()
     }
 
     // ------------------------------------------------------------------ panes
@@ -430,7 +458,7 @@ impl App {
 
     /// Reload every pane showing `dir` (after we changed something there).
     pub(crate) fn refresh(&mut self, dir: &Path) -> Task<Message> {
-        let ids: Vec<u64> = self.all_panes().filter(|p| p.location == dir && !p.drives).map(|p| p.id).collect();
+        let ids: Vec<u64> = self.all_panes().filter(|p| p.location == dir && !p.special()).map(|p| p.id).collect();
         Task::batch(ids.into_iter().map(|id| self.reload_pane(id)))
     }
 
@@ -440,10 +468,10 @@ impl App {
         self.rename = None;
         self.path_edit = None;
         let pane = self.pane_mut();
-        if dir == pane.location && pane.results.is_none() && !pane.drives {
+        if dir == pane.location && pane.results.is_none() && !pane.special() {
             return Task::none();
         }
-        if record && (dir != pane.location || pane.drives) {
+        if record && (dir != pane.location || pane.special()) {
             let old = std::mem::replace(&mut pane.location, dir.clone());
             pane.back.push(old);
             pane.forward.clear();
@@ -451,6 +479,7 @@ impl App {
             pane.location = dir.clone();
         }
         pane.drives = false;
+        pane.shares = None;
         pane.clear_search();
         self.notice = None;
         self.recent.retain(|p| p != &dir);
@@ -655,15 +684,25 @@ impl App {
                 Task::none()
             }
             Message::LoadFailed { generation, error } => {
+                let hidden = self.show_hidden;
+                let mut task = Task::none();
                 if let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.generation == generation) {
                     pane.pending = false;
                     pane.skeleton = false;
                     if let Some(prev) = pane.back.pop() {
-                        pane.location = prev;
+                        // What's on screen may be the folder that just failed (a reload, a
+                        // server that went away): show the one we're back at for real.
+                        let shown_failed = pane.loaded.is_some() && pane.location != prev;
+                        pane.location = prev.clone();
+                        if shown_failed {
+                            task = pane.load(prev, hidden);
+                        }
                     }
+                    // The facts shown belong to where the pane is back at, not the failed place.
+                    pane.fs = volume::fs_info(&pane.location);
                     self.notice = Some(error);
                 }
-                Task::none()
+                task
             }
             Message::ShowSkeleton(generation) => {
                 if let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.generation == generation)
@@ -752,7 +791,7 @@ impl App {
                     self.mode = Mode::Files;
                     self.watch_visible();
                     // Background tabs aren't watched: catch up on what changed meanwhile.
-                    let ids: Vec<u64> = self.tabs[i].panes.iter().filter(|p| !p.drives).map(|p| p.id).collect();
+                    let ids: Vec<u64> = self.tabs[i].panes.iter().filter(|p| !p.special()).map(|p| p.id).collect();
                     return Task::batch(ids.into_iter().map(|id| self.reload_pane(id)));
                 }
                 Task::none()
@@ -829,6 +868,7 @@ impl App {
             Message::ShowDrives => {
                 self.mode = Mode::Files;
                 let pane = self.pane_mut();
+                pane.shares = None;
                 if !pane.drives {
                     pane.drives = true;
                     pane.clear_search();
@@ -889,7 +929,8 @@ impl App {
             // ---- path bar
             Message::EditPath(on) => {
                 if on {
-                    let s = self.pane().location.to_string_lossy().into_owned();
+                    let loc = self.pane().location.clone();
+                    let s = self.net_uri_for(&loc).unwrap_or_else(|| loc.to_string_lossy().into_owned());
                     self.path_edit = Some(s);
                     Task::batch([iced::widget::operation::focus(PATH_ID), iced::widget::operation::select_all(PATH_ID)])
                 } else {
@@ -903,6 +944,16 @@ impl App {
             }
             Message::PathSubmit => {
                 let Some(raw) = self.path_edit.clone() else { return Task::none() };
+                if let Request::Connect(uri) = system::request_for(raw.trim()) {
+                    self.path_edit = None;
+                    return match ef_net::Address::parse(&uri, ef_net::Protocol::Smb) {
+                        Ok(a) => self.connect(a, false),
+                        Err(e) => {
+                            self.toast_error("Can't go there".into(), e);
+                            Task::none()
+                        }
+                    };
+                }
                 match self.resolve_typed_path(raw.trim()) {
                     Ok(p) if p.is_dir() => {
                         self.path_edit = None;
@@ -920,6 +971,10 @@ impl App {
                             _ => Task::none(),
                         }
                     }
+                    Ok(p) if ef_net::gvfs::is_network_path(&p) => {
+                        self.toast_error("That network place isn't connected".into(), "Connect it from the Network section, or type its address (smb://, sftp://, ftp://).".into());
+                        Task::none()
+                    }
                     Ok(p) => {
                         self.toast_error("No such folder".into(), format!("{} doesn't exist. Check the spelling.", p.display()));
                         Task::none()
@@ -933,6 +988,14 @@ impl App {
             // ---- subsystems
             Message::File(m) => self.file_update(m),
             Message::Drive(m) => self.drive_update(m),
+            Message::Net(m) => self.net_update(m),
+            Message::Fold(section, open) => {
+                match section {
+                    crate::view::Fold::Windows => self.settings.sidebar.windows_open = open,
+                    crate::view::Fold::Network => self.settings.sidebar.network_open = open,
+                }
+                self.persist_settings()
+            }
             Message::Ui(m) => self.ui_update(m),
             Message::Thumb(path, px) => {
                 let jobs = self.thumbs.done(path, px);
@@ -1035,12 +1098,22 @@ impl App {
                 if !(change.visible || self.show_hidden) || self.mode != Mode::Files {
                     return Task::none();
                 }
-                let ids: Vec<u64> = self.tabs[self.tab].panes.iter().filter(|p| p.location == change.folder && !p.drives).map(|p| p.id).collect();
+                let ids: Vec<u64> = self.tabs[self.tab].panes.iter().filter(|p| p.location == change.folder && !p.special()).map(|p| p.id).collect();
                 Task::batch(ids.into_iter().map(|id| self.reload_pane(id)))
             }
             Message::Request(req) => {
                 if let Request::Open(Some(p)) = &req {
                     let t = self.go(p.clone(), true);
+                    return Task::batch([t, self.show_window()]);
+                }
+                if let Request::Connect(uri) = &req {
+                    let t = match ef_net::Address::parse(uri, ef_net::Protocol::Smb) {
+                        Ok(a) => self.connect(a, false),
+                        Err(e) => {
+                            self.toast_error(format!("Can't open {uri}"), e);
+                            Task::none()
+                        }
+                    };
                     return Task::batch([t, self.show_window()]);
                 }
                 if matches!(req, Request::Settings) {
@@ -1224,6 +1297,9 @@ impl App {
         if let Some(d) = self.dialog.take() {
             return self.dialog_cancelled(d);
         }
+        if self.net.form.is_some() {
+            return self.net_update(NetMsg::Close);
+        }
         if self.rename.take().is_some() {
             return Task::none();
         }
@@ -1243,8 +1319,9 @@ impl App {
             pane.clear_search();
             return pane.reorder(hidden);
         }
-        if pane.drives {
+        if pane.special() {
             pane.drives = false;
+            pane.shares = None;
             return Task::none();
         }
         pane.clear_selection();
@@ -1261,9 +1338,18 @@ impl App {
         if self.mode == Mode::Settings {
             return Task::none();
         }
+        let tab = |shift: bool| if shift { iced::widget::operation::focus_previous() } else { iced::widget::operation::focus_next() };
         if self.dialog.is_some() {
             return match key.as_ref() {
                 Key::Named(Named::Enter) => self.ui_update(UiMsg::DialogDefault),
+                Key::Named(Named::Tab) => tab(shift),
+                _ => Task::none(),
+            };
+        }
+        if self.net.form.is_some() {
+            return match key.as_ref() {
+                Key::Named(Named::Enter) => self.net_update(NetMsg::Submit),
+                Key::Named(Named::Tab) => tab(shift),
                 _ => Task::none(),
             };
         }
@@ -1339,6 +1425,7 @@ impl App {
             Key::Character("l") if ctrl => Some(Message::EditPath(true)),
             Key::Character("b") if ctrl => Some(Message::ToggleSidebar),
             Key::Character("d") | Key::Character("D") if ctrl && shift => Some(Message::ShowDrives),
+            Key::Character("s") | Key::Character("S") if ctrl && shift => Some(Message::Net(NetMsg::Open(None))),
             Key::Character("1") if ctrl => Some(Message::SetGrid(false)),
             Key::Character("2") if ctrl => Some(Message::SetGrid(true)),
             Key::Character(",") if ctrl => Some(Message::Settings(SettingsMsg::Open)),
@@ -1414,7 +1501,7 @@ impl App {
             || self.props_counting()
             || self.sel_size.as_ref().is_some_and(|s| !s.1.done.load(Ordering::Relaxed))
             || self.drag.is_some()
-            || (self.animations && (self.menu.as_ref().is_some_and(|m| fresh(m.opened)) || self.dialog.as_ref().is_some_and(|d| fresh(d.opened())) || self.toasts.iter().any(|t| fresh(t.at)) || self.command.as_ref().is_some_and(|c| fresh(c.opened))))
+            || (self.animations && (self.menu.as_ref().is_some_and(|m| fresh(m.opened)) || self.dialog.as_ref().is_some_and(|d| fresh(d.opened())) || self.toasts.iter().any(|t| fresh(t.at)) || self.command.as_ref().is_some_and(|c| fresh(c.opened)) || self.net.form.as_ref().is_some_and(|f| fresh(f.opened))))
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -1433,6 +1520,7 @@ impl App {
             Subscription::run(system::requests).map(Message::Request),
             Subscription::run(changes).map(Message::FsChanged),
             Subscription::run(crate::drives::prompts).map(|p| Message::Drive(DriveMsg::Prompt(p))),
+            Subscription::run(crate::network::events).map(Message::Net),
         ];
         if self.drag.is_some() || self.sidebar_drag.is_some() {
             subs.push(iced::event::listen_with(|event, _status, _window| match event {
@@ -1491,12 +1579,6 @@ impl App {
         let p = path.clone();
         tasks.push(background(move || Arc::new(crate::preview::gather(&p)), move |d| Message::Preview(path.clone(), d)));
         Task::batch(tasks)
-    }
-}
-
-impl Tab {
-    pub fn title(&self) -> String {
-        self.panes[self.active].title()
     }
 }
 
