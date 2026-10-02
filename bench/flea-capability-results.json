@@ -1,0 +1,22 @@
+{
+  "flea": {
+    "jpg": true,
+    "png": true,
+    "webp": true,
+    "heic": true,
+    "mp4": true,
+    "webm": true,
+    "mkv": true,
+    "txt": false
+  },
+  "echofiles": {
+    "jpg": true,
+    "png": true,
+    "webp": true,
+    "heic": true,
+    "mp4": true,
+    "webm": true,
+    "mkv": true,
+    "txt": false
+  }
+}

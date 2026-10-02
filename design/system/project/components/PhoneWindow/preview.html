@@ -1,0 +1,20 @@
+<!-- @dsCard group="Phone" height=780 width=1200 page -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>PhoneWindow</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+var st = React.useState("hub");
+return h("div", null,
+  h("div", {className:"ef", style:{padding:"8px 0 10px"}}, h(E.SegmentedControl, {label:"Page", value:st[0], onChange:st[1], options:[{value:"hub",text:"Hub"},{value:"photos",text:"Photos"},{value:"messages",text:"Messages"},{value:"notifications",text:"Notifications"}]})),
+  h(E.PhoneWindow, {key:st[0], view:st[0], height:760}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

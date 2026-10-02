@@ -1169,8 +1169,8 @@
   },
   "lastChange": {
     "by": "Aditya",
-    "at": "2026-09-30T22:31:21Z",
+    "at": "2026-10-02T12:22:28Z",
     "via": "Claude Code",
-    "note": "Sidebar: Windows and Network sections fold — a chevron heading row opens and closes each, both start collapsed (state remembered), and a collapsed section still shows the place you're in. Settings → Appearance → Sidebar can hide either section."
+    "note": "Phone, as built: PairPhone's help box appears only when no phone is found, Allow KDE Connect only with ufw active, connect by typed IP, Enter pairs when the phone asked, Cancel tells the phone; several phones can pair (Connect another phone); Send to <phone> in the file menu and a Phone group in the command palette; Get files opens the phone's storage in a new tab; Storage hides when not reported; pairings live in ~/.config/echofiles/phone/trusted/."
   }
 }

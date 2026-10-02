@@ -225,8 +225,8 @@ The 40px navigation row: history, reload, path, search, the View dropdown, comma
 - No window controls: EchoFiles is tiled by Hyprland and never draws client-side decorations.
 """)
 
-comp("Sidebar", "Navigation", 600, """
-return h("div", {className:"ef", style:{display:"flex", height:590}},
+comp("Sidebar", "Navigation", 700, """
+return h("div", {className:"ef", style:{display:"flex", height:690}},
   h(E.Sidebar, null,
     h(E.SidebarSection, {title:"Linux", world:"linux"},
       h(E.SidebarItem, {icon:"home", label:"Home", active:true}),
@@ -243,15 +243,19 @@ return h("div", {className:"ef", style:{display:"flex", height:590}},
       h(E.DriveItem, {name:"AVS (D:)", state:"mounted", used:58, world:"windows", meta:"NTFS", free:"66 GB free"}),
       h(E.DriveItem, {name:"AVS (E:)", state:"unmounted", meta:"295 GB · click to mount"}),
       h(E.SidebarItem, {icon:"sliders", label:"All drives"})),
+    h(E.SidebarSection, {title:"Phone", world:"phone", collapsible:true, defaultOpen:true},
+      h(E.PhoneItem, {name:"Galaxy S24", state:"connected", battery:72, charging:true, keep:true}),
+      h(E.SidebarItem, {icon:"folder", label:"Files", indent:true}),
+      h(E.SidebarItem, {icon:"image", label:"Photos", indent:true, trail:"32 new"})),
     h(E.SidebarSection, {title:"Network", world:"network", count:1, collapsible:true, action:h(E.IconButton, {icon:"plus", label:"Connect to server (Ctrl+Shift+S)"})},
       h(E.NetworkItem, {name:"Media", protocol:"SMB", where:"nas.local", state:"connected", keep:true}),
       h(E.NetworkItem, {name:"build-box", protocol:"SFTP", where:"me@build-box"}),
       h(E.SidebarItem, {icon:"plus", label:"Connect to server…"}))));
 """, """# Sidebar
 
-The place list on `bg-sunken`: Linux, Pinned (when anything is pinned), Windows, **All drives**, then Network (later Phone).
+The place list on `bg-sunken`: Linux, Pinned (when anything is pinned), Windows, **All drives**, Phone, then Network.
 
-**Provide** `Sidebar` > `SidebarSection` (`title`, optional `world`: `linux`, `windows`, `network`, `phone`, optional `count`, optional `action` at the end of the head, `collapsible` + `defaultOpen`) > `SidebarItem` (`icon`, `label`, `active`, `trail`, `dropTarget`), `DriveItem` or `NetworkItem` (`keep` = still shown while collapsed).
+**Provide** `Sidebar` > `SidebarSection` (`title`, optional `world`: `linux`, `windows`, `network`, `phone`, optional `count`, optional `action` at the end of the head, `collapsible` + `defaultOpen`) > `SidebarItem` (`icon`, `label`, `active`, `trail`, `dropTarget`, `indent`), `DriveItem`, `NetworkItem` or `PhoneItem` (`keep` = still shown while collapsed).
 
 - **Windows** and **Network** fold. Their head is a 24px row — chevron (`chevron-right` / `chevron-down`, 12px `ink-muted`), world mark, title, count, and Network's `+` — with the standard hover; clicking it opens or closes the section. Both start **collapsed**, and the open/closed state is remembered (`settings.toml` `[sidebar] windows_open`, `network_open`). Collapsed, the section still shows the one place you're in (the drive or share holding the open folder, or All drives while that page is open), so the sidebar always says where you are. Everything the section held (All drives, Connect to server…) folds with it.
 - **Settings → Appearance → Sidebar** hides either section entirely (*Windows drives*, *Network places*; both on by default). Hidden, the section's head goes too; Ctrl+Shift+D and Ctrl+Shift+S still reach drives and servers.
@@ -259,7 +263,8 @@ The place list on `bg-sunken`: Linux, Pinned (when anything is pinned), Windows,
 - A world is marked by a 6px square in `world-linux`, `world-windows`, `world-network` or `world-phone` — the only place world colours appear besides drive usage bars and network glyphs.
 - **Network** lists saved servers (in the order saved) and then live connections made elsewhere (Nautilus, `gio mount`, a link). Its head counts live connections and ends with a `+` that opens `ConnectDialog`; a **Connect to server…** row always closes the section. With nothing saved it says "Windows shares, SSH and FTP servers you connect to appear here."
 - Active item: `state-active` ground, `ink-strong` bold label, `accent-ink` glyph. No side rail.
-- Sections are data-driven (the phone section plugs in later). Drag a file onto an item → `accent-soft` with a 1px `accent` inset.
+- **Phone** (`world-phone`) holds the paired phone's `PhoneItem` — or **Connect phone** before pairing — with its **Files** and **Photos** indented under it while connected. It folds like Windows and Network but starts open; collapsed, the phone row stays. Settings → Appearance → Sidebar can hide it.
+- Sections are data-driven. Drag a file onto an item → `accent-soft` with a 1px `accent` inset; onto the phone row, it's sent to the phone.
 - Width `sidebar-width` (236px), resizable 180–360 by dragging its right edge (the edge turns `accent` while dragged), hidden with Ctrl+B; both are remembered in settings.
 - **Pinned** folders come from *Pin to sidebar* in any folder's menu and show a `pin` glyph; right-click to unpin.
 - Drives are listed on their own — no Windows user folders under them (a PC with several accounts would bury the list). A thin scrollbar sits beside the rows, never over them.
@@ -671,6 +676,237 @@ Everywhere results in place of the file list: name, the folder it lives in (`~`-
 - No matches: a centred search glyph, "No matches for “…”", and when the index answered, how fresh it is ("updated 20 s ago; new files elsewhere can take up to a minute").
 """)
 
+# ------------------------------------------------------------------ Phone
+comp("PhoneDevice", "Phone", 520, """
+var cap = function(t){ return h("span", {className:"ef-muted", style:{fontSize:11}}, t); };
+var col = function(kids){ return h("div", {style:{display:"flex", flexDirection:"column", alignItems:"center", gap:14}}, kids); };
+return h("div", {className:"ef", style:{display:"flex", gap:40, padding:"28px 32px", alignItems:"flex-start", flexWrap:"wrap"}},
+  col([h(E.PhoneDevice, {key:1, width:190, wallpaper:"aurora"}), h("span", {key:2}, cap("EchoFiles wallpaper"))]),
+  col([h(E.PhoneDevice, {key:1, width:190, wallpaper:"photo", photo:2}), h("span", {key:2}, cap("Latest photo"))]),
+  col([h(E.PhoneDevice, {key:1, width:190, state:"ringing"}), h("span", {key:2}, cap("Ringing"))]),
+  col([h(E.PhoneDevice, {key:1, width:190, state:"away"}), h("span", {key:2}, cap("Not nearby"))]));
+""", """# PhoneDevice
+
+The phone, drawn flat like the colour icons — a flat-sided Android phone in the `icon-slate` slots with antenna bands, volume rocker and side key both on the right, thin even bezels and a pin-hole camera — showing a One UI–style lock screen. No gradients, glare or shadow: it recolours with the Omarchy theme like every other icon. It is the hero of `PhoneHub` and the thumbnail in Settings → Phone.
+
+**Provide** `state` (`connected`, `ringing`, `away`), `wallpaper` (`photo` = the phone's newest camera photo, `aurora` = the EchoFiles wallpaper), `photo` (thumbnail handle), `battery`, `time`, `date`, `notice`, `width` (196 on the hub, 34 in Settings).
+
+- The protocol tells EchoFiles the phone's name and type, not its model, so this is one generic modern Android phone — never a picture of a specific brand, and never iPhone-like (no notch or island, no thick rounded chrome band, no centred thin clock).
+- Lock screen, Android-style: status bar with notification icons, signal, Wi-Fi and battery; date and weather above a bold **stacked clock** (hours over minutes, left-aligned); an Android notification card ("EchoFiles · now", title, text); in-display fingerprint; phone and camera shortcuts in the corners; a short gesture handle.
+- **Latest photo** is the default and makes the drawing feel like *your* phone: the newest picture in `DCIM/Camera`, read from its EXIF thumbnail (no full download), behind a top and bottom vignette so the clock always reads. **EchoFiles** is a flat wallpaper: three flat circles in `world-network`, `accent` and `world-linux` over a fixed near-black screen, so it follows the theme and the white clock always reads.
+- Clock, date and battery are live from the phone. The screen text uses the phone's sans (Inter / Roboto), never the app's mono — it is a picture of a phone, not app UI.
+- **Ringing** (Ring phone): the device buzzes (a short wiggle every 1.2s) and three `accent` rings pulse out; the notification becomes "Ringing from EchoFiles · Swipe to stop". **Away**: screen off, "Not nearby", 72% opacity, desaturated. All motion stops under reduced motion.
+- The app draws it once per state as a vector and caches the bitmap per size; the photo is the only raster in it.
+""")
+
+comp("PhoneItem", "Phone", 260, """
+var box = function(kids){ return h("div", {className:"ef", style:{width:236, padding:8, background:"var(--bg-sunken)"}}, kids); };
+return h("div", {style:{display:"flex", gap:16, flexWrap:"wrap"}},
+  box([h(E.PhoneItem, {key:1, state:"connected", name:"Galaxy S24", battery:72, charging:true, active:true}), h(E.SidebarItem, {key:2, icon:"folder", label:"Files", indent:true}), h(E.SidebarItem, {key:3, icon:"image", label:"Photos", indent:true, trail:"32 new"})]),
+  box([h(E.PhoneItem, {key:1, state:"connected", name:"Pixel 8", battery:14}), h(E.PhoneItem, {key:2, state:"pairing", name:"Galaxy S24"}), h(E.PhoneItem, {key:3, state:"away", name:"Galaxy S24", seen:"2 h ago"}), h(E.PhoneItem, {key:4, state:"none"})]));
+""", """# PhoneItem
+
+The phone in the sidebar's **Phone** section — the one button that opens everything phone.
+
+**Provide** `state` (`none`, `pairing`, `connected`, `away`), `name` (the name set on the phone), `battery`, `charging`, `network` (Wi-Fi name), `seen` (when it was last nearby), `active`.
+
+- **none**: a plain row, `plus` glyph, **Connect phone** — opens `PairPhone`.
+- **pairing**: `Pairing…` `info` pill on the second line while the code check runs.
+- **connected**: `phone` glyph in `world-phone`, the name, a `BatteryMeter` at the end; second line "Wi-Fi · home" and the battery %. Below it, indented, **Files** and **Photos** (with "32 new" when there are unimported photos) — the phone's two places you browse and drop onto.
+- **away**: glyph and name `ink-muted`, "Not nearby · 2 h ago". Files and Photos fold away; the hub still opens with the last-known facts.
+- Click opens `PhoneHub`. Drop files on the row → they're sent to the phone. A **Connect another phone** row ends the open section. Files also get **Send to Galaxy S24** in their right-click menu, and the command palette has a **Phone** group (Open, Photos, Files, Messages, Notifications, Ring, Send files…, Connect).
+""")
+
+comp("BatteryMeter", "Phone", 80, """
+return h("div", {className:"ef ef-row-flex", style:{gap:20}},
+  h(E.BatteryMeter, {level:72, charging:true}), h(E.BatteryMeter, {level:54}), h(E.BatteryMeter, {level:18}), h(E.BatteryMeter, {level:6}), h(E.BatteryMeter, {level:100, charging:true}));
+""", """# BatteryMeter
+
+The phone's charge as a 20×10 battery with its percentage.
+
+**Provide** `level` (0–100), `charging`, `label={false}` to hide the number (the sidebar shows it on the second line).
+
+- Fill is `ink-muted`; `success` with a `bolt` while charging; `warning` at 20% and below; `danger` at 10% and below. The tooltip says "Battery 18%".
+- **Low battery warning** (Settings → Phone) shows one accent `Toast` at 15%: "Galaxy S24 is at 15%".
+""")
+
+comp("PhoneHub", "Phone", 840, """
+var st = React.useState("connected");
+var s = st[0];
+return h("div", {className:"ef", style:{background:"var(--bg)"}},
+  h("div", {style:{padding:"12px 28px 0"}}, h(E.SegmentedControl, {label:"State", value:s, onChange:st[1], options:[{value:"connected",text:"Connected"},{value:"photo",text:"Latest photo"},{value:"away",text:"Not nearby"},{value:"off",text:"Features off"}]})),
+  h(E.PhoneHub, {key:s, state: s === "away" ? "away" : "connected", wallpaper: s === "photo" ? "photo" : "aurora", off: s === "off" ? {messages:true, clipboard:true} : null}));
+""", """# PhoneHub
+
+The phone's home page, opened from its sidebar row. Everything about the phone starts here.
+
+**Provide** `state` (`connected`, `away`), `wallpaper`, `phone` (`{name, battery, charging, network, storage: [free, total]}`), `off` (`{messages, notifications, clipboard}` — features turned off in settings), `received`, `ringing`.
+
+- **Hero** — one flat `bg-raised` box with a 1px `line` border and `radius-2`, like a settings group: no glows, gradients or shadows. `PhoneDevice` (188px) on the left.
+- Facts, top to bottom: a `StatePill` — **Connected** (`success`) or "Not nearby · last seen 2 h ago" (neutral) — with the gear (Settings → Phone) opposite; the name in `display` (28/34, 800); a meta line — Wi-Fi name, KDE Connect, paired date; three **`Gauge`** cards on `bg` — **Battery** (ring in `success`, `warning` at 20%; a bolt while charging), **Storage** (free of total, read in the background; hidden when the phone's SFTP server doesn't report it), **New photos** (the newest three thumbnails side by side, the count and **Import →**, which opens `PhotosPage`).
+- Three standard bordered buttons: **Ring phone** (turns `accent`-filled **Stop ringing** while it rings, with a one-line note under the row), **Send files** (a picker; same as dropping on the sidebar row), **Get files** (opens the phone's storage in a new tab).
+- The hero follows its pane width: gauges go 2+1 under 940px, the phone moves above the facts under 700px.
+- **Feature tiles**: Files, Photos ("32 new"), Messages (last text, unread count), Notifications (apps with something new, count). The count badge is `accent`. A feature turned off shows a dashed tile "Off · turn on in settings" instead of disappearing, so people can find it again.
+- **Received from phone** (`ReceivedList`) under the tiles; **Shared clipboard** (`ClipboardCard`) in the right column.
+- **Not nearby**: screen-off device, "Not nearby · last seen 2 h ago · showing what EchoFiles saw then", buttons disabled; tiles open cached views greyed. Reconnects on its own when the phone returns.
+- Breadcrumb and tab read the phone's name with the `phone` glyph; the status bar says "Galaxy S24 · 72% · charging".
+""", extra=' width=1100 page')
+
+comp("Gauge", "Phone", 140, """
+return h("div", {className:"ef", style:{padding:16, display:"grid", gridTemplateColumns:"repeat(3, 230px)", gap:12, background:"var(--bg-raised)"}},
+  h(E.Gauge, {icon:"battery", label:"Battery", value:72, unit:"%", pct:72, color:"var(--success)", sub:"Charging", bolt:true}),
+  h(E.Gauge, {icon:"battery", label:"Battery", value:14, unit:"%", pct:14, color:"var(--warning)", sub:"On battery"}),
+  h(E.Gauge, {icon:"sd-card", label:"Storage", value:41, unit:" GB free", pct:68, color:"var(--accent)", sub:"of 128 GB"}));
+""", """# Gauge
+
+A hub fact as a 56px ring gauge with label, value and one line — used for the phone's battery and storage.
+
+**Provide** `icon`, `label`, `value`, `unit`, `pct` (ring fill), `color`, `sub`, `bolt` (charging).
+
+- 48px ring, 5px stroke on `line`, round cap; it fills once in 400ms like `UsageBar` (none under reduced motion). The glyph sits in the middle, `ink-muted`, or a `success-ink` bolt while charging.
+- Card: flat `bg` with a 1px `line` border and `radius-2` — no tint, highlight or shadow. Label in `label` style, value 22px/800, unit 12px muted.
+""")
+
+comp("FeatureTile", "Phone", 150, """
+return h("div", {className:"ef", style:{padding:16, display:"grid", gridTemplateColumns:"repeat(2, 260px)", gap:10}},
+  h(E.FeatureTile, {icon:"image", label:"Photos", sub:"2,481 photos", badge:"32 new"}),
+  h(E.FeatureTile, {icon:"message", label:"Messages", sub:"Priya: See you at 7?", badge:"3"}),
+  h(E.FeatureTile, {icon:"folder", label:"Files", sub:"Camera, Downloads, WhatsApp…"}),
+  h(E.FeatureTile, {icon:"bell", label:"Notifications", off:true}));
+""", """# FeatureTile
+
+One phone feature on the hub: tinted glyph, name, one live line, an optional count.
+
+**Provide** `icon`, `label`, `sub`, `badge`, `off`.
+
+- Glyph sits on a 36px `world-phone` 14% square. Hover draws a `world-phone` border. Off: dashed border, muted, "Off · turn on in settings".
+""")
+
+comp("ReceivedList", "Phone", 220, """
+return h("div", {className:"ef", style:{padding:16, maxWidth:620}}, h(E.ReceivedList, null));
+""", """# ReceivedList
+
+Files the phone sent to this laptop, newest first: in progress with a bar and speed, or landed with when and a **Show** button.
+
+**Provide** `items` (`{name, size, progress?, done?, when?}`), `title`.
+
+- Files share from any phone app (Share → KDE Connect → this laptop). With **Accept files automatically** on (the default) they save straight to `~/Downloads/Phone`; name clashes keep both as "name (2).ext", never overwrite. Off, each send asks first with `ReceiveToast`.
+- **Open folder** opens the save folder in a tab. Receiving needs EchoFiles running; with the window closed only if Keep running in the background is on.
+""")
+
+comp("ClipboardCard", "Phone", 220, """
+return h("div", {className:"ef", style:{padding:16, maxWidth:360}}, h(E.ClipboardCard, null));
+""", """# ClipboardCard
+
+Shared clipboard on the hub — no page of its own, because syncing is automatic.
+
+**Provide** `on`, `items` (`[direction, text, when]`; `from` = came from the phone, `to` = went to it).
+
+- The switch is the same setting as Settings → Phone → Shared clipboard. The last three items show with an arrow for direction and a copy button to put one back on the clipboard. Text only; passwords copied from a password manager (marked sensitive) are never sent.
+""")
+
+comp("PairPhone", "Phone", 560, """
+return h("div", {className:"ef"}, h(E.PairPhone, {step:1}));
+""", """# PairPhone
+
+**Connect phone**: four steps in one dialog. Nothing KDE is installed on the laptop — EchoFiles speaks KDE Connect itself; the phone runs the stock KDE Connect app.
+
+**Provide** `step` (0–3), `nearby` (`"none"` while nothing is found), `filesOk`. The stepper is clickable in the preview.
+
+1. **Get the app** — Google Play and F-Droid entries; "It's open on my phone".
+2. **Choose your phone** — phones announcing KDE Connect on this Wi-Fi, live, one click pairs (EchoFiles re-announces itself every 5 s while the dialog is open). After 10 s with none, a help box: same Wi-Fi and app open · **Allow KDE Connect…** (only when ufw is active; asks for the password once through pkexec and opens ports 1714–1764) · or type the phone's IP and **Connect** (EchoFiles connects to it directly).
+3. **Check the code** — the 8-character code in four 26px tiles; the phone shows the same. When we asked: "Waiting for Galaxy S24…" until it's accepted there; **Cancel** tells the phone. When the phone asked (the dialog opens by itself, even from the background): **Pair** (Enter) or **Codes don't match**.
+4. **Allow files** — the one switch on the phone (Plugin settings → Filesystem expose, then All files access). A pill re-checks on its own: `warning` "Files not shared yet" → `success` "Files available". **Open Galaxy S24** lands on the hub.
+
+- Pairing is stored as the phone's certificate in `~/.config/echofiles/phone/trusted/`. Several phones can be paired; the hub shows the one picked in the sidebar.
+""")
+
+comp("ReceiveToast", "Phone", 260, """
+return h("div", {className:"ef ef-stack", style:{alignItems:"flex-end"}},
+  h(E.ReceiveToast, null),
+  h(E.TransferToast, {title:"Receiving 3 files from Galaxy S24", detail:"To ~/Downloads/Phone · IMG_2041.jpg", value:38, animate:true, icon:"download", meta:"4.6 of 12 MB · 18 MB/s", eta:"1 s left", doneTitle:"Received 3 files from Galaxy S24", doneMeta:"In ~/Downloads/Phone"}));
+""", """# ReceiveToast
+
+What appears when the phone sends files.
+
+**Provide** `from`, `what`.
+
+- **Accept files automatically on** (default): no question — a `TransferToast` "Receiving 3 files from Galaxy S24" for sends longer than ~0.4s, and the files appear in `ReceivedList`.
+- **Off**: this toast asks first — "Galaxy S24 wants to send 3 files · 12 MB", the names and where they'll go, **Accept** (`primary`) and **Decline**. It stays until answered; declining tells the phone.
+""")
+
+comp("PhotosPage", "Phone", 760, """
+return h("div", {className:"ef", style:{height:750, overflow:"auto", background:"var(--bg)"}}, h(E.PhotosPage, null));
+""", """# PhotosPage
+
+Every photo and video on the phone in one timeline, newest first, grouped by day.
+
+**Provide** `selected` (keys); the demo is clickable.
+
+- Gathered from Camera, Screenshots, Pictures and messaging media (WhatsApp, Telegram). The `SegmentedControl` filters: All · Camera · Screenshots · WhatsApp.
+- Square tiles, 4px gaps, 118px minimum. Thumbnails come from each JPEG's embedded EXIF thumbnail (a 64 KB range read, never the full file) and HEIC's thumbnail item; videos show a placeholder with their length until a frame is grabbed. Cached per phone.
+- Click selects (a round check, top left, `accent` inset ring and the photo shrinks 10%); double-click opens it. With a selection, a sticky `accent-soft` bar: "3 selected · 11.8 MB", **Save to…** (any Linux or Windows folder), **Copy**, **Clear**. Drag photos out to any folder.
+- **Import 32 new** (`primary`) copies only photos not imported before (matched by name, size and date) into dated folders, `~/Pictures/Phone/2026-10/`. One-way: nothing is deleted on the phone.
+""", extra=' width=1100 page')
+
+comp("MessagesPage", "Phone", 600, """
+return h("div", {className:"ef", style:{height:590, background:"var(--bg)"}}, h(E.MessagesPage, null));
+""", """# MessagesPage
+
+Texts from the phone: conversations left, the open chat right, a reply box that sends through the phone.
+
+**Provide** nothing; the list is clickable.
+
+- Conversation rows: initial avatar (contact colour from the icon slots), name, last message, time, unread count in `accent`. Search filters names and text.
+- Bubbles: theirs `bg-raised` with a hairline, yours `accent` with `on-accent` text; 14px radius with the tail corner squared. A day chip separates days.
+- **Send** (Enter) sends a normal SMS from the phone; the line under the box says so. Loaded when the page opens (the phone sends the threads on request), so it works without a background service.
+- Off in Settings → Phone → Messages (the default): no texts reach the laptop at all.
+""", extra=' width=1100 page')
+
+comp("NotificationsPage", "Phone", 560, """
+return h("div", {className:"ef", style:{height:550, overflow:"auto", background:"var(--bg)"}}, h(E.NotificationsPage, null));
+""", """# NotificationsPage
+
+The phone's current notifications, grouped by app.
+
+**Provide** `mode` (`app` | `desktop`).
+
+- Each app is one bordered group: app initial on its colour, name, count; rows with title, text, time and a × that dismisses on the phone too. Apps that allow quick replies (WhatsApp, Telegram, Messages) get a reply field on the newest one.
+- **Settings → Phone → Phone notifications**: **Off** (nothing comes over), **In app** (only this page — the default; the subtitle says so), **Desktop too** (also pops up as a normal desktop notification while EchoFiles runs; with Keep running in the background on, even with the window closed). Apps in *Never show notifications from* are dropped on arrival.
+- **Dismiss all** clears them here and on the phone.
+""", extra=' width=1100 page')
+
+comp("PhoneSettings", "Phone", 1180, """
+return h(E.PhoneSettings, {height:1170});
+""", """# PhoneSettings
+
+**Settings → Phone** (also the gear on the hub): what this phone may do.
+
+**Provide** `background` (Keep running in the background is on).
+
+- **This phone** — thumbnail, name, "Connected over Wi-Fi · paired 2 Oct 2026", **Forget phone** (removes the pairing on both sides); **Phone picture**: Latest photo / EchoFiles.
+- **Features** — Files and photos (on), Shared clipboard (on), Messages (off until turned on; the phone asks for SMS permission), Low battery warning (on). Turning one off stops it on both devices: EchoFiles stops asking and drops anything the phone still sends.
+- **Receiving files** — **Accept files automatically** (on by default; off asks each time with `ReceiveToast`), **Save to** `~/Downloads/Phone` with **Change…**.
+- **Notifications** — Off / **In app** / Desktop too, with a note when Keep running in the background is off (pop-ups then stop with the window); **Never show notifications from**: chips of app names with an add field.
+- With no phone paired the page shows one row: "No phone yet" and **Connect phone**.
+- Saved to `settings.toml` `[phone]` (features, receive dir, notification mode, muted apps); the pairing itself lives in `~/.config/echofiles/phone/trusted/`.
+""", extra=' width=1100 page')
+
+comp("PhoneWindow", "Phone", 780, """
+var st = React.useState("hub");
+return h("div", null,
+  h("div", {className:"ef", style:{padding:"8px 0 10px"}}, h(E.SegmentedControl, {label:"Page", value:st[0], onChange:st[1], options:[{value:"hub",text:"Hub"},{value:"photos",text:"Photos"},{value:"messages",text:"Messages"},{value:"notifications",text:"Notifications"}]})),
+  h(E.PhoneWindow, {key:st[0], view:st[0], height:760}));
+""", """# PhoneWindow
+
+The whole app with the phone open — the reference composition for every phone screen.
+
+**Provide** `view` (`hub`, `photos`, `messages`, `notifications`), `state`, `wallpaper`.
+
+- The **Phone** section sits between Windows and Network, marked `world-phone`, collapsible like the others (open by default; collapsed it still shows the phone row).
+- Phone pages open in the pane like folders: back/forward work, the breadcrumb reads "Galaxy S24 › Photos", middle-click opens one in a new tab. Files is the normal file list rooted at the phone's important folders, with a *Show all storage* switch.
+""", extra=' width=1200 page')
+
 # ------------------------------------------------------------------ Settings
 comp("SettingsGroup", "Settings", 200, """
 return h("div", {className:"ef ef-stack", style:{maxWidth:720}},
@@ -753,7 +989,7 @@ comp("SettingsNav", "Settings", 220, """
 return h("div", {className:"ef", style:{display:"flex", height:210}}, h(E.SettingsNav, {page:"search"}));
 """, """# SettingsNav
 
-The Settings page list, in the sidebar's place: General · Search & index · AI agents · Appearance · About.
+The Settings page list, in the sidebar's place: General · Search & index · AI agents · Phone · Appearance · About.
 
 **Provide** `page`, `onChange`.
 
@@ -784,7 +1020,8 @@ Settings is its own screen (Ctrl+, or the gear): a top bar with a ghost **← Fi
 - **General** — Running: Keep running in the background (close hides the window; later launches reuse it) · Start at login (disabled unless running in the background). Windows: New windows open at Home / Last folder · Show hidden files.
 - **Search & index** — Index: Search index switch (off deletes the index) + `IndexStatus`. Search box: Search looks in (This folder / Everywhere). Indexed folders and Never show in search (`PathListEditor`). Skip contents of: Skip cache folders + `NameChips`.
 - **AI agents** — Allow EchoFiles commands (when off, `ef` exits 3 with "turned off"), ef location, Teach AI agents about ef (links the skill into ~/.claude/skills; off removes only that link), `CommandList` of examples. A `warning` note appears if `ef` is allowed but the index is off.
-- **Appearance** — the Omarchy theme's name and swatches (it follows the system); Row height Compact / Default / Comfortable (24 / 28 / 34px); Folders open as Automatic / List / Grid (resets per-folder choices). Sidebar: show or hide the Windows drives and Network places sections.
+- **Phone** — see `PhoneSettings`: this phone and Forget, phone picture, feature switches, Accept files automatically + Save to, notifications Off / In app / Desktop too and muted apps.
+- **Appearance** — the Omarchy theme's name and swatches (it follows the system); Row height Compact / Default / Comfortable (24 / 28 / 34px); Folders open as Automatic / List / Grid (resets per-folder choices). Sidebar: show or hide the Windows drives, Phone and Network places sections.
 - **About** — version, settings file and index folder with **Show**, keyboard shortcuts.
 - Everything saves to `~/.config/echofiles/settings.toml` the moment it changes (shared with `ef`). Only settings that work today appear.
 """, extra=' width=1100 page')

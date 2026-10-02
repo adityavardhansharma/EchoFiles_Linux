@@ -34,6 +34,20 @@
 //! windows_open = false        # sections start collapsed; the head row toggles them
 //! network_open = false
 //!
+//! phone = true                # show the Phone section
+//! phone_open = true
+//!
+//! [phone]                     # pairings live in ~/.config/echofiles/phone/
+//! files = true                # browse the phone's files and photos
+//! clipboard = true            # shared clipboard
+//! messages = false            # texts (SMS)
+//! notifications = "app"       # "off", "app" (Notifications page only) or "desktop"
+//! muted_apps = []
+//! battery_warning = true
+//! auto_accept = true          # save files the phone sends without asking
+//! save_to = "~/Downloads/Phone"
+//! picture = "photo"           # what the phone on the hub shows: "photo" or "echofiles"
+//!
 //! [[network.servers]]           # the Network section, in order
 //! uri = "smb://nas.local/Media" # never holds a password (GVfs keeps those in the keyring)
 //! name = "Media"                # optional; the address's own name otherwise
@@ -185,11 +199,15 @@ pub struct Sidebar {
     pub windows_open: bool,
     /// The Network section is expanded (collapsed by default).
     pub network_open: bool,
+    /// Show the Phone section.
+    pub phone: bool,
+    /// The Phone section is expanded (open by default).
+    pub phone_open: bool,
 }
 
 impl Default for Sidebar {
     fn default() -> Self {
-        Sidebar { pinned: Vec::new(), width: 236, hidden: false, windows: true, network: true, windows_open: false, network_open: false }
+        Sidebar { pinned: Vec::new(), width: 236, hidden: false, windows: true, network: true, windows_open: false, network_open: false, phone: true, phone_open: true }
     }
 }
 
@@ -207,6 +225,62 @@ pub struct Network {
     pub servers: Vec<Server>,
 }
 
+/// Where phone notifications show up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PhoneNotifications {
+    /// Nothing comes over.
+    Off,
+    /// On the phone's Notifications page only.
+    #[default]
+    App,
+    /// Also as desktop notifications.
+    Desktop,
+}
+
+/// What the phone drawn on the hub shows on its screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PhonePicture {
+    #[default]
+    Photo,
+    Echofiles,
+}
+
+/// Settings → Phone. Pairings themselves live in `~/.config/echofiles/phone/`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Phone {
+    /// Browse the phone's files and photos.
+    pub files: bool,
+    pub clipboard: bool,
+    pub messages: bool,
+    pub notifications: PhoneNotifications,
+    /// App names whose notifications are dropped.
+    pub muted_apps: Vec<String>,
+    pub battery_warning: bool,
+    /// Save files the phone sends without asking.
+    pub auto_accept: bool,
+    pub save_to: String,
+    pub picture: PhonePicture,
+}
+
+impl Default for Phone {
+    fn default() -> Self {
+        Phone {
+            files: true,
+            clipboard: true,
+            messages: false,
+            notifications: PhoneNotifications::App,
+            muted_apps: Vec::new(),
+            battery_warning: true,
+            auto_accept: true,
+            save_to: "~/Downloads/Phone".into(),
+            picture: PhonePicture::Photo,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -216,6 +290,7 @@ pub struct Settings {
     pub appearance: Appearance,
     pub sidebar: Sidebar,
     pub network: Network,
+    pub phone: Phone,
 }
 
 pub fn home() -> PathBuf {

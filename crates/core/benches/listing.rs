@@ -6,6 +6,9 @@ use std::path::PathBuf;
 use ef_core::{listing, sort};
 
 fn corpus(n: &str) -> PathBuf {
+    if n == "d100k" && let Some(path) = std::env::var_os("ECHOFILES_BENCH_100K") {
+        return PathBuf::from(path);
+    }
     let home = std::env::var_os("HOME").expect("HOME");
     PathBuf::from(home).join(".cache/echofiles-bench").join(n)
 }

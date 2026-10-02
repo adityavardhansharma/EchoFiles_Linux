@@ -19,6 +19,8 @@ mod network;
 mod kinds;
 mod overlay;
 mod pane;
+mod phone;
+mod phone_view;
 mod preview;
 mod search;
 mod settings;

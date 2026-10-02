@@ -25,6 +25,7 @@ use crate::drives::{DriveMsg, DriveState};
 use crate::file_list::{self, Action};
 use crate::indexer::{self, IndexState, RootIndex, Watcher};
 use crate::network::{NetMsg, NetState};
+use crate::phone::{PhoneMsg, PhoneState};
 use crate::overlay::{Command, Dialog, Menu, MenuFor, Toast, UiMsg};
 use crate::pane::{Loaded, Pane};
 use crate::preview::PreviewData;
@@ -77,6 +78,7 @@ pub enum Message {
     File(FileMsg),
     Drive(DriveMsg),
     Net(NetMsg),
+    Phone(PhoneMsg),
     /// Fold or unfold a sidebar section.
     Fold(crate::view::Fold, bool),
     Ui(UiMsg),
@@ -146,6 +148,7 @@ pub struct App {
     pub(crate) volume_fs: Vec<Option<FsInfo>>,
     pub(crate) drive_state: HashMap<String, DriveState>,
     pub(crate) net: NetState,
+    pub(crate) phone: PhoneState,
     pub(crate) notice: Option<String>,
     bench: Option<Bench>,
     first_frame_logged: bool,
@@ -293,6 +296,7 @@ impl App {
             volume_fs: Vec::new(),
             drive_state: HashMap::new(),
             net: NetState { recent: crate::network::load_recent(), ..Default::default() },
+            phone: crate::phone::load_state(),
             notice: None,
             bench: bench_dir.map(|_| Bench { frames: Vec::with_capacity(700), last: None, started: false }),
             first_frame_logged: false,
@@ -329,6 +333,7 @@ impl App {
         tasks.push(background(|| ef_disks::windows_volumes().map_err(|e| e.to_string()), |r| Message::Drive(DriveMsg::Volumes(r))));
         tasks.push(background(animations_enabled, |on| Message::Drive(DriveMsg::Animations(on))));
         tasks.push(crate::network::boot_tasks());
+        crate::phone::start();
         if let Some(Request::Connect(uri)) = launch {
             match ef_net::Address::parse(&uri, ef_net::Protocol::Smb) {
                 Ok(address) => tasks.push(app.net_update(NetMsg::Connect { address, save: false })),
@@ -356,6 +361,12 @@ impl App {
     /// A pane's name for tabs and the window title; network roots use the name people
     /// gave the place, not GVfs' folder name.
     pub(crate) fn pane_title(&self, pane: &Pane) -> String {
+        if !pane.special()
+            && let Some(s) = self.phone_storage()
+            && pane.location == s
+        {
+            return self.phone_id().map(|i| self.phone_name(&i)).unwrap_or_else(|| "Phone".into());
+        }
         if !pane.special()
             && let Some((m, name)) = self.net_place_at(&pane.location)
             && pane.location == m.root
@@ -480,6 +491,7 @@ impl App {
         }
         pane.drives = false;
         pane.shares = None;
+        pane.phone = None;
         pane.clear_search();
         self.notice = None;
         self.recent.retain(|p| p != &dir);
@@ -587,7 +599,7 @@ impl App {
 
     /// Something modal is up: lists don't take keys.
     pub(crate) fn modal(&self) -> bool {
-        self.menu.is_some() || self.dialog.is_some() || self.command.is_some()
+        self.menu.is_some() || self.dialog.is_some() || self.command.is_some() || self.phone.dialog.is_some()
     }
 
     // ------------------------------------------------------------------ thumbnails
@@ -869,6 +881,7 @@ impl App {
                 self.mode = Mode::Files;
                 let pane = self.pane_mut();
                 pane.shares = None;
+                pane.phone = None;
                 if !pane.drives {
                     pane.drives = true;
                     pane.clear_search();
@@ -989,10 +1002,12 @@ impl App {
             Message::File(m) => self.file_update(m),
             Message::Drive(m) => self.drive_update(m),
             Message::Net(m) => self.net_update(m),
+            Message::Phone(m) => self.phone_update(m),
             Message::Fold(section, open) => {
                 match section {
                     crate::view::Fold::Windows => self.settings.sidebar.windows_open = open,
                     crate::view::Fold::Network => self.settings.sidebar.network_open = open,
+                    crate::view::Fold::Phone => self.settings.sidebar.phone_open = open,
                 }
                 self.persist_settings()
             }
@@ -1031,6 +1046,7 @@ impl App {
                     self.icons = Icons::new(&self.palette);
                 }
                 self.expire_toasts();
+                self.phone_tick();
                 if indexer::settled(self.index_dirty, 1500) && self.index_state != IndexState::Building {
                     return self.build_index();
                 }
@@ -1052,6 +1068,7 @@ impl App {
                 // a sidebar place lands here.
                 let place = self.drop_place.take();
                 match (self.drag.take(), place) {
+                    (Some(d), Some(dest)) if dest == crate::phone_view::drop_target() => Task::batch([t, self.phone_update(PhoneMsg::SendPaths(d.paths))]),
                     (Some(d), Some(dest)) => Task::batch([t, self.drop_paths(d.paths, dest)]),
                     _ => t,
                 }
@@ -1300,6 +1317,9 @@ impl App {
         if self.net.form.is_some() {
             return self.net_update(NetMsg::Close);
         }
+        if self.phone.dialog.is_some() {
+            return self.phone_update(PhoneMsg::Dialog(false));
+        }
         if self.rename.take().is_some() {
             return Task::none();
         }
@@ -1322,6 +1342,7 @@ impl App {
         if pane.special() {
             pane.drives = false;
             pane.shares = None;
+            pane.phone = None;
             return Task::none();
         }
         pane.clear_selection();
@@ -1342,6 +1363,13 @@ impl App {
         if self.dialog.is_some() {
             return match key.as_ref() {
                 Key::Named(Named::Enter) => self.ui_update(UiMsg::DialogDefault),
+                Key::Named(Named::Tab) => tab(shift),
+                _ => Task::none(),
+            };
+        }
+        if self.phone.dialog.is_some() {
+            return match key.as_ref() {
+                Key::Named(Named::Enter) if self.phone.code.as_ref().is_some_and(|c| c.2) => self.phone_update(PhoneMsg::AcceptPair),
                 Key::Named(Named::Tab) => tab(shift),
                 _ => Task::none(),
             };
@@ -1501,6 +1529,7 @@ impl App {
             || self.props_counting()
             || self.sel_size.as_ref().is_some_and(|s| !s.1.done.load(Ordering::Relaxed))
             || self.drag.is_some()
+            || self.phone_animating()
             || (self.animations && (self.menu.as_ref().is_some_and(|m| fresh(m.opened)) || self.dialog.as_ref().is_some_and(|d| fresh(d.opened())) || self.toasts.iter().any(|t| fresh(t.at)) || self.command.as_ref().is_some_and(|c| fresh(c.opened)) || self.net.form.as_ref().is_some_and(|f| fresh(f.opened))))
     }
 
@@ -1521,6 +1550,7 @@ impl App {
             Subscription::run(changes).map(Message::FsChanged),
             Subscription::run(crate::drives::prompts).map(|p| Message::Drive(DriveMsg::Prompt(p))),
             Subscription::run(crate::network::events).map(Message::Net),
+            Subscription::run(crate::phone::events).map(Message::Phone),
         ];
         if self.drag.is_some() || self.sidebar_drag.is_some() {
             subs.push(iced::event::listen_with(|event, _status, _window| match event {

@@ -128,3 +128,39 @@ export declare function ConnectDialog(props: { protocol?: "SMB" | "SFTP" | "FTP"
 export declare function SignInDialog(props: { title?: string; detail?: string; user?: string; domain?: boolean; anonymous?: boolean; guest?: boolean; retry?: boolean; height?: number }): any;
 /** An SMB server's shares, shown in a pane when an address has no share. */
 export declare function SharesPage(props: { host?: string; shares?: [string, ("connected" | "connecting")?][]; state?: "loading" }): any;
+
+type PhoneState = "connected" | "ringing" | "away";
+/** The phone's charge as a small battery with its percentage. */
+export declare function BatteryMeter(props: { level: number; charging?: boolean; label?: boolean }): any;
+/** The phone, drawn flat in icon slot colours, with a One UI-style lock screen over the latest photo or a flat theme wallpaper. */
+export declare function PhoneDevice(props: { state?: PhoneState; wallpaper?: "photo" | "aurora"; photo?: number; battery?: number; time?: string; date?: string; notice?: string; name?: string; width?: number }): any;
+/** The phone in the sidebar: Connect phone, pairing, connected with battery, or not nearby. */
+export declare function PhoneItem(props: { state?: "none" | "pairing" | "connected" | "away"; name?: string; battery?: number; charging?: boolean; network?: string; seen?: string; active?: boolean; keep?: boolean }): any;
+/** One fact on the hub: label, big value, a meter and a line under it. */
+export declare function PhoneStat(props: { icon: string; label: string; value: number | string; unit?: string; meter?: number; color?: string; sub?: string }): any;
+/** Files the phone sent: in progress or landed. */
+export declare function ReceivedList(props: { items?: { name: string; size: string; progress?: number; done?: string; when?: string }[]; title?: string }): any;
+/** One phone feature on the hub. */
+export declare function FeatureTile(props: { icon: string; label: string; sub?: string; badge?: string; off?: boolean }): any;
+/** Shared clipboard switch and the last items that crossed. */
+export declare function ClipboardCard(props: { on?: boolean; items?: ["from" | "to", string, string][] }): any;
+/** The phone's home page. */
+export declare function PhoneHub(props: { state?: "connected" | "away"; wallpaper?: "photo" | "aurora"; phone?: { name?: string; battery?: number; charging?: boolean; network?: string; storage?: [number, number] }; off?: { messages?: boolean; notifications?: boolean; clipboard?: boolean }; received?: any[]; ringing?: boolean; deviceWidth?: number }): any;
+/** Connect phone: get the app, choose your phone, check the code, allow files. */
+export declare function PairPhone(props: { step?: 0 | 1 | 2 | 3; nearby?: "none"; filesOk?: boolean; height?: number }): any;
+/** A phone asking to send files when auto-accept is off. */
+export declare function ReceiveToast(props: { from?: string; what?: string }): any;
+/** Every photo on the phone as a day-grouped timeline. */
+export declare function PhotosPage(props: { selected?: string[] }): any;
+/** SMS conversations and chat, sent through the phone. */
+export declare function MessagesPage(props: {}): any;
+/** Phone notifications grouped by app. */
+export declare function NotificationsPage(props: { mode?: "app" | "desktop" }): any;
+/** Settings → Phone. */
+export declare function PhoneSettings(props: { height?: number; background?: boolean }): any;
+/** The whole app with a phone page open. */
+export declare function PhoneWindow(props: { view?: "hub" | "photos" | "messages" | "notifications"; state?: "connected" | "away" | "none"; wallpaper?: "photo" | "aurora"; height?: number }): any;
+/** A stand-in photo thumbnail (data URI) for demos. */
+export declare function photoSrc(i: number, kind?: "screenshot" | "portrait" | null): string;
+/** A hub fact as a ring gauge. */
+export declare function Gauge(props: { icon: string; label: string; value: number | string; unit?: string; pct: number; color?: string; sub?: string; bolt?: boolean }): any;

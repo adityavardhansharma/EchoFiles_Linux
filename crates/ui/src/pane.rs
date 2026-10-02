@@ -123,6 +123,8 @@ pub struct Pane {
     pub drives: bool,
     /// Showing an SMB server's shares instead of a folder.
     pub shares: Option<crate::network::SharesPage>,
+    /// Showing a phone page (hub, photos, messages, notifications).
+    pub phone: Option<crate::phone::PhonePage>,
 }
 
 impl Pane {
@@ -157,6 +159,7 @@ impl Pane {
             grid: false,
             drives: false,
             shares: None,
+            phone: None,
         }
     }
 
@@ -396,7 +399,7 @@ impl Pane {
 
     /// A page that isn't a folder (Drives, an SMB server's shares).
     pub fn special(&self) -> bool {
-        self.drives || self.shares.is_some()
+        self.drives || self.shares.is_some() || self.phone.is_some()
     }
 
     /// Short label for tabs and the window title.
@@ -406,6 +409,9 @@ impl Pane {
         }
         if let Some(page) = &self.shares {
             return page.address.host.clone();
+        }
+        if let Some(page) = self.phone {
+            return page.title().into();
         }
         if let Some(n) = ef_net::gvfs::folder_name(&self.location) {
             return n;

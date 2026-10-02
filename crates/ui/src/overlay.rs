@@ -335,6 +335,11 @@ impl App {
                         let pinned = self.settings.sidebar.pinned.iter().any(|s| config::expand(s) == targets[0]);
                         e.push(if pinned { item("pin", "Unpin from sidebar", None, f(FileMsg::Unpin(targets[0].clone()))) } else { item("pin", "Pin to sidebar", None, f(FileMsg::Pin(targets[0].clone()))) });
                     }
+                    if let Some(pid) = self.phone_id().filter(|i| self.phone_online(i))
+                        && targets.iter().all(|t| t.is_file())
+                    {
+                        e.push(item("phone", format!("Send to {}", self.phone_name(&pid)), None, Message::Phone(crate::phone::PhoneMsg::SendPaths(targets.clone()))));
+                    }
                     e.push(Entry::Sep);
                     e.push(item("trash", "Move to Trash", Some("Del"), f(FileMsg::Trash)));
                     e.push(Entry::Item(MenuItem { icon: "trash", label: "Delete permanently".into(), kbd: Some("Shift+Del"), hint: None, msg: Some(f(FileMsg::AskDelete)), danger: true, submenu: Vec::new(), checked: false }));
@@ -487,6 +492,24 @@ impl App {
         for (icon, label, kbd, msg) in actions {
             add("Actions", icon, label.to_string(), None, kbd, msg);
         }
+        {
+            use crate::phone::{PhoneMsg, PhonePage, Want};
+            let ph = Message::Phone;
+            match self.phone_id() {
+                None => add("Phone", "phone", "Connect phone…".into(), None, None, ph(PhoneMsg::Dialog(true))),
+                Some(id) => {
+                    let name = self.phone_name(&id);
+                    add("Phone", "phone", format!("Open {name}"), None, None, ph(PhoneMsg::Select(id.clone())));
+                    add("Phone", "image", format!("Photos on {name}"), None, None, ph(PhoneMsg::Open(PhonePage::Photos)));
+                    add("Phone", "folder", format!("Files on {name}"), None, None, ph(PhoneMsg::Files(Want::Files)));
+                    add("Phone", "message", format!("Messages on {name}"), None, None, ph(PhoneMsg::Open(PhonePage::Messages)));
+                    add("Phone", "bell", format!("Notifications from {name}"), None, None, ph(PhoneMsg::Open(PhonePage::Notifications)));
+                    add("Phone", "phone-ring", format!("Ring {name}"), None, None, ph(PhoneMsg::Ring));
+                    add("Phone", "upload", format!("Send files to {name}…"), None, None, ph(PhoneMsg::SendFiles));
+                    add("Phone", "plus", "Connect another phone…".into(), None, None, ph(PhoneMsg::Dialog(true)));
+                }
+            }
+        }
         for (i, v) in self.volumes.iter().enumerate() {
             let name = crate::drives::display_name(v, &self.volumes);
             let mut size = String::new();
@@ -539,15 +562,16 @@ impl App {
             let label = self.volumes.iter().find(|v| v.mount_points.first().is_some_and(|m| *m == p)).map(|v| crate::drives::display_name(v, &self.volumes)).unwrap_or_else(|| config::tilde(&p));
             add("Go to", icon, label, (icon == "history").then(|| "recent".to_string()), None, Message::Navigate(p));
         }
-        for (page, icon, label) in [(Page::General, "sliders", "Settings: General"), (Page::Search, "search", "Settings: Search & index"), (Page::Agents, "terminal", "Settings: AI agents"), (Page::Appearance, "image", "Settings: Appearance"), (Page::About, "info", "Settings: About & shortcuts")] {
+        for (page, icon, label) in [(Page::General, "sliders", "Settings: General"), (Page::Search, "search", "Settings: Search & index"), (Page::Agents, "terminal", "Settings: AI agents"), (Page::Phone, "phone", "Settings: Phone"), (Page::Appearance, "image", "Settings: Appearance"), (Page::About, "info", "Settings: About & shortcuts")] {
             add("Settings", icon, label.to_string(), None, None, Message::Settings(SettingsMsg::OpenPage(page)));
         }
         if !q.is_empty() {
             // Groups stay in order; within a group the best match leads.
             let rank = |g: &str| match g {
                 "Actions" => 0,
-                "Go to" => 1,
-                _ => 2,
+                "Phone" => 1,
+                "Go to" => 2,
+                _ => 3,
             };
             out.sort_by_key(|a| (rank(a.group), -a.score));
         }
@@ -650,8 +674,16 @@ impl App {
                 Task::none()
             }
             UiMsg::ToastDismiss(id) => {
+                // Dismissing a phone's "wants to send" notice declines the file.
+                let offer = self.toasts.iter().find(|t| t.id == id).and_then(|t| match &t.action {
+                    Some((_, Message::Phone(crate::phone::PhoneMsg::AcceptOffer(x)))) => Some(*x),
+                    _ => None,
+                });
                 self.toasts.retain(|t| t.id != id);
-                Task::none()
+                match offer {
+                    Some(x) => self.phone_update(crate::phone::PhoneMsg::DeclineOffer(x)),
+                    None => Task::none(),
+                }
             }
             UiMsg::ToastHover(id, on) => {
                 if let Some(t) = self.toasts.iter_mut().find(|t| t.id == id) {
@@ -995,7 +1027,8 @@ impl App {
             };
             let mut head = row![w::glyph(&self.icons, icon, 16.0, tint), text(t.title.clone()).size(style::BODY).font(style::FONT_BOLD).color(color(p.ink_strong)).width(Length::Fill)].spacing(style::SPACE_3).align_y(Alignment::Center);
             if let Some((label, msg)) = &t.action {
-                head = head.push(w::text_button(p, &self.icons, label, Some("undo"), Some("Ctrl+Z"), Variant::Secondary, Some(Message::Ui(UiMsg::Pick(Box::new(msg.clone()))))));
+                let undo = label == "Undo";
+                head = head.push(w::text_button(p, &self.icons, label, undo.then_some("undo"), undo.then_some("Ctrl+Z"), Variant::Secondary, Some(Message::Ui(UiMsg::Pick(Box::new(msg.clone()))))));
             }
             head = head.push(w::icon_button(p, &self.icons, "close", Some(Message::Ui(UiMsg::ToastDismiss(t.id))), false));
             let mut c = column![head].spacing(4);

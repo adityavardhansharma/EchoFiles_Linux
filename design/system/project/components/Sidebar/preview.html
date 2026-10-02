@@ -1,4 +1,4 @@
-<!-- @dsCard group="Navigation" height=600 -->
+<!-- @dsCard group="Navigation" height=700 -->
 <!doctype html>
 <html>
 <head><meta charset="utf-8"><title>Sidebar</title></head>
@@ -8,7 +8,7 @@
 (function(){
 var E = window.Echo, h = React.createElement;
 function App(){
-return h("div", {className:"ef", style:{display:"flex", height:590}},
+return h("div", {className:"ef", style:{display:"flex", height:690}},
   h(E.Sidebar, null,
     h(E.SidebarSection, {title:"Linux", world:"linux"},
       h(E.SidebarItem, {icon:"home", label:"Home", active:true}),
@@ -25,6 +25,10 @@ return h("div", {className:"ef", style:{display:"flex", height:590}},
       h(E.DriveItem, {name:"AVS (D:)", state:"mounted", used:58, world:"windows", meta:"NTFS", free:"66 GB free"}),
       h(E.DriveItem, {name:"AVS (E:)", state:"unmounted", meta:"295 GB · click to mount"}),
       h(E.SidebarItem, {icon:"sliders", label:"All drives"})),
+    h(E.SidebarSection, {title:"Phone", world:"phone", collapsible:true, defaultOpen:true},
+      h(E.PhoneItem, {name:"Galaxy S24", state:"connected", battery:72, charging:true, keep:true}),
+      h(E.SidebarItem, {icon:"folder", label:"Files", indent:true}),
+      h(E.SidebarItem, {icon:"image", label:"Photos", indent:true, trail:"32 new"})),
     h(E.SidebarSection, {title:"Network", world:"network", count:1, collapsible:true, action:h(E.IconButton, {icon:"plus", label:"Connect to server (Ctrl+Shift+S)"})},
       h(E.NetworkItem, {name:"Media", protocol:"SMB", where:"nas.local", state:"connected", keep:true}),
       h(E.NetworkItem, {name:"build-box", protocol:"SFTP", where:"me@build-box"}),

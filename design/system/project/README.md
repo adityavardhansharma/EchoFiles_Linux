@@ -4,7 +4,7 @@ EchoFiles is a native file manager for Omarchy that treats Linux folders and dua
 
 1. **Omarchy is the design system above this one.** Colours, font, corner radius and borders come from the running Omarchy theme and Hyprland config. EchoFiles adds roles (selection, drop target, world marks), never a competing look. Switching Omarchy themes restyles the app live.
 2. **Speed is the design.** Anything that could make a frame late is not allowed: no blur, no per-row shadows, no animated layout in lists, no variable row heights. Navigation, selection and typing never animate; only the UI's *response* does.
-3. **One window for every world.** Linux, Windows, Network (SMB, SFTP and FTP servers) and (later) Phone are told apart by a 6px square world mark and names people recognise — drive names that match what Windows shows ("AVS (D:)"), shares by their name ("Media") — never by different styling or raw mount paths.
+3. **One window for every world.** Linux, Windows, Phone and Network (SMB, SFTP and FTP servers) are told apart by a 6px square world mark and names people recognise — drive names that match what Windows shows ("AVS (D:)"), shares by their name ("Media") — never by different styling or raw mount paths.
 4. **Keyboard first, mouse welcome.** Every action has a shortcut, and every surface that offers an action shows its key hint (`Kbd`). The command palette (Ctrl+K) reaches everything.
 5. **Honest states.** Read-only, dirty, locked, cloud-only, broken link and "flushed to disk" are always visible — as a word *and* a mark, never colour alone.
 
@@ -186,10 +186,20 @@ The search box has two scopes (`SearchScope`, Ctrl+E): **Folder** filters the op
 
 Windows shares (SMB), SSH servers (SFTP) and FTP/FTPS servers open like any folder. EchoFiles connects through GVfs (the engine Nautilus uses) and answers its sign-in and host-key questions in its own dialogs.
 
-- **Network** is the last sidebar section (`world-network`, Omarchy `magenta`): saved servers, then live connections made anywhere. `NetworkItem` rows name the place ("Media") and say how and where ("SMB · nas.local"); a connected row carries a Disconnect button.
+- **Network** is the last sidebar section, after Phone (`world-network`, Omarchy `magenta`): saved servers, then live connections made anywhere. `NetworkItem` rows name the place ("Media") and say how and where ("SMB · nas.local"); a connected row carries a Disconnect button.
 - **Connect to server** (Ctrl+Shift+S, the section's `+`, the palette) is `ConnectDialog`; addresses also work in the path bar (Ctrl+L), from the command line and from `smb://`, `sftp://`, `ftp://` links.
 - Sign-in is `SignInDialog`; a bare SMB server opens `SharesPage`.
 - Breadcrumbs, tabs, the status bar and errors use the place's name, never GVfs' `/run/user/…/gvfs/smb-share:server=…` folders. Network files get no thumbnails and never go to the Trash (Delete asks to delete permanently). A server that stops answering closes its folders with a toast saying so.
+
+## Phone
+
+Your Android phone over Wi-Fi. EchoFiles speaks the KDE Connect protocol itself — nothing KDE is installed on the laptop; the phone runs the stock KDE Connect app (later, EchoFiles' own app on the same protocol).
+
+- **Phone** sits between Windows and Network (`world-phone`, Omarchy `green`). Before pairing it holds **Connect phone**, which opens `PairPhone` (get the app → choose your phone → check the code → allow files). Paired, `PhoneItem` shows the phone's name, Wi-Fi and a `BatteryMeter`, with **Files** and **Photos** under it.
+- Clicking the phone opens `PhoneHub`: a drawn `PhoneDevice` (a flat Android phone in icon slot colours, lock screen over your latest photo or a flat theme-coloured wallpaper), battery and storage, **Ring phone**, **Send files**, **Get files**, feature tiles (Files, Photos, Messages, Notifications), `ReceivedList` and `ClipboardCard`. `PhoneWindow` is the reference composition.
+- Pages: `PhotosPage` (timeline, Import new, Save to), `MessagesPage` (SMS through the phone), `NotificationsPage` (grouped by app, dismiss, quick reply).
+- **Settings → Phone** (`PhoneSettings`) turns each feature off on both devices. Files from the phone are accepted automatically by default (off → `ReceiveToast` asks). Notifications are Off / **In app** (default) / Desktop too.
+- The phone is drawn flat, like a colour icon, and the hub uses the same flat boxes, hairlines and pills as the rest of the app; only the phone's screen text uses a sans (it's a picture of a phone, not app UI).
 
 ## How the pieces come together
 

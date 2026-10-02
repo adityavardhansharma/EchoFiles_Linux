@@ -1,0 +1,19 @@
+<!-- @dsCard group="Phone" height=260 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>ReceiveToast</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef ef-stack", style:{alignItems:"flex-end"}},
+  h(E.ReceiveToast, null),
+  h(E.TransferToast, {title:"Receiving 3 files from Galaxy S24", detail:"To ~/Downloads/Phone · IMG_2041.jpg", value:38, animate:true, icon:"download", meta:"4.6 of 12 MB · 18 MB/s", eta:"1 s left", doneTitle:"Received 3 files from Galaxy S24", doneMeta:"In ~/Downloads/Phone"}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>
