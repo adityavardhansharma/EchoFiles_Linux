@@ -72,7 +72,27 @@ The installer adds the **EchoFiles** app launcher and installs `echofiles` and `
 - **Move with confidence.** Copy, move, rename, trash and undo are built into the file manager.
 - **Connect to Windows volumes.** Inspect mounted drives, assign letters and choose when a drive can be written to.
 - **Open network places.** Connect to Windows shares (SMB), SSH servers (SFTP) and FTP/FTPS servers from the sidebar's Network section or Ctrl+Shift+S, then browse, copy and rename there like any folder. Addresses such as `smb://nas/Media` or `\\nas\Media` also work in the path bar and from other apps.
+- **Use your Android phone over Wi-Fi.** Pair it with the free KDE Connect app (Google Play or F-Droid) — nothing else to install on the laptop. Browse its files and photos, import new photos, send files both ways, share the clipboard, ring it, and see its battery, notifications and texts. See [Connect your phone](#connect-your-phone).
 - **Use `ef` from the terminal.** Search an index, narrow results by extension or scope, and pipe paths into other commands.
+
+## Connect your phone
+
+1. Install **KDE Connect** on your Android phone from Google Play or F-Droid and open it. Keep the phone on the same Wi-Fi as the laptop.
+2. In EchoFiles, click **Connect phone** in the sidebar's Phone section (or Ctrl+K → *Connect phone*).
+3. Pick your phone, check both screens show the same code, and accept on the phone.
+4. For files and photos, open the device in KDE Connect, go to **Plugin settings**, turn on **Filesystem expose**, and allow **All files access** when Android asks.
+
+If your phone doesn't appear and the firewall is on (Omarchy enables ufw), use **Allow KDE Connect…** in the dialog, or run:
+
+```bash
+sudo ufw allow 1714:1764/udp
+```
+
+```bash
+sudo ufw allow 1714:1764/tcp
+```
+
+EchoFiles speaks the KDE Connect protocol itself, so don't run KDE's own `kdeconnectd` at the same time. Turn features off in Settings → Phone; files the phone sends save to `~/Downloads/Phone`.
 
 ## Speed, measured against Nautilus
 
