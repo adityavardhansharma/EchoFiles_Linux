@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 pub use identity::{dir as config_dir, host_name, Trusted};
 pub use serde_json::{json, Value};
-pub use service::Service;
+pub use service::{trace_to, Role, Service, Source};
 
 /// Lowest and highest TCP port KDE Connect uses.
 pub const PORT_MIN: u16 = 1714;
@@ -37,11 +37,29 @@ pub struct Device {
     pub paired: bool,
     /// What the phone accepts (`kdeconnect.sms.request`…): its enabled plugins.
     pub accepts: Vec<String>,
+    /// What it sends.
+    pub sends: Vec<String>,
+    /// Reachable over Wi-Fi now.
+    pub lan: bool,
+    /// Reachable over Bluetooth now (clipboard and calls only).
+    pub bluetooth: bool,
+}
+
+/// How a link reaches the other device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Via {
+    Lan,
+    Bluetooth,
 }
 
 impl Device {
     pub fn can(&self, packet_type: &str) -> bool {
         self.accepts.iter().any(|t| t == packet_type)
+    }
+
+    /// Runs EchoConnect (our own app), not stock KDE Connect.
+    pub fn echoconnect(&self) -> bool {
+        self.sends.iter().any(|t| t.starts_with("echofiles."))
     }
 }
 
@@ -105,10 +123,12 @@ pub enum Event {
     /// We asked to pair; the phone shows `code` and waits for its owner.
     PairCode { id: String, code: String },
     Paired(Device),
+    /// A paired device's link is up and the first requests went out.
+    Ready(String),
     PairRejected(String),
     Unpaired(String),
     Battery { id: String, level: i32, charging: bool },
-    Clipboard { id: String, text: String },
+    Clipboard { id: String, text: String, sensitive: bool },
     Notification { id: String, notification: Notification },
     NotificationGone { id: String, key: String },
     Sms { id: String, messages: Vec<Sms> },
@@ -116,9 +136,9 @@ pub enum Event {
     /// Shared from the phone: some text, or a link.
     Text { id: String, text: String },
     Url { id: String, url: String },
-    /// The phone wants to send a file; answer with [`Service::accept_file`] or
-    /// [`Service::reject_file`].
-    Incoming { id: String, transfer: u64, name: String, size: u64 },
+    /// The other side offers a payload (a shared file, a thumbnail…) with packet `kind`;
+    /// answer with [`Service::accept_file`] or [`Service::reject_file`].
+    Incoming { id: String, transfer: u64, name: String, size: u64, kind: String, body: Value },
     TransferStarted { id: String, transfer: u64, name: String, size: u64, upload: bool, done: Arc<AtomicU64> },
     /// A download finished (the file's path) or an upload did (the sent file).
     TransferDone { id: String, transfer: u64, upload: bool, result: Result<PathBuf, String> },

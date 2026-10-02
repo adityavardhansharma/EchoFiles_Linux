@@ -63,7 +63,7 @@ fn pair_and_talk() {
     assert_eq!(ef_phone_trusted_count(&db), 1);
 
     // a → b clipboard
-    assert!(a.send_clipboard(&b_id, "hello phone", false));
+    assert!(a.send_clipboard(&b_id, "hello phone", false, false));
     // b doesn't accept clipboard from... it does: same capabilities both ways in the test.
     let got = wait(&rb, "clipboard", |e| match e {
         Event::Clipboard { text, .. } => Some(text.clone()),
@@ -107,4 +107,55 @@ fn pair_and_talk() {
 
 fn ef_phone_trusted_count(dir: &std::path::Path) -> usize {
     std::fs::read_dir(dir.join("trusted")).map(|r| r.count()).unwrap_or(0)
+}
+
+/// A Bluetooth-only link (a socket pair stands in for RFCOMM): pair, clipboard, and the
+/// phone's own capabilities.
+#[test]
+fn bluetooth_only() {
+    let dir = |n: &str| {
+        let d = std::env::temp_dir().join(format!("ef-phone-bt-{n}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    };
+    let (da, db) = (dir("laptop"), dir("phone"));
+    let (ta, ra) = mpsc::channel();
+    let (tb, rb) = mpsc::channel();
+    let a = Service::start_as(da.clone(), Some("laptop".into()), "laptop", move |e| {
+        let _ = ta.send(e);
+    })
+    .unwrap();
+    let b = Service::start_as(db.clone(), Some("phone".into()), "phone", move |e| {
+        let _ = tb.send(e);
+    })
+    .unwrap();
+    let (x, y) = std::os::unix::net::UnixStream::pair().unwrap();
+    b.adopt(x.into(), true);
+    a.adopt(y.into(), false);
+    let phone = wait(&ra, "laptop sees phone over bluetooth", |e| match e {
+        Event::Device(d) if d.name == "phone" => Some(d.clone()),
+        _ => None,
+    });
+    assert!(phone.bluetooth && !phone.lan);
+    assert!(phone.echoconnect(), "the phone role lists echofiles.* packets");
+    assert!(phone.can("kdeconnect.findmyphone.request"));
+    let laptop_id = wait(&rb, "phone sees laptop", |e| match e {
+        Event::Device(d) if d.name == "laptop" => Some(d.id.clone()),
+        _ => None,
+    });
+    a.pair(&phone.id);
+    wait(&rb, "phone asked", |e| matches!(e, Event::PairRequested { .. }).then_some(()));
+    b.accept_pair(&laptop_id);
+    wait(&ra, "paired", |e| matches!(e, Event::Paired(_)).then_some(()));
+    assert!(b.send_clipboard(&laptop_id, "otp 482913", false, true));
+    let (text, sensitive) = wait(&ra, "clipboard over bluetooth", |e| match e {
+        Event::Clipboard { text, sensitive, .. } => Some((text.clone(), *sensitive)),
+        _ => None,
+    });
+    assert_eq!(text, "otp 482913");
+    assert!(sensitive);
+    // Files need Wi-Fi.
+    assert!(!a.send_packet(&phone.id, "kdeconnect.share.request", ef_phone::json!({ "text": "x" })));
+    let _ = std::fs::remove_dir_all(&da);
+    let _ = std::fs::remove_dir_all(&db);
 }

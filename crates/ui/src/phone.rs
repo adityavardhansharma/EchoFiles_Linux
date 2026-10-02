@@ -257,12 +257,21 @@ pub fn start() {
 /// `wl-paste --watch` runs a command on every clipboard change; it prints the text as one
 /// base64 line so newlines survive.
 fn watch_clipboard(tx: mpsc::UnboundedSender<PhoneMsg>) {
-    let Ok(mut child) = std::process::Command::new("wl-paste")
-        .args(["--no-newline", "--type", "text", "--watch", "sh", "-c", "base64 -w0; echo"])
+    use std::os::unix::process::CommandExt;
+    let mut cmd = std::process::Command::new("wl-paste");
+    cmd.args(["--no-newline", "--type", "text", "--watch", "sh", "-c", "base64 -w0; echo"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+        .stderr(std::process::Stdio::null());
+    // The watcher ends with EchoFiles (it used to outlive it, one per launch).
+    // SAFETY: prctl is async-signal-safe; nothing else runs between fork and exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
+    let Ok(mut child) = cmd.spawn()
     else {
         return;
     };
@@ -900,7 +909,7 @@ impl App {
                     && !ids.is_empty()
                 {
                     for id in ids {
-                        s.send_clipboard(&id, &text, false);
+                        s.send_clipboard(&id, &text, false, false);
                     }
                     self.phone.clip.push_front((false, text, SystemTime::now()));
                     self.phone.clip.truncate(20);
@@ -1329,7 +1338,7 @@ impl App {
                     if self.settings.phone.clipboard && !self.phone.clip_last.is_empty()
                         && let Some(s) = service()
                     {
-                        s.send_clipboard(&id, &self.phone.clip_last, true);
+                        s.send_clipboard(&id, &self.phone.clip_last, true, false);
                     }
                     if self.settings.phone.files && self.phone.mount.is_none() && Some(&id) == self.phone_id().as_ref() {
                         return self.phone_files(Want::Nothing);
@@ -1498,7 +1507,7 @@ impl App {
                 self.push_toast(Tone::Accent, format!("Link from {}", self.phone_name(&id)), Some(url), None);
                 Task::none()
             }
-            Event::Incoming { id, transfer, name, size } => {
+            Event::Incoming { id, transfer, name, size, .. } => {
                 if self.settings.phone.auto_accept {
                     if let Some(s) = service() {
                         s.accept_file(transfer, config::expand(&self.settings.phone.save_to));
@@ -1512,7 +1521,7 @@ impl App {
                 }
                 Task::none()
             }
-            Event::Other { .. } => Task::none(),
+            Event::Other { .. } | Event::Ready(_) => Task::none(),
             Event::TransferStarted { transfer, name, size, upload, done, .. } => {
                 self.phone.moved.insert(0, Moved { transfer, name, size, upload, done, result: None, at: SystemTime::now() });
                 self.phone.moved.truncate(30);
