@@ -125,6 +125,17 @@ GLYPHS = {
     "usb": '<path d="M8 10h8v9a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2zM9.5 10V3.5h5V10M11 6.5h.01M13 6.5h.01"/>',
     "sd-card": '<path d="M8 3h8.5L19 5.5V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6zM9 7v3M12 7v3M15 7v3"/>',
     "phone": '<rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/>',
+    # phone features
+    "phone-ring": '<rect x="7.5" y="3.5" width="9" height="17" rx="2"/><path d="M11 17.5h2M4 8.5a6 6 0 0 0 0 7M20 8.5a6 6 0 0 1 0 7"/>',
+    "battery": '<rect x="2.5" y="7" width="16.5" height="10" rx="2"/><path d="M21.5 10.5v3M6 10.5v3M9.5 10.5v3"/>',
+    "bolt": '<path d="M13 2.5L5 13.5h6l-1 8 8-11h-6z"/>',
+    "wifi": '<path d="M2.5 9a14 14 0 0 1 19 0M5.5 12.5a9.5 9.5 0 0 1 13 0M8.8 16a4.8 4.8 0 0 1 6.4 0M12 19.5h.01"/>',
+    "bell": '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15zM10 21h4"/>',
+    "bell-off": '<path d="M8.5 5.6A6 6 0 0 1 18 11v4M6 11v5.5l-1.5 2h12.5M10 21h4M3.5 3.5l17 17"/>',
+    "message": '<path d="M4 5.5h16a1 1 0 0 1 1 1V16a1 1 0 0 1-1 1h-9l-5 4v-4H4a1 1 0 0 1-1-1V6.5a1 1 0 0 1 1-1zM7.5 10h9M7.5 13h5"/>',
+    "clipboard": '<rect x="5" y="4.5" width="14" height="16.5" rx="2"/><rect x="9" y="2.5" width="6" height="4" rx="1"/><path d="M8.5 11h7M8.5 14.5h5"/>',
+    "unlink": '<path d="M9.5 6.5l1.3-1.3a4 4 0 0 1 5.7 5.7l-1.3 1.3M14.5 17.5l-1.3 1.3a4 4 0 0 1-5.7-5.7l1.3-1.3M3.5 3.5l17 17"/>',
+    "qr": '<rect x="3.5" y="3.5" width="7" height="7" rx="1"/><rect x="13.5" y="3.5" width="7" height="7" rx="1"/><rect x="3.5" y="13.5" width="7" height="7" rx="1"/><path d="M13.5 13.5h3v3M20.5 13.5v.01M16.5 20.5h4v-4"/>',
     "network": '<rect x="9" y="3" width="6" height="5" rx="1"/><rect x="3" y="16" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><path d="M12 8v4M6 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2"/>',
     "server": '<rect x="3.5" y="4" width="17" height="7" rx="1.5"/><rect x="3.5" y="13" width="17" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/>',
     # media

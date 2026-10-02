@@ -1,0 +1,23 @@
+<!-- @dsCard group="Phone" height=520 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>PhoneDevice</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+var cap = function(t){ return h("span", {className:"ef-muted", style:{fontSize:11}}, t); };
+var col = function(kids){ return h("div", {style:{display:"flex", flexDirection:"column", alignItems:"center", gap:14}}, kids); };
+return h("div", {className:"ef", style:{display:"flex", gap:40, padding:"28px 32px", alignItems:"flex-start", flexWrap:"wrap"}},
+  col([h(E.PhoneDevice, {key:1, width:190, wallpaper:"aurora"}), h("span", {key:2}, cap("EchoFiles wallpaper"))]),
+  col([h(E.PhoneDevice, {key:1, width:190, wallpaper:"photo", photo:2}), h("span", {key:2}, cap("Latest photo"))]),
+  col([h(E.PhoneDevice, {key:1, width:190, state:"ringing"}), h("span", {key:2}, cap("Ringing"))]),
+  col([h(E.PhoneDevice, {key:1, width:190, state:"away"}), h("span", {key:2}, cap("Not nearby"))]));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

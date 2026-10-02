@@ -1,0 +1,21 @@
+<!-- @dsCard group="Phone" height=150 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>FeatureTile</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef", style:{padding:16, display:"grid", gridTemplateColumns:"repeat(2, 260px)", gap:10}},
+  h(E.FeatureTile, {icon:"image", label:"Photos", sub:"2,481 photos", badge:"32 new"}),
+  h(E.FeatureTile, {icon:"message", label:"Messages", sub:"Priya: See you at 7?", badge:"3"}),
+  h(E.FeatureTile, {icon:"folder", label:"Files", sub:"Camera, Downloads, WhatsApp…"}),
+  h(E.FeatureTile, {icon:"bell", label:"Notifications", off:true}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

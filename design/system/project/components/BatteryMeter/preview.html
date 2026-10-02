@@ -1,0 +1,18 @@
+<!-- @dsCard group="Phone" height=80 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>BatteryMeter</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef ef-row-flex", style:{gap:20}},
+  h(E.BatteryMeter, {level:72, charging:true}), h(E.BatteryMeter, {level:54}), h(E.BatteryMeter, {level:18}), h(E.BatteryMeter, {level:6}), h(E.BatteryMeter, {level:100, charging:true}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>
