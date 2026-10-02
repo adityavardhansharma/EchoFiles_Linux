@@ -1,0 +1,21 @@
+<!-- @dsCard group="Actions" height=250 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Button</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec-pad", style:{maxWidth:380}}, 
+  h("div", {className:"ec-row-flex"}, h(E.Button, {variant:"primary", icon:"send"}, "Send"), h(E.Button, {icon:"upload"}, "Send files"), h(E.Button, {variant:"ghost"}, "Cancel")),
+  h("div", {className:"ec-row-flex"}, h(E.Button, {size:"sm"}, "Retry"), h(E.Button, {size:"sm", variant:"ghost", icon:"unlink"}, "Forget"), h(E.Button, {variant:"danger", size:"sm"}, "Forget laptop"), h(E.Button, {disabled:true, size:"sm"}, "Send")),
+  h(E.Button, {variant:"primary", size:"lg", block:true, icon:"scan"}, "Scan the laptop's code"),
+  h(E.Button, {block:true, icon:"external"}, "Open Developer options"));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

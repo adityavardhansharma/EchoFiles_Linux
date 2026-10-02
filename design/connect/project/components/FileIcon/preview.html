@@ -1,0 +1,19 @@
+<!-- @dsCard group="Iconography" height=150 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>FileIcon</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+var names = ["folder","folder-image","folder-download","file-image","file-video","file-audio","file-pdf","file-doc","file-sheet","file-archive","file-package","file-code","phone","drive","network","send"];
+return h("div", {className:"ec-pad"}, h("div", {style:{display:"grid", gridTemplateColumns:"repeat(auto-fill, 48px)", gap:6}},
+  names.map(function(n){ return h("span", {key:n, title:n}, h(E.FileIcon, {name:n, size:44})); })));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

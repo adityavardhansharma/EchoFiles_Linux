@@ -1,0 +1,19 @@
+<!-- @dsCard group="Iconography" height=210 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Icon</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+var names = ["home","clipboard","swap","settings","laptop","phone","phone-ring","wifi","bluetooth","battery","bolt","upload","download","send","copy","external","lock","unlock","unlink","qr","scan","camera","call","mic","speaker","bell","bell-off","moon","message","users","image","folder","shield","key","terminal","code","eye-off","check","close","refresh","arrow-up","arrow-down","arrow-left","chevron-right","more-vertical","trash","info","alert","cursor-text","flashlight"];
+return h("div", {className:"ec-pad"}, h("div", {style:{display:"grid", gridTemplateColumns:"repeat(auto-fill, 44px)", gap:4, color:"var(--ink-muted)"}},
+  names.map(function(n){ return h("span", {key:n, title:n, style:{width:44,height:44,display:"grid",placeItems:"center"}}, h(E.Icon, {name:n, size:22})); })));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

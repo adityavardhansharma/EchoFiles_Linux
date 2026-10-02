@@ -1,0 +1,17 @@
+<!-- @dsCard group="Device" height=820 page -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>PhoneFrame</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec-pad", style:{alignItems:"flex-start"}}, h(E.PhoneFrame, {height:720}, h(E.HomeScreen, null)));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+<!-- @dsCard group="Connect" height=520 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>StepList</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec-pad", style:{maxWidth:380}}, h(E.StepList, {current:2, steps:[
+  {title:"Turn on Developer options", done:"On"},
+  {title:"Turn on Wireless debugging", done:"On"},
+  {title:"Scan the code on the laptop", body:[h("p", {key:"a"}, "On the laptop: EchoFiles → Settings → Phone → Make clipboard automatic."), h("div", {key:"b", className:"ec-wait"}, h(E.Spinner, null), "Waiting for Aditya's laptop…")]},
+  {title:"Allow Display over other apps"},
+  {title:"Turn Developer options off"}]}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

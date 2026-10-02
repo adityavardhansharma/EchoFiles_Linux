@@ -1,0 +1,17 @@
+<!-- @dsCard group="Android" height=100 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>SelectionMenu</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec-pad"}, h(E.SelectionMenu, null));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+<!-- @dsCard group="Screens" height=800 page -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>SettingsScreen</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){return h("div", {className:"ec-pad", style:{alignItems:"flex-start"}}, h(E.PhoneFrame, {height:720}, h(E.SettingsScreen, null)));}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>
