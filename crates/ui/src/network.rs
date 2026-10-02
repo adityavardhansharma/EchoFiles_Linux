@@ -166,6 +166,11 @@ pub fn load_recent() -> Vec<String> {
     std::fs::read_to_string(recent_file()).map(|t| t.lines().filter(|l| !l.trim().is_empty()).map(str::to_string).take(RECENT_MAX).collect()).unwrap_or_default()
 }
 
+/// Ask GVfs what's connected now.
+pub fn refresh_mounts_task() -> Task<Message> {
+    background(|| gvfs::mounts().map_err(|e| e.to_string()), |r| Message::Net(NetMsg::Mounts(r)))
+}
+
 /// Work to start with the app: what GVfs can do and what's already connected.
 pub fn boot_tasks() -> Task<Message> {
     Task::batch([
@@ -239,7 +244,8 @@ impl App {
             out.push(Place { key: s.uri.clone(), name, address, mount: mi.map(|i| &self.net.mounts[i]), saved: true });
         }
         for (i, m) in self.net.mounts.iter().enumerate() {
-            if used.contains(&i) {
+            // The phone's files show under Phone, not as a server.
+            if used.contains(&i) || self.is_phone_path(&m.root) || m.address.as_ref().is_some_and(|a| a.user.as_deref() == Some("kdeconnect")) {
                 continue;
             }
             let key = m.address.as_ref().map(Address::uri).unwrap_or_else(|| m.root.to_string_lossy().into_owned());
@@ -283,7 +289,7 @@ impl App {
     // ------------------------------------------------------------------ actions
 
     fn refresh_mounts(&self) -> Task<Message> {
-        background(|| gvfs::mounts().map_err(|e| e.to_string()), |r| Message::Net(NetMsg::Mounts(r)))
+        refresh_mounts_task()
     }
 
     fn remember_recent(&mut self, a: &Address) {
@@ -679,7 +685,7 @@ impl App {
     pub(crate) fn network_section(&self) -> Element<'_, Message> {
         let p = &self.palette;
         let open = self.settings.sidebar.network_open;
-        let connected = self.net.mounts.len();
+        let connected = self.net.mounts.iter().filter(|m| !self.is_phone_path(&m.root) && m.address.as_ref().is_none_or(|a| a.user.as_deref() != Some("kdeconnect"))).count();
         let add = self.tip(w::icon_button(p, &self.icons, "plus", Some(Message::Net(NetMsg::Open(None))), false), "Connect to server", Some("Ctrl+Shift+S"));
         let mut col = column![self.fold_head("Network", color(p.world_network), (connected > 0).then_some(connected), open, crate::view::Fold::Network, Some(add))].spacing(1);
         let places = self.net_places();
