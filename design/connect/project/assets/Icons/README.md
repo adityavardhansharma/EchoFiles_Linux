@@ -1,0 +1,5 @@
+71 full-colour icons (48-unit grid) for places, devices, file types and status, redrawn as SVG from the EchoFiles reference sheets.
+
+- These uploads show the **Echo** palette. Each icon is authored with palette slots that the `icon-*` tokens fill per theme: folder `#FFC83D` → `icon-folder`, folder back `#F2AE1C` → `icon-folder-back`, folder glyph `#7A5306` → `icon-folder-glyph`, blue `#2F7CF6` → `icon-blue`, blue deep `#1B5FD1` → `icon-blue-deep`, green `#22A55B` → `icon-green`, red `#EF4444` → `icon-red`, orange `#FB8A2E` → `icon-orange`, purple `#7B4FF0` → `icon-purple`, yellow `#F7C331` → `icon-yellow`, slate `#4B5565` → `icon-slate`, slate deep `#2E3440` → `icon-slate-deep`, paper `#E6EBF2` → `icon-paper`, paper fold `#BFC8D6` → `icon-paper-fold`, on `#FFFFFF` → `icon-on`.
+- The app substitutes those hexes with the active theme's values before rasterising with `resvg`. Use through `FileIcon`; map extensions with `iconFor`.
+- Sizes: 18 (rows), 32 (dialogs), 48 (tiles, cards), 64 (empty states), 96 (preview). Never below 16.
