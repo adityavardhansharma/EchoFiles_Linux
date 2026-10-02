@@ -1,0 +1,20 @@
+<!-- @dsCard group="Connect" height=330 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>TransferRow</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec-pad", style:{maxWidth:380}}, h(E.ListGroup, null,
+  h(E.TransferRow, {name:"VID_20261002_0912.mp4", progress:38, rate:"31 of 84 MB · 22 MB/s · 3 s left"}),
+  h(E.TransferRow, {name:"boarding-pass.pdf", dir:"from", when:"12 min ago"}),
+  h(E.TransferRow, {name:"voice-note.opus", size:"88 KB", failed:true})));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>
