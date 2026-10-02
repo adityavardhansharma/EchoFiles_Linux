@@ -150,3 +150,8 @@ pub enum Event {
 pub fn trusted() -> Vec<Trusted> {
     identity::trusted(&identity::dir())
 }
+
+/// Devices paired with the service whose state lives in `dir`.
+pub fn trusted_in(dir: &std::path::Path) -> Vec<Trusted> {
+    identity::trusted(dir)
+}
