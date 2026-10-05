@@ -11,13 +11,15 @@ use std::io::BufWriter;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, Arc, atomic::{AtomicBool, Ordering}};
+pub type Job = (PathBuf, i64, Arc<AtomicBool>);
 
 use iced::advanced::image::Handle;
 
 const SIZE: u32 = 128;
 const MAX_JOBS: usize = 2;
-const KEEP: usize = 1500;
+// Every cached handle is at most SIZE² RGBA bytes (32 MiB at this entry budget).
+const KEEP: usize = 512;
 
 pub enum Slot {
     Pending,
@@ -32,6 +34,7 @@ pub struct Thumbs {
     lru: VecDeque<PathBuf>,
     queue: VecDeque<(PathBuf, i64)>,
     running: usize,
+    cancels: HashMap<PathBuf, Arc<AtomicBool>>,
 }
 
 /// A decoded thumbnail, ready to become an image handle on the UI thread.
@@ -51,9 +54,12 @@ impl Thumbs {
     }
 
     /// Queue these (visible) files, newest request first. Returns jobs to start.
-    pub fn want(&mut self, items: Vec<(PathBuf, i64)>) -> Vec<(PathBuf, i64)> {
+    pub fn want(&mut self, items: Vec<(PathBuf, i64)>) -> Vec<Job> {
         // What's on screen now matters more than what was on screen before.
         self.queue.clear();
+        for (path, cancel) in &self.cancels {
+            if !items.iter().any(|(p, m)| p == path && self.map.get(path).is_some_and(|(old, _)| old == m)) { cancel.store(true, Ordering::Relaxed); }
+        }
         for (p, m) in items {
             // A changed file (new mtime) gets a new thumbnail.
             let fresh = self.map.get(&p).is_some_and(|(t, _)| *t == m);
@@ -65,26 +71,31 @@ impl Thumbs {
         self.start()
     }
 
-    fn start(&mut self) -> Vec<(PathBuf, i64)> {
+    fn start(&mut self) -> Vec<Job> {
         let mut jobs = Vec::new();
         while self.running < MAX_JOBS {
             let Some((p, m)) = self.queue.pop_front() else { break };
             self.map.insert(p.clone(), (m, Slot::Pending));
             self.running += 1;
-            jobs.push((p, m));
+            let cancel = Arc::new(AtomicBool::new(false));
+            self.cancels.insert(p.clone(), cancel.clone());
+            jobs.push((p, m, cancel));
         }
         jobs
     }
 
     /// A job finished; returns the next jobs to start.
-    pub fn done(&mut self, path: PathBuf, px: Option<Pixels>) -> Vec<(PathBuf, i64)> {
+    pub fn done(&mut self, path: PathBuf, mtime: i64, token: &Arc<AtomicBool>, px: Option<Pixels>) -> Vec<Job> {
         self.running = self.running.saturating_sub(1);
+        if !self.cancels.get(&path).is_some_and(|c| Arc::ptr_eq(c, token)) { return self.start(); }
+        self.cancels.remove(&path);
+        if token.load(Ordering::Relaxed) { self.map.remove(&path); return self.start(); }
         let slot = match px {
             Some(px) => Slot::Ready(Handle::from_rgba(px.width, px.height, (*px.rgba).clone())),
             None => Slot::Failed,
         };
-        let mtime = self.map.get(&path).map_or(0, |e| e.0);
         self.map.insert(path.clone(), (mtime, slot));
+        self.lru.retain(|p| p != &path);
         self.lru.push_back(path);
         while self.lru.len() > KEEP {
             if let Some(old) = self.lru.pop_front() {
@@ -202,9 +213,11 @@ fn thumbnailer_for(mime: &str) -> Option<&'static str> {
 /// Read a cached PNG if it's for this version of the file.
 fn read_cached(file: &Path, mtime: i64) -> Option<Pixels> {
     let f = std::fs::File::open(file).ok()?;
+    if f.metadata().ok()?.len() > 8 << 20 { return None; }
     let mut dec = png::Decoder::new(std::io::BufReader::new(f));
     dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = dec.read_info().ok()?;
+    if reader.info().width > SIZE || reader.info().height > SIZE { return None; }
     let fresh = reader.info().uncompressed_latin1_text.iter().any(|t| t.keyword == "Thumb::MTime" && t.text.trim().parse::<i64>().ok() == Some(mtime));
     if !fresh {
         return None;
@@ -224,8 +237,8 @@ fn read_cached(file: &Path, mtime: i64) -> Option<Pixels> {
 fn write_cached(file: &Path, px: &Pixels, uri: &str, mtime: i64) {
     let Some(dir) = file.parent() else { return };
     let _ = std::fs::create_dir_all(dir);
-    let tmp = file.with_extension(format!("tmp{}", std::process::id()));
-    let Ok(f) = std::fs::File::create(&tmp) else { return };
+    let Ok(tmp) = tempfile::NamedTempFile::new_in(dir) else { return };
+    let Ok(f) = tmp.reopen() else { return };
     let mut enc = png::Encoder::new(BufWriter::new(f), px.width, px.height);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
@@ -234,39 +247,45 @@ fn write_cached(file: &Path, px: &Pixels, uri: &str, mtime: i64) {
     let _ = enc.add_text_chunk("Thumb::MTime".into(), mtime.to_string());
     let ok = enc.write_header().and_then(|mut w| w.write_image_data(&px.rgba)).is_ok();
     if ok {
-        let _ = std::fs::rename(&tmp, file);
+        let _ = tmp.persist(file);
     } else {
-        let _ = std::fs::remove_file(&tmp);
+        drop(tmp);
     }
 }
 
 fn decode(p: &Path) -> Option<Pixels> {
     let mut reader = image::ImageReader::open(p).ok()?.with_guessed_format().ok()?;
     let mut limits = image::Limits::default();
-    limits.max_alloc = Some(512 << 20);
+    limits.max_alloc = Some(128 << 20);
     reader.limits(limits);
     let img = reader.decode().ok()?;
     let t = img.thumbnail(SIZE, SIZE).to_rgba8();
     Some(Pixels { width: t.width(), height: t.height(), rgba: std::sync::Arc::new(t.into_raw()) })
 }
 
-fn run_thumbnailer(p: &Path, uri: &str) -> Option<Pixels> {
+fn run_thumbnailer(p: &Path, uri: &str, cancel: &AtomicBool) -> Option<Pixels> {
     let exec = thumbnailer_for(mime(&ext(p))?)?;
-    let out = std::env::temp_dir().join(format!("ef-thumb-{}-{}.png", std::process::id(), md5::compute(uri.as_bytes()).0[0]));
-    let args: Vec<String> = exec
-        .split_whitespace()
-        .map(|a| a.replace("%s", &SIZE.to_string()).replace("%u", uri).replace("%i", &p.to_string_lossy()).replace("%o", &out.to_string_lossy()))
-        .collect();
+    let work = tempfile::Builder::new().prefix("ef-thumb-").tempdir().ok()?;
+    let out = work.path().join("result.png");
+    let args: Vec<String> = parse_exec(exec)?.into_iter()
+        .map(|a| expand_codes(&a, p, uri, &out)).collect();
     let (prog, rest) = args.split_first()?;
-    let status = Command::new(prog).args(rest).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().ok()?;
-    let img = status.success().then(|| image::open(&out).ok()).flatten();
-    let _ = std::fs::remove_file(&out);
-    let t = img?.thumbnail(SIZE, SIZE).to_rgba8();
-    Some(Pixels { width: t.width(), height: t.height(), rgba: std::sync::Arc::new(t.into_raw()) })
+    let mut child = Command::new(prog).args(rest).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().ok()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success().then(|| decode(&out)).flatten(),
+            Err(_) => { let _ = child.kill(); let _ = child.wait(); return None; },
+            Ok(None) => {},
+        }
+        if cancel.load(Ordering::Relaxed) || std::time::Instant::now() >= deadline { let _ = child.kill(); let _ = child.wait(); return None; }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 /// Produce a thumbnail for `p` (blocking; run on a worker thread).
-pub fn load(p: &Path, mtime: i64) -> Option<Pixels> {
+pub fn load_cancellable(p: &Path, mtime: i64, cancel: &AtomicBool) -> Option<Pixels> {
+    if cancel.load(Ordering::Relaxed) { return None; }
     let u = uri(p);
     let name = format!("{:x}.png", md5::compute(u.as_bytes()));
     let base = cache_dir();
@@ -280,7 +299,8 @@ pub fn load(p: &Path, mtime: i64) -> Option<Pixels> {
     if std::fs::read_to_string(&fail).is_ok_and(|m| m.trim().parse::<i64>().ok() == Some(mtime)) {
         return None;
     }
-    let px = if DECODE.contains(&ext(p).as_str()) { decode(p) } else { run_thumbnailer(p, &u) };
+    let px = if DECODE.contains(&ext(p).as_str()) { decode(p) } else { run_thumbnailer(p, &u, cancel) };
+    if cancel.load(Ordering::Relaxed) { return None; }
     match &px {
         Some(px) => write_cached(&base.join("normal").join(&name), px, &u, mtime),
         None => {
@@ -289,4 +309,65 @@ pub fn load(p: &Path, mtime: i64) -> Option<Pixels> {
         }
     }
     px
+}
+
+fn parse_exec(line: &str) -> Option<Vec<String>> {
+    let mut args = Vec::new();
+    let mut word = String::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut started = false;
+    for c in line.chars() {
+        if escaped { word.push(c); escaped = false; started = true; continue; }
+        match c {
+            '\\' => { escaped = true; started = true; },
+            '\"' => { quoted = !quoted; started = true; },
+            c if c.is_whitespace() && !quoted => { if started { args.push(std::mem::take(&mut word)); started = false; } },
+            c => { word.push(c); started = true; },
+        }
+    }
+    if quoted || escaped { return None; }
+    if started { args.push(word); }
+    Some(args)
+}
+
+fn expand_codes(arg: &str, path: &Path, uri: &str, out: &Path) -> String {
+    let mut result = String::new();
+    let mut chars = arg.chars();
+    while let Some(c) = chars.next() {
+        if c != '%' { result.push(c); continue; }
+        match chars.next() {
+            Some('s') => result.push_str(&SIZE.to_string()), Some('u') => result.push_str(uri),
+            Some('i') => result.push_str(&path.to_string_lossy()), Some('o') => result.push_str(&out.to_string_lossy()),
+            Some('%') => result.push('%'), Some(c) => { result.push('%'); result.push(c); }, None => result.push('%'),
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    #[test]
+    fn quoted_helpers_and_field_codes() {
+        assert_eq!(parse_exec("\"/opt/My Helper/bin\" --name \"a b\" %i %o").unwrap(), vec!["/opt/My Helper/bin", "--name", "a b", "%i", "%o"]);
+        assert!(parse_exec("\"unterminated").is_none());
+        assert_eq!(expand_codes("%i", Path::new("/tmp/literal%o"), "unused", Path::new("output")), "/tmp/literal%o");
+        assert_eq!(expand_codes("%%", Path::new(""), "", Path::new("")), "%");
+    }
+
+    #[test]
+    fn older_thumbnail_cannot_complete_a_newer_request() {
+        let mut thumbs = Thumbs::default();
+        let path = PathBuf::from("/fixture/photo.jpg");
+        let first = thumbs.want(vec![(path.clone(), 1)]).pop().unwrap();
+        let second = thumbs.want(vec![(path.clone(), 2)]).pop().unwrap();
+        assert!(first.2.load(Ordering::Relaxed));
+        let pixels = || Some(Pixels { width: 1, height: 1, rgba: Arc::new(vec![0; 4]) });
+        thumbs.done(second.0, second.1, &second.2, pixels());
+        thumbs.done(first.0, first.1, &first.2, None);
+        assert!(thumbs.get(&path).is_some());
+        assert_eq!(thumbs.map[&path].0, 2);
+        assert_eq!(thumbs.running, 0);
+    }
 }

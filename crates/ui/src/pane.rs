@@ -94,6 +94,7 @@ pub struct Pane {
     pub back: Vec<PathBuf>,
     pub forward: Vec<PathBuf>,
     pub generation: u64,
+    pub order_revision: AtomicU64,
     nav_started: Instant,
     pub first_paint_ms: f64,
     pub loaded: Option<Arc<Loaded>>,
@@ -123,17 +124,20 @@ pub struct Pane {
     pub drives: bool,
     /// Showing an SMB server's shares instead of a folder.
     pub shares: Option<crate::network::SharesPage>,
+    /// Showing a phone page (hub, photos, messages, notifications).
+    pub phone: Option<crate::phone::PhonePage>,
 }
 
 impl Pane {
     pub fn new(location: PathBuf, scope: Scope) -> Self {
         Pane {
             id: next_id(),
-            fs: volume::fs_info(&location),
+            fs: None,
             location,
             back: Vec::new(),
             forward: Vec::new(),
             generation: 0,
+            order_revision: AtomicU64::new(0),
             nav_started: Instant::now(),
             first_paint_ms: 0.0,
             loaded: None,
@@ -157,6 +161,7 @@ impl Pane {
             grid: false,
             drives: false,
             shares: None,
+            phone: None,
         }
     }
 
@@ -167,15 +172,18 @@ impl Pane {
         let generation = self.generation;
         let spec = self.sort;
         self.pending = true;
-        self.fs = volume::fs_info(&dir);
+        self.fs = None;
         let (tx, rx) = mpsc::unbounded();
         let timer_tx = tx.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(150));
             let _ = timer_tx.unbounded_send(Message::ShowSkeleton(generation));
         });
-        let windows = self.fs.as_ref().is_some_and(|f| f.fs_type.starts_with("ntfs"));
+
         rayon::spawn(move || {
+            let fs = volume::fs_info(&dir);
+            let windows = fs.as_ref().is_some_and(|f| f.fs_type.starts_with("ntfs"));
+            let _ = tx.unbounded_send(Message::PaneFs(generation, fs));
             let send = |m: Message| {
                 let _ = tx.unbounded_send(m);
             };
@@ -284,6 +292,8 @@ impl Pane {
     }
 
     pub fn reorder(&self, show_hidden: bool) -> Task<Message> {
+        let revision = next_id();
+        self.order_revision.store(revision, Ordering::Relaxed);
         let Some(loaded) = self.loaded.clone() else { return Task::none() };
         let generation = self.generation;
         let spec = self.sort;
@@ -293,7 +303,7 @@ impl Pane {
                 let order = sort::order(&loaded.listing, &loaded.keys, spec, show_hidden);
                 filter(&loaded.listing, order, &query)
             },
-            move |order| Message::Reordered { generation, order: Arc::new(order) },
+            move |order| Message::Reordered { generation, revision, order: Arc::new(order) },
         )
     }
 
@@ -325,6 +335,19 @@ impl Pane {
         }
     }
 
+    /// Selected entry IDs when display order is irrelevant (status calculations).
+    pub fn selected_bits(&self) -> impl Iterator<Item = usize> + '_ {
+        self.selected.iter().enumerate().flat_map(|(word, &bits)| {
+            let mut bits = bits;
+            std::iter::from_fn(move || {
+                if bits == 0 { return None; }
+                let bit = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                Some(word * 64 + bit)
+            })
+        })
+    }
+
     /// Selected entries in display order.
     pub fn selected_entries(&self) -> Vec<usize> {
         self.order.iter().map(|&i| i as usize).filter(|&i| file_list::is_selected(&self.selected, i)).collect()
@@ -337,6 +360,8 @@ impl Pane {
 
     /// What an action applies to: the selection, else the entry under the cursor.
     pub fn targets(&self) -> Vec<PathBuf> {
+        if self.special() { return Vec::new(); }
+        if self.everywhere() { return self.results.as_ref().and_then(|r| self.result_cursor.and_then(|c| r.hits.get(c))).filter(|h| h.path.is_absolute()).map(|h| vec![h.path.clone()]).unwrap_or_default(); }
         let Some(l) = self.loaded.as_ref() else { return Vec::new() };
         let sel = self.selected_entries();
         if !sel.is_empty() {
@@ -387,6 +412,7 @@ impl Pane {
     }
 
     pub fn clear_search(&mut self) {
+        self.search_generation = next_id();
         self.query.clear();
         self.results = None;
         self.result_cursor = None;
@@ -396,7 +422,7 @@ impl Pane {
 
     /// A page that isn't a folder (Drives, an SMB server's shares).
     pub fn special(&self) -> bool {
-        self.drives || self.shares.is_some()
+        self.drives || self.shares.is_some() || self.phone.is_some()
     }
 
     /// Short label for tabs and the window title.
@@ -406,6 +432,9 @@ impl Pane {
         }
         if let Some(page) = &self.shares {
             return page.address.host.clone();
+        }
+        if let Some(page) = self.phone {
+            return page.title().into();
         }
         if let Some(n) = ef_net::gvfs::folder_name(&self.location) {
             return n;
@@ -475,5 +504,23 @@ mod tests {
         assert!(destinations.iter().all(|p| !p.exists()));
         assert!(source.join("untouched.txt").exists());
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    #[test]
+    fn visible_targets_and_cleared_search_generation() {
+        let dir = tempfile::tempdir().unwrap(); std::fs::write(dir.path().join("important"), b"keep").unwrap();
+        let fd = listing::open_dir(dir.path()).unwrap(); let listing = listing::read_names(dir.path(), &fd).unwrap(); let keys = Arc::new(NameKeys::build(&listing));
+        let mut p = Pane::new(dir.path().into(), Scope::Folder);
+        p.apply_loaded(Arc::new(Loaded { listing, keys, metadata_ready: true, hidden: 0, names_ms: 0., meta_ms: 0., sort_ms: 0. }), Arc::new(vec![0])); p.select_only(0);
+        assert_eq!(p.targets().len(), 1);
+        p.phone = Some(crate::phone::PhonePage::Hub); assert!(p.targets().is_empty());
+        p.phone = None; p.drives = true; assert!(p.targets().is_empty()); p.drives = false;
+        p.scope = Scope::Everywhere; p.query = "other".into(); p.results = Some(Results { query: "other".into(), hits: Vec::new(), total: 0, from_index: true, index_updated: None });
+        assert!(p.targets().is_empty());
+        p.search_generation = next_id(); let old = p.search_generation; p.clear_search(); assert_ne!(old, p.search_generation);
     }
 }

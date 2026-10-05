@@ -1,0 +1,20 @@
+<!-- @dsCard group="Connect" height=260 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>PermissionRow</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec-pad", style:{maxWidth:380}}, h(E.ListGroup, null,
+  h(E.PermissionRow, {icon:"bell", title:"Notification access", why:"Shows your notifications on the laptop", granted:true}),
+  h(E.PermissionRow, {icon:"clipboard", title:"Display over other apps", why:"Lets automatic clipboard read what you copy", action:"Open setting"}),
+  h(E.PermissionRow, {icon:"users", title:"Contacts", why:"Names instead of numbers", optional:true})));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

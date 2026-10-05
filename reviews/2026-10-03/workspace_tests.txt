@@ -1,0 +1,204 @@
+   Compiling echofiles-config v0.1.0 (/tmp/echofiles-review-9cd5e07/crates/config)
+   Compiling iced_graphics v0.14.0 (/tmp/echofiles-review-9cd5e07/vendor/iced_graphics)
+   Compiling echofiles-phone v0.1.0 (/tmp/echofiles-review-9cd5e07/crates/phone)
+   Compiling echofiles-disks v0.1.0 (/tmp/echofiles-review-9cd5e07/crates/disks)
+   Compiling echofiles-net v0.1.0 (/tmp/echofiles-review-9cd5e07/crates/net)
+   Compiling echofiles-core v0.1.0 (/tmp/echofiles-review-9cd5e07/crates/core)
+   Compiling echofiles-theme v0.1.0 (/tmp/echofiles-review-9cd5e07/crates/theme)
+   Compiling echofiles-vfs v0.1.0 (/tmp/echofiles-review-9cd5e07/crates/vfs)
+   Compiling echofiles v0.1.0 (/tmp/echofiles-review-9cd5e07/crates/ui)
+   Compiling echofiles-index v0.1.0 (/tmp/echofiles-review-9cd5e07/crates/index)
+   Compiling iced_wgpu v0.14.0
+   Compiling iced_program v0.14.0
+   Compiling iced_winit v0.14.1
+   Compiling iced_renderer v0.14.0
+   Compiling iced_widget v0.14.2
+   Compiling iced v0.14.0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.71s
+     Running unittests src/main.rs (target/debug/deps/echofiles-83eddff2301646a6)
+
+running 7 tests
+test phone::tests::uris ... ok
+test phone::tests::months ... ok
+test phone::tests::exif_parse ... ok
+test file_list::tests::reverse_drag_selects_display_order_and_shrinks ... ok
+test file_list::tests::scroll_keeps_anchor_in_content_and_selects_offscreen_rows ... ok
+test file_list::tests::grid_selects_only_intersecting_tiles_and_preserves_initial_selection ... ok
+test pane::tests::multiple_selected_files_copy_move_and_delete_together ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/ef_config-f6a348778f0aafb0)
+
+running 2 tests
+test tests::paths_expand_and_index_files_are_stable ... ok
+test tests::round_trips_and_fills_defaults ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/ef_core-36a4aeb2e356ec60)
+
+running 13 tests
+test fmt::tests::counts ... ok
+test fmt::tests::sizes ... ok
+test ops::tests::names ... ok
+test sort::tests::leading_zeros_tie ... ok
+test ops::tests::rename_refuses_to_clobber ... ok
+test ops::tests::move_and_undo ... ok
+test ops::tests::unique_names ... ok
+test sort::tests::natural_order ... ok
+test trash::tests::encodes_and_decodes_paths ... ok
+test trash::tests::trashes_and_restores ... ok
+test ops::tests::copy_with_conflicts_and_undo ... ok
+test listing::tests::lists_names_kinds_and_sizes ... ok
+test sort::tests::size_order_is_transitive_with_folders_mixed_in ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/bin/mkcorpus.rs (target/debug/deps/mkcorpus-c98918f6cd2d0800)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/ef_disks-d7bdd633b40050eb)
+
+running 1 test
+test letters::tests::formats_guids ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/ef_index-36691c22324576f2)
+
+running 6 tests
+test fold::tests::accents_fold_in_nfc_and_nfd ... ok
+test fold::tests::ascii_lowercases ... ok
+test fold::tests::cjk_and_emoji_pass_through ... ok
+test fold::tests::invalid_utf8_is_kept ... ok
+test fold::tests::special_case_rules ... ok
+test fold::tests::meaningful_marks_are_kept ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/ef.rs (target/debug/deps/ef-63d764ee83cfede9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/search.rs (target/debug/deps/search-fe66cd780841f42f)
+
+running 19 tests
+test missing_root_is_an_error ... ok
+test quoted_phrase_keeps_word_order ... ok
+test excluded_paths_leave_search_entirely ... ok
+test non_utf8_names_round_trip_to_real_paths ... ok
+test ranking_puts_exact_then_prefix_then_word_then_anywhere ... ok
+test live_search_can_be_cancelled_and_needs_a_real_root ... ok
+test similar_names_are_all_found_and_distinct ... ok
+test symlinks_are_indexed_not_followed ... ok
+test live_search_ranks_like_the_index ... ok
+test exclusions_skip_contents_but_keep_the_folder ... ok
+test rescan_matches_a_fresh_build ... ok
+test save_and_load_give_the_same_answers ... ok
+test mapped_index_gives_the_same_answers ... ok
+test folder_with_100_files ... ok
+test folder_with_1k_files ... ok
+test parallel_search_with_limit_equals_the_top_of_the_full_ranking ... ok
+test folder_with_10k_files ... ok
+test tree_with_10k_files_and_scoped_search ... ok
+test folder_with_100k_files ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 56.25s
+
+     Running unittests src/lib.rs (target/debug/deps/ef_net-12b746a9650f1313)
+
+running 5 tests
+test address::tests::rejects_nonsense ... ok
+test address::tests::names ... ok
+test address::tests::sftp_ftp_forms ... ok
+test discover::tests::parses_resolved_services ... ok
+test address::tests::smb_forms ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/ef_phone-d0d0b0698dbf735b)
+
+running 4 tests
+test identity::tests::hex_round_trip ... ok
+test service::tests::field_readers ... ok
+test service::tests::free_names ... ok
+test identity::tests::verification_key_is_symmetric ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/loopback.rs (target/debug/deps/loopback-7d56cc8f011fe884)
+
+running 2 tests
+test bluetooth_only ... ok
+test pair_and_talk ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+
+     Running unittests src/lib.rs (target/debug/deps/ef_theme-1669374af1b5d5d8)
+
+running 2 tests
+test tests::matches_reference_derivation ... ok
+test tests::every_omarchy_theme_meets_contrast ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/ef_vfs-6a2f975ac4fbbf68)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ef_config
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ef_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ef_disks
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ef_index
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ef_net
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ef_phone
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ef_theme
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ef_vfs
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

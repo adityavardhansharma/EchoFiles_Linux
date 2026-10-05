@@ -1,0 +1,19 @@
+<!-- @dsCard group="Navigation" height=260 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Dialog</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec-pad", style:{maxWidth:380}}, h(E.Dialog, {title:"Forget Aditya's laptop?", tone:"danger",
+  actions:[h(E.Button, {key:"c", variant:"ghost"}, "Keep"), h(E.Button, {key:"f", variant:"danger"}, "Forget laptop")]},
+  h("p", null, "The laptop stops seeing this phone. Pair again with its code to undo.")));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

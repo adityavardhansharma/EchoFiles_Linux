@@ -10,7 +10,7 @@ use std::sync::Mutex;
 
 use ef_config::{self as config, DefaultView, Density, OpenTo, Scope, SearchConfig};
 use iced::widget::{column, container, row, scrollable, text, text_input, Space};
-use iced::{Alignment, Background, Border, Element, Length, Task};
+use iced::{Alignment, Background, Border, Element, Length, Padding, Task};
 
 use crate::app::{App, Message, Mode};
 use crate::indexer::{self, IndexState};
@@ -23,14 +23,16 @@ pub enum Page {
     General,
     Search,
     Agents,
+    Phone,
     Appearance,
     About,
 }
 
-const PAGES: [(Page, &str, &str); 5] = [
+const PAGES: [(Page, &str, &str); 6] = [
     (Page::General, "sliders", "General"),
     (Page::Search, "search", "Search & index"),
     (Page::Agents, "terminal", "AI agents"),
+    (Page::Phone, "phone", "Phone"),
     (Page::Appearance, "image", "Appearance"),
     (Page::About, "info", "About"),
 ];
@@ -67,6 +69,7 @@ pub enum SettingsMsg {
     DefaultView(DefaultView),
     ShowWindows(bool),
     ShowNetwork(bool),
+    ShowPhone(bool),
     Reveal(PathBuf),
     Saved(Result<(), String>),
 }
@@ -154,31 +157,7 @@ fn validate(cfg: &SearchConfig, field: Field, raw: &str) -> Result<String, Strin
 impl App {
     fn save_settings(&mut self) -> Task<Message> {
         self.settings_ui.save = SaveState::Saving;
-        let s = self.settings.clone();
-        // Saves run on their own threads and share one tmp file: take turns, and never let an
-        // older snapshot land after a newer one.
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        static WRITTEN: Mutex<u64> = Mutex::new(0);
-        let generation = NEXT.fetch_add(1, Ordering::Relaxed);
-        Task::perform(
-            async move {
-                let (tx, rx) = iced::futures::channel::oneshot::channel();
-                std::thread::spawn(move || {
-                    let mut written = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
-                    if *written > generation {
-                        let _ = tx.send(Ok(()));
-                        return;
-                    }
-                    let r = s.save().map_err(|e| format!("Couldn't save settings to {}: {e}", config::tilde(&config::Settings::path())));
-                    if r.is_ok() {
-                        *written = generation;
-                    }
-                    let _ = tx.send(r);
-                });
-                rx.await.unwrap_or(Ok(()))
-            },
-            |r| Message::Settings(SettingsMsg::Saved(r)),
-        )
+        self.persist_settings()
     }
 
     fn list_mut(&mut self, f: Field) -> &mut Vec<String> {
@@ -325,6 +304,10 @@ impl App {
                 self.settings.sidebar.network = on;
                 self.save_settings()
             }
+            SettingsMsg::ShowPhone(on) => {
+                self.settings.sidebar.phone = on;
+                self.save_settings()
+            }
             SettingsMsg::Density(d) => {
                 self.settings.appearance.density = d;
                 self.save_settings()
@@ -335,6 +318,7 @@ impl App {
                 self.update(Message::Navigate(target))
             }
             SettingsMsg::Saved(r) => {
+                if let Err(e) = &r { self.notice = Some(format!("Settings were not saved: {e}")); }
                 self.settings_ui.save = match r {
                     Ok(()) => SaveState::Saved,
                     Err(e) => SaveState::Failed(e),
@@ -358,6 +342,7 @@ impl App {
             Page::General => self.page_general(),
             Page::Search => self.page_search(),
             Page::Agents => self.page_agents(),
+            Page::Phone => self.page_phone(),
             Page::Appearance => self.page_appearance(),
             Page::About => self.page_about(),
         };
@@ -869,9 +854,93 @@ impl App {
             vec![
                 self.setting("Windows drives", "The Windows section with your NTFS and BitLocker drives. Click its heading to open or close it.", self.toggle(sb.windows, SettingsMsg::ShowWindows)),
                 self.setting("Network places", "The Network section with Windows shares, SSH and FTP servers. Ctrl+Shift+S connects to a server either way.", self.toggle(sb.network, SettingsMsg::ShowNetwork)),
+                self.setting("Phone", "The Phone section with your paired phone, its files and photos. Pairing stays when it's hidden.", self.toggle(sb.phone, SettingsMsg::ShowPhone)),
             ],
         );
         self.page(self.page_head("Appearance", "EchoFiles looks like the rest of your desktop."), vec![theme, layout, sidebar])
+    }
+
+    fn page_phone(&self) -> Element<'_, Message> {
+        use crate::phone::PhoneMsg;
+        use ef_config::{PhoneNotifications, PhonePicture};
+        let p = &self.palette;
+        let ph = |m: PhoneMsg| Message::Phone(m);
+        let sw = |on: bool, f: fn(bool) -> PhoneMsg| w::switch(p, on, Some(Box::new(move |b| Message::Phone(f(b)))));
+        let s = &self.settings.phone;
+        let mut groups = Vec::new();
+        let this = match self.phone_id() {
+            None => vec![self.setting("No phone yet", "Pair your Android phone over Wi-Fi with the free KDE Connect app.", w::text_button(p, &self.icons, "Connect phone", Some("phone"), None, Variant::Primary, Some(ph(PhoneMsg::Dialog(true)))))],
+            Some(id) => {
+                let name = self.phone_name(&id);
+                let state = if self.phone_online(&id) { "Connected over Wi-Fi".to_string() } else { self.phone.seen.get(&id).map(|s| format!("Not nearby · last seen {}", crate::phone::ago(*s))).unwrap_or_else(|| "Not nearby".into()) };
+                let who = row![self.phone_device(&id, 34.0), column![text(name.clone()).size(style::BODY).font(style::FONT).color(color(p.ink_strong)), text(state).size(style::META).font(style::FONT).color(color(p.ink_muted))].spacing(3).width(Length::Fill)]
+                    .spacing(style::SPACE_4)
+                    .align_y(Alignment::Center);
+                vec![
+                    container(row![who, w::text_button(p, &self.icons, "Forget phone", Some("unlink"), None, Variant::Ghost, Some(ph(PhoneMsg::Forget(id.clone()))))].spacing(style::SPACE_4).align_y(Alignment::Center)).padding([12, 16]).width(Length::Fill).into(),
+                    self.setting(
+                        "Phone picture",
+                        "What the phone on the hub shows on its screen.",
+                        w::segmented(p, &[("Latest photo", ph(PhoneMsg::SetPicture(PhonePicture::Photo))), ("EchoFiles", ph(PhoneMsg::SetPicture(PhonePicture::Echofiles)))], usize::from(s.picture == PhonePicture::Echofiles)),
+                    ),
+                ]
+            }
+        };
+        groups.push(self.group("This phone", this));
+        groups.push(self.group(
+            "Features",
+            vec![
+                self.setting("Files and photos", "Browse the phone in the sidebar and copy both ways. Needs Filesystem expose on in KDE Connect.", sw(s.files, PhoneMsg::SetFiles)),
+                self.setting("Shared clipboard", "Copy on one, paste on the other. Works while EchoFiles is open.", sw(s.clipboard, PhoneMsg::SetClipboard)),
+                self.setting("Messages", "Read and send texts from the laptop. The phone asks for SMS permission the first time.", sw(s.messages, PhoneMsg::SetMessages)),
+                self.setting("Low battery warning", "A notice when the phone drops to 15%.", sw(s.battery_warning, PhoneMsg::SetBatteryWarning)),
+            ],
+        ));
+        groups.push(self.group(
+            "Receiving files",
+            vec![
+                self.setting("Accept files automatically", "Files you share to this laptop save straight away. Turn off to approve each one.", sw(s.auto_accept, PhoneMsg::SetAutoAccept)),
+                self.setting("Save to", &s.save_to, w::text_button(p, &self.icons, "Change…", Some("folder"), None, Variant::Ghost, Some(ph(PhoneMsg::ChangeSaveTo)))),
+            ],
+        ));
+        let mut notif = vec![self.setting(
+            "Phone notifications",
+            "Off brings nothing over. In app shows them on the phone's Notifications page only. Desktop too also pops them up like any other notification.",
+            w::segmented(
+                p,
+                &[("Off", ph(PhoneMsg::SetNotifications(PhoneNotifications::Off))), ("In app", ph(PhoneMsg::SetNotifications(PhoneNotifications::App))), ("Desktop too", ph(PhoneMsg::SetNotifications(PhoneNotifications::Desktop)))],
+                match s.notifications {
+                    PhoneNotifications::Off => 0,
+                    PhoneNotifications::App => 1,
+                    PhoneNotifications::Desktop => 2,
+                },
+            ),
+        )];
+        if s.notifications == PhoneNotifications::Desktop && !self.settings.general.background {
+            notif.push(self.block(text("Pop-ups arrive while EchoFiles is running. Turn on Keep running in the background (General) to get them with the window closed.").size(style::META).font(style::FONT).color(color(p.ink_muted))));
+        }
+        let mut chips = row![].spacing(style::SPACE_3);
+        for (i, a) in s.muted_apps.iter().enumerate() {
+            let (bg, edge) = (color(p.bg_deep), color(p.line_strong));
+            chips = chips.push(
+                container(row![text(a.clone()).size(style::META).font(style::FONT).color(color(p.ink)), w::icon_button(p, &self.icons, "close", Some(ph(PhoneMsg::MuteRemove(i))), false)].spacing(2).align_y(Alignment::Center))
+                    .padding(Padding { left: 8.0, ..Padding::ZERO })
+                    .style(move |_| container::Style { background: Some(Background::Color(bg)), border: Border { color: edge, width: 1.0, radius: 2.0.into() }, ..Default::default() }),
+            );
+        }
+        notif.push(self.block(column![
+            text("Never show notifications from").size(style::META).font(style::FONT).color(color(p.ink_muted)),
+            chips.wrap(),
+            row![
+                text_input("App name, like Instagram", &self.phone.mute_draft).on_input(|t| Message::Phone(PhoneMsg::MuteDraft(t))).on_submit(Message::Phone(PhoneMsg::MuteAdd)).size(style::BODY).font(style::FONT).padding([5, 10]).style(w::field_style(p, false)),
+                w::text_button(p, &self.icons, "Add", Some("plus"), None, Variant::Secondary, Some(ph(PhoneMsg::MuteAdd))),
+            ]
+            .spacing(style::SPACE_3)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(style::SPACE_3)));
+        groups.push(self.group("Notifications", notif));
+        self.page(self.page_head("Phone", "Your Android phone over Wi-Fi, through the KDE Connect app. Features you turn off stop on both devices."), groups)
     }
 
     fn page_about(&self) -> Element<'_, Message> {
@@ -907,4 +976,19 @@ fn fmt_count(n: usize) -> String {
     let mut s = String::new();
     ef_core::fmt::count(n, &mut s);
     s
+}
+
+/// Tickets are allocated on the UI thread before workers start. One writer serializes
+/// every settings source and discards obsolete snapshots.
+pub(crate) fn persist(s: config::Settings) -> Task<Message> {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    static WRITTEN: Mutex<u64> = Mutex::new(0);
+    let generation = NEXT.fetch_add(1, Ordering::Relaxed);
+    crate::app::background(move || {
+        let mut written = WRITTEN.lock().unwrap();
+        if *written > generation { return Ok(()); }
+        let r = s.save().map_err(|e| e.to_string());
+        if r.is_ok() { *written = generation; }
+        r
+    }, |r| Message::Settings(SettingsMsg::Saved(r)))
 }

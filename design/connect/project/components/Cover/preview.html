@@ -1,0 +1,45 @@
+<!-- @dsCard height=288 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Cover</title>
+<style>
+  html, body { margin: 0; background: var(--bg); }
+  .cover { position: relative; width: 960px; height: 288px; overflow: hidden; background: var(--bg); font-family: var(--font-mono); }
+  .cover svg { position: absolute; inset: 0; }
+  .sky { fill: var(--brand-sky); }
+  .violet { fill: var(--brand-violet); }
+  .ember { fill: var(--brand-ember); }
+  .slab { fill: var(--bg-raised); }
+  .mark { fill: var(--line-strong); }
+  .phone { fill: var(--world-phone); }
+  .linux { fill: var(--world-linux); }
+  .sheet { rx: var(--radius-3); ry: var(--radius-3); }
+  .name { position: absolute; left: 48px; bottom: 56px; max-width: 440px; margin: 0; font-size: 64px; line-height: 0.95; font-weight: 800; letter-spacing: -0.03em; color: var(--ink-strong); }
+  .tag { position: absolute; left: 48px; bottom: 28px; max-width: 440px; margin: 0; font-size: 13px; line-height: 18px; color: var(--ink-muted); }
+</style></head>
+<body>
+<div class="cover">
+  <svg width="960" height="288" viewBox="0 0 960 288" aria-hidden="true">
+    <!-- blocks: brand-sky tall sheet 96×208 (the phone's proportion), brand-violet wide sheet 152×112 (the laptop's), brand-ember 72×48 under it, all radius-3; bg-raised slab 80 wide bleeding off the right edge as on the EchoFiles cover
+         arrangement: two device-shaped sheets facing each other across a gap of space-7 + space-6, the ember sheet stepping down-right from the wide one like the logo's stack
+         pattern: 6px square world marks at a 24px (space-6) pitch — a bridge of three between the sheets (world-phone to world-linux: the link this app is) plus the EchoFiles slab grid; chosen because the system is mono, square and grid-bound, and its subject is a connection
+         scales: space-6 24px pitch, space-7 32px offsets, radius-3 sheets, radius-0 slab -->
+    <rect class="slab" x="880" y="0" width="80" height="288"/>
+    <g class="mark">
+      <rect x="893" y="21" width="6" height="6"/><rect x="917" y="21" width="6" height="6"/><rect x="941" y="21" width="6" height="6"/>
+      <rect x="893" y="45" width="6" height="6"/><rect x="917" y="45" width="6" height="6"/><rect x="941" y="45" width="6" height="6"/>
+      <rect x="893" y="69" width="6" height="6"/><rect x="917" y="69" width="6" height="6"/><rect x="941" y="69" width="6" height="6"/>
+      <rect x="893" y="93" width="6" height="6"/><rect x="917" y="93" width="6" height="6"/><rect x="941" y="93" width="6" height="6"/>
+    </g>
+    <rect class="sky sheet" x="528" y="40" width="96" height="208"/>
+    <rect class="phone" x="645" y="125" width="6" height="6"/>
+    <rect class="mark" x="669" y="125" width="6" height="6"/>
+    <rect class="linux" x="693" y="125" width="6" height="6"/>
+    <rect class="violet sheet" x="712" y="72" width="152" height="112"/>
+    <rect class="ember sheet" x="768" y="200" width="72" height="48"/>
+  </svg>
+  <h1 class="name">EchoConnect</h1>
+  <p class="tag">Your Android phone, on your EchoFiles laptop. Flat, fast, and the same Omarchy theme on both screens.</p>
+</div>
+</body>
+</html>

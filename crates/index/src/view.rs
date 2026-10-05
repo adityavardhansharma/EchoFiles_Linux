@@ -167,6 +167,7 @@ impl<'a> View<'a> {
         let mut cur = first;
         let mut prev = usize::MAX;
         for pos in m.scan_finder().find_iter(hay) {
+            if pos >= hay.len() { break; }
             let abs = (lo + pos) as u32;
             if abs >= self.foff[cur + 1] {
                 cur += self.foff[cur + 1..=last].partition_point(|&o| o <= abs);

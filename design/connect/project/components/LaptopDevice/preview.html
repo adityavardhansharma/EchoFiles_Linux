@@ -1,0 +1,18 @@
+<!-- @dsCard group="Device" height=240 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>LaptopDevice</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec-pad"}, h("div", {className:"ec-row-flex", style:{alignItems:"flex-end"}},
+  h(E.LaptopDevice, {width:220}), h(E.LaptopDevice, {width:160, state:"locked"}), h(E.LaptopDevice, {width:120, state:"away"}), h(E.LaptopDevice, {width:52})));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

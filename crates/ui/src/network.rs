@@ -121,6 +121,8 @@ enum Event {
 static EVENTS: OnceLock<Mutex<Option<mpsc::UnboundedReceiver<Event>>>> = OnceLock::new();
 static EVENT_TX: OnceLock<mpsc::UnboundedSender<Event>> = OnceLock::new();
 
+pub(crate) fn forward_ask(ask: Ask) { let _ = event_tx().unbounded_send(Event::Ask(ask)); }
+
 fn event_tx() -> mpsc::UnboundedSender<Event> {
     EVENT_TX
         .get_or_init(|| {
@@ -164,6 +166,11 @@ fn recent_file() -> PathBuf {
 
 pub fn load_recent() -> Vec<String> {
     std::fs::read_to_string(recent_file()).map(|t| t.lines().filter(|l| !l.trim().is_empty()).map(str::to_string).take(RECENT_MAX).collect()).unwrap_or_default()
+}
+
+/// Ask GVfs what's connected now.
+pub fn refresh_mounts_task() -> Task<Message> {
+    background(|| gvfs::mounts().map_err(|e| e.to_string()), |r| Message::Net(NetMsg::Mounts(r)))
 }
 
 /// Work to start with the app: what GVfs can do and what's already connected.
@@ -239,7 +246,8 @@ impl App {
             out.push(Place { key: s.uri.clone(), name, address, mount: mi.map(|i| &self.net.mounts[i]), saved: true });
         }
         for (i, m) in self.net.mounts.iter().enumerate() {
-            if used.contains(&i) {
+            // The phone's files show under Phone, not as a server.
+            if used.contains(&i) || self.is_phone_path(&m.root) || m.address.as_ref().is_some_and(|a| a.user.as_deref() == Some("kdeconnect")) {
                 continue;
             }
             let key = m.address.as_ref().map(Address::uri).unwrap_or_else(|| m.root.to_string_lossy().into_owned());
@@ -283,7 +291,7 @@ impl App {
     // ------------------------------------------------------------------ actions
 
     fn refresh_mounts(&self) -> Task<Message> {
-        background(|| gvfs::mounts().map_err(|e| e.to_string()), |r| Message::Net(NetMsg::Mounts(r)))
+        refresh_mounts_task()
     }
 
     fn remember_recent(&mut self, a: &Address) {
@@ -293,13 +301,7 @@ impl App {
         self.net.recent.insert(0, uri);
         self.net.recent.truncate(RECENT_MAX);
         let text = self.net.recent.join("\n");
-        std::thread::spawn(move || {
-            let f = recent_file();
-            if let Some(d) = f.parent() {
-                let _ = std::fs::create_dir_all(d);
-            }
-            let _ = std::fs::write(f, text);
-        });
+        config::queue_state(recent_file(), text.into_bytes());
     }
 
     fn save_server(&mut self, a: &Address) -> Task<Message> {
@@ -433,12 +435,12 @@ impl App {
                 };
                 let focus = if ask.need_user && user.is_empty() { LOGIN_USER_ID } else { LOGIN_PASSWORD_ID };
                 let domain = ask.default_domain.clone();
-                self.dialog = Some(Dialog::Login { ask, user, domain, password: String::new(), guest: false, remember: false, opened: Instant::now() });
+                self.queue_dialog(Dialog::Login { ask, user, domain, password: String::new(), guest: false, remember: false, opened: Instant::now() });
                 iced::widget::operation::focus(focus)
             }
             NetMsg::Ask(Ask::Question(ask)) => {
                 self.menu = None;
-                self.dialog = Some(Dialog::Question { ask, opened: Instant::now() });
+                self.queue_dialog(Dialog::Question { ask, opened: Instant::now() });
                 Task::none()
             }
             NetMsg::Ask(Ask::Withdrawn(op)) => {
@@ -679,7 +681,7 @@ impl App {
     pub(crate) fn network_section(&self) -> Element<'_, Message> {
         let p = &self.palette;
         let open = self.settings.sidebar.network_open;
-        let connected = self.net.mounts.len();
+        let connected = self.net.mounts.iter().filter(|m| !self.is_phone_path(&m.root) && m.address.as_ref().is_none_or(|a| a.user.as_deref() != Some("kdeconnect"))).count();
         let add = self.tip(w::icon_button(p, &self.icons, "plus", Some(Message::Net(NetMsg::Open(None))), false), "Connect to server", Some("Ctrl+Shift+S"));
         let mut col = column![self.fold_head("Network", color(p.world_network), (connected > 0).then_some(connected), open, crate::view::Fold::Network, Some(add))].spacing(1);
         let places = self.net_places();

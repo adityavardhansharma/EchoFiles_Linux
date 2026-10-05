@@ -1,0 +1,20 @@
+<!-- @dsCard group="Navigation" height=330 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>BottomSheet</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec", style:{maxWidth:380, position:"relative", background:"var(--bg)"}}, h("div", {className:"ec-sheet-static"}, h(E.BottomSheet, {title:"Send to Aditya's laptop", icon:"laptop",
+  footer:[h(E.Button, {key:"c", variant:"ghost"}, "Cancel"), h(E.Button, {key:"s", variant:"primary", icon:"send"}, "Send 3 photos")]},
+  h(E.ListRow, {icon:"folder", title:"Lands in ~/Downloads/Phone", sub:"11.8 MB · over Wi-Fi"}),
+  h(E.ListRow, {icon:"check", title:"Open on the laptop when done", trailing:h(E.Switch, {label:"Open when done"})}))));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

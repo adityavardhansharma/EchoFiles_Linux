@@ -1,0 +1,17 @@
+<!-- @dsCard group="Connect" height=230 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>ActionGrid</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec-pad", style:{maxWidth:380}}, h(E.ActionGrid, null));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

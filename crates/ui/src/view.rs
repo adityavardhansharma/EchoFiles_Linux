@@ -29,6 +29,7 @@ const TABS_H: f32 = 32.0;
 pub enum Fold {
     Windows,
     Network,
+    Phone,
 }
 
 impl App {
@@ -57,7 +58,13 @@ impl App {
     /// Breadcrumb segments: Home or the drive's name first, never raw mount paths.
     pub(crate) fn crumbs_for(&self, location: &Path) -> Vec<(Option<&'static str>, String, PathBuf)> {
         let home = config::home();
-        let (base, mut out) = if let Ok(rest) = location.strip_prefix(&home) {
+        let phone = self.phone_storage().filter(|s| location.starts_with(s)).map(Path::to_path_buf);
+        let (base, mut out) = if let Some(storage) = phone {
+            // The phone's storage: its name, never kdeconnect@192.168.….
+            let rest = location.strip_prefix(&storage).unwrap_or(Path::new("")).to_path_buf();
+            let name = self.phone_id().map(|i| self.phone_name(&i)).unwrap_or_else(|| "Phone".into());
+            (rest, vec![(Some("phone"), name, storage)])
+        } else if let Ok(rest) = location.strip_prefix(&home) {
             (rest.to_path_buf(), vec![(Some("home"), "Home".to_string(), home.clone())])
         } else if let Some((m, name)) = self.net_place_at(location) {
             // A network place: its name, never GVfs' `smb-share:server=…` folder.
@@ -121,6 +128,9 @@ impl App {
         if let Some(c) = self.connect_layer() {
             layers.push(c);
         }
+        if let Some(c) = self.phone_layer() {
+            layers.push(c);
+        }
         if let Some(d) = self.dialog_layer() {
             layers.push(d);
         }
@@ -159,6 +169,8 @@ impl App {
             let pane = &t.panes[t.active];
             let icon = if pane.drives {
                 "drive"
+            } else if pane.phone.is_some() || self.is_phone_path(&pane.location) {
+                "phone"
             } else if pane.shares.is_some() || ef_net::gvfs::is_network_path(&pane.location) {
                 "network"
             } else if pane.location == config::home() {
@@ -214,6 +226,8 @@ impl App {
         let pane = self.pane();
         let mut crumbs = if pane.drives {
             vec![(Some("drive"), "Drives".to_string(), PathBuf::new())]
+        } else if let Some(page) = pane.phone {
+            self.phone_crumbs(page)
         } else if let Some(page) = &pane.shares {
             vec![(Some("network"), page.address.host_port(), PathBuf::new())]
         } else {
@@ -390,6 +404,10 @@ impl App {
             col = col.push(Space::new().height(style::SPACE_5));
             col = col.push(self.windows_section());
         }
+        if self.settings.sidebar.phone {
+            col = col.push(Space::new().height(style::SPACE_5));
+            col = col.push(self.phone_section());
+        }
         if self.settings.sidebar.network {
             col = col.push(Space::new().height(style::SPACE_5));
             col = col.push(self.network_section());
@@ -509,6 +527,8 @@ impl App {
             self.drives_view()
         } else if let Some(page) = &pane.shares {
             self.shares_view(page)
+        } else if let Some(page) = pane.phone {
+            self.phone_page_view(page)
         } else if pane.everywhere() {
             self.results_view(pane)
         } else {
@@ -714,6 +734,8 @@ impl App {
         let mut left = String::new();
         if pane.drives {
             left.push_str(&format!("{} Windows {}", self.volumes.len(), if self.volumes.len() == 1 { "drive" } else { "drives" }));
+        } else if let Some(page) = pane.phone {
+            left.push_str(&self.phone_status(page));
         } else if let Some(page) = &pane.shares {
             match &page.shares {
                 Some(Ok(v)) => left.push_str(&format!("{} {}", v.len(), if v.len() == 1 { "share" } else { "shares" })),
@@ -787,7 +809,10 @@ impl App {
         // The volume: its name, driver and state repeat here so read-only is never a surprise.
         let mut pill: Option<Element<'_, Message>> = None;
         let net = if pane.special() { None } else { self.net_place_at(&pane.location) };
-        if let Some((m, name)) = &net {
+        if !pane.special() && self.is_phone_path(&pane.location) {
+            right.push_str(&self.phone_id().map(|i| self.phone_name(&i)).unwrap_or_default());
+            right.push_str(" · phone · SFTP");
+        } else if let Some((m, name)) = &net {
             // Network: which server and how, instead of FUSE's made-up free space.
             right.push_str(name);
             right.push_str(" · ");

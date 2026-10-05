@@ -1,0 +1,20 @@
+<!-- @dsCard group="Phone" height=260 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>PhoneItem</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+var box = function(kids){ return h("div", {className:"ef", style:{width:236, padding:8, background:"var(--bg-sunken)"}}, kids); };
+return h("div", {style:{display:"flex", gap:16, flexWrap:"wrap"}},
+  box([h(E.PhoneItem, {key:1, state:"connected", name:"Galaxy S24", battery:72, charging:true, active:true}), h(E.SidebarItem, {key:2, icon:"folder", label:"Files", indent:true}), h(E.SidebarItem, {key:3, icon:"image", label:"Photos", indent:true, trail:"32 new"})]),
+  box([h(E.PhoneItem, {key:1, state:"connected", name:"Pixel 8", battery:14}), h(E.PhoneItem, {key:2, state:"pairing", name:"Galaxy S24"}), h(E.PhoneItem, {key:3, state:"away", name:"Galaxy S24", seen:"2 h ago"}), h(E.PhoneItem, {key:4, state:"none"})]));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

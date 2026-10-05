@@ -25,6 +25,7 @@ use crate::drives::{DriveMsg, DriveState};
 use crate::file_list::{self, Action};
 use crate::indexer::{self, IndexState, RootIndex, Watcher};
 use crate::network::{NetMsg, NetState};
+use crate::phone::{PhoneMsg, PhoneState};
 use crate::overlay::{Command, Dialog, Menu, MenuFor, Toast, UiMsg};
 use crate::pane::{Loaded, Pane};
 use crate::preview::PreviewData;
@@ -37,8 +38,9 @@ use crate::thumbs::{self, Pixels, Thumbs};
 #[derive(Debug, Clone)]
 pub enum Message {
     Loaded { generation: u64, loaded: Arc<Loaded>, order: Arc<Vec<u32>> },
+    PaneFs(u64, Option<FsInfo>),
     LoadFailed { generation: u64, error: String },
-    Reordered { generation: u64, order: Arc<Vec<u32>> },
+    Reordered { generation: u64, revision: u64, order: Arc<Vec<u32>> },
     ShowSkeleton(u64),
     List(u64, Action),
     Navigate(PathBuf),
@@ -73,15 +75,18 @@ pub enum Message {
     EditPath(bool),
     PathDraft(String),
     PathSubmit,
+    PathChecked(String, Result<(PathBuf, bool), String>),
+    OpenChecked(PathBuf, bool, Result<(), String>),
     // subsystems
     File(FileMsg),
     Drive(DriveMsg),
     Net(NetMsg),
+    Phone(PhoneMsg),
     /// Fold or unfold a sidebar section.
     Fold(crate::view::Fold, bool),
     Ui(UiMsg),
-    Thumb(PathBuf, Option<Pixels>),
-    Preview(PathBuf, Arc<PreviewData>),
+    Thumb(PathBuf, i64, Arc<AtomicBool>, Option<Pixels>),
+    Preview(u64, PathBuf, Arc<PreviewData>),
     DismissNotice,
     Escape,
     Key(keyboard::Event),
@@ -89,8 +94,8 @@ pub enum Message {
     Frame(Instant),
     MouseUp,
     MouseMove(Point),
-    IndexOpened(Vec<RootIndex>),
-    IndexBuilt(Vec<RootIndex>),
+    IndexOpened(u64, Vec<RootIndex>),
+    IndexBuilt(u64, Vec<RootIndex>),
     IndexTick,
     FsChanged(indexer::Change),
     Request(Request),
@@ -143,9 +148,11 @@ pub struct App {
     pub(crate) tab: usize,
     pub(crate) show_hidden: bool,
     pub(crate) volumes: Vec<Volume>,
+    pub(crate) root_fs: Option<FsInfo>,
     pub(crate) volume_fs: Vec<Option<FsInfo>>,
     pub(crate) drive_state: HashMap<String, DriveState>,
     pub(crate) net: NetState,
+    pub(crate) phone: PhoneState,
     pub(crate) notice: Option<String>,
     bench: Option<Bench>,
     first_frame_logged: bool,
@@ -158,6 +165,10 @@ pub struct App {
     // files
     pub(crate) clip: Option<Clip>,
     pub(crate) undo: Vec<Undo>,
+    pub(crate) undo_busy: bool,
+    pub(crate) pending_dialogs: std::collections::VecDeque<crate::overlay::Dialog>,
+    index_generation: u64,
+    preview_generation: u64,
     pub(crate) rename: Option<Rename>,
     pub(crate) transfers: Vec<Transfer>,
     pub(crate) drag: Option<Drag>,
@@ -247,7 +258,7 @@ fn animations_enabled() -> bool {
 
 impl App {
     pub fn boot() -> (Self, Task<Message>) {
-        let args: Vec<String> = std::env::args().skip(1).collect();
+        let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
         let background_launch = args.iter().any(|a| a == "--background");
         let (settings, settings_error) = match Settings::load() {
             Ok(s) => (s, None),
@@ -256,7 +267,7 @@ impl App {
         let palette = ef_theme::load_active();
         let icons = Icons::new(&palette);
         let bench_dir = std::env::var_os("ECHOFILES_BENCH").map(PathBuf::from);
-        let launch = args.iter().find(|a| !a.starts_with("--")).map(|a| system::request_for(a));
+        let launch = std::env::args_os().skip(1).find(|a| !a.as_encoded_bytes().starts_with(b"--")).map(|a| system::request_for_os(&a));
         let path_arg = match &launch {
             Some(Request::Open(Some(p))) => Some(p.clone()),
             _ => None,
@@ -290,9 +301,11 @@ impl App {
             tab: 0,
             show_hidden: settings.general.show_hidden,
             volumes: Vec::new(),
+            root_fs: None,
             volume_fs: Vec::new(),
             drive_state: HashMap::new(),
             net: NetState { recent: crate::network::load_recent(), ..Default::default() },
+            phone: crate::phone::load_state(),
             notice: None,
             bench: bench_dir.map(|_| Bench { frames: Vec::with_capacity(700), last: None, started: false }),
             first_frame_logged: false,
@@ -303,6 +316,10 @@ impl App {
             watcher,
             clip: None,
             undo: Vec::new(),
+            undo_busy: false,
+            pending_dialogs: Default::default(),
+            index_generation: 0,
+            preview_generation: 0,
             rename: None,
             transfers: Vec::new(),
             drag: None,
@@ -326,9 +343,10 @@ impl App {
             settings,
         };
         let mut tasks = vec![app.load_active(start)];
-        tasks.push(background(|| ef_disks::windows_volumes().map_err(|e| e.to_string()), |r| Message::Drive(DriveMsg::Volumes(r))));
+        tasks.push(background(crate::drives::read_volumes, |r| Message::Drive(DriveMsg::Volumes(r))));
         tasks.push(background(animations_enabled, |on| Message::Drive(DriveMsg::Animations(on))));
         tasks.push(crate::network::boot_tasks());
+        crate::phone::start();
         if let Some(Request::Connect(uri)) = launch {
             match ef_net::Address::parse(&uri, ef_net::Protocol::Smb) {
                 Ok(address) => tasks.push(app.net_update(NetMsg::Connect { address, save: false })),
@@ -336,8 +354,9 @@ impl App {
             }
         }
         if app.settings.search.index {
+            let generation = app.index_generation;
             let cfg = app.settings.search.clone();
-            tasks.push(background(move || indexer::open_existing(&cfg), Message::IndexOpened));
+            tasks.push(background(move || indexer::open_existing(&cfg), move |roots| Message::IndexOpened(generation, roots)));
         }
         if !background_launch {
             let (_, open) = window::open(window_settings());
@@ -356,6 +375,12 @@ impl App {
     /// A pane's name for tabs and the window title; network roots use the name people
     /// gave the place, not GVfs' folder name.
     pub(crate) fn pane_title(&self, pane: &Pane) -> String {
+        if !pane.special()
+            && let Some(s) = self.phone_storage()
+            && pane.location == s
+        {
+            return self.phone_id().map(|i| self.phone_name(&i)).unwrap_or_else(|| "Phone".into());
+        }
         if !pane.special()
             && let Some((m, name)) = self.net_place_at(&pane.location)
             && pane.location == m.root
@@ -480,6 +505,7 @@ impl App {
         }
         pane.drives = false;
         pane.shares = None;
+        pane.phone = None;
         pane.clear_search();
         self.notice = None;
         self.recent.retain(|p| p != &dir);
@@ -487,19 +513,15 @@ impl App {
         if self.recent.len() > 30 {
             self.recent.remove(0);
         }
-        let d = dir.clone();
-        std::thread::spawn(move || system::save_last_folder(&d));
+        system::save_last_folder(&dir);
         self.load_active(dir)
     }
 
     pub(crate) fn open_path(&mut self, path: PathBuf) -> Task<Message> {
-        if path.is_dir() {
-            return self.go(path, true);
-        }
-        if let Err(e) = std::process::Command::new("xdg-open").arg(&path).spawn() {
-            self.toast_error(format!("Couldn't open {}", path.file_name().unwrap_or_default().to_string_lossy()), e.to_string());
-        }
-        Task::none()
+        let original = path.clone();
+        background(move || {
+            if path.is_dir() { (true, Ok(())) } else { (false, std::process::Command::new("xdg-open").arg(&path).spawn().map(drop).map_err(|e| e.to_string())) }
+        }, move |(dir, result)| Message::OpenChecked(original.clone(), dir, result))
     }
 
     fn open(&mut self, pos: usize) -> Task<Message> {
@@ -529,13 +551,17 @@ impl App {
             return Task::none();
         }
         pane.searching = true;
+        let cancel = Arc::new(AtomicBool::new(false));
+        pane.search_cancel = cancel.clone();
         if use_index {
-            return background(move || search::from_index(&roots, &text, hidden), move |results| Message::SearchDone { generation, results });
+            let phones = self.settings.phone.phone_index;
+            return background(move || search::with_phone(search::combined(&roots, &cfg, &text, hidden, &cancel), &text, hidden, phones), move |results| Message::SearchDone { generation, results });
         }
         let cancel = Arc::new(AtomicBool::new(false));
         pane.search_cancel = cancel.clone();
         let dirs = cfg.roots();
-        background(move || search::live(&dirs, &cfg, &text, hidden, &cancel), move |results| Message::SearchDone { generation, results })
+        let phones = self.settings.phone.phone_index;
+        background(move || search::with_phone(search::live(&dirs, &cfg, &text, hidden, &cancel), &text, hidden, phones), move |results| Message::SearchDone { generation, results })
     }
 
     // ------------------------------------------------------------------ index
@@ -546,29 +572,34 @@ impl App {
         }
         self.index_state = IndexState::Building;
         self.index_dirty = None;
+        let generation = self.index_generation;
         let cfg = self.settings.search.clone();
-        background(move || indexer::build_all(&cfg), Message::IndexBuilt)
+        background(move || indexer::build_all(&cfg, generation), move |roots| Message::IndexBuilt(generation, roots))
     }
 
     /// Settings that change what's indexed: rebuild soon (debounced).
     pub(crate) fn index_settings_changed(&mut self) {
+        self.index_generation = indexer::invalidate();
         if self.settings.search.index {
             self.index_dirty = Some(Instant::now());
         }
     }
 
     pub(crate) fn set_index_enabled(&mut self, on: bool) -> Task<Message> {
+        self.index_generation = indexer::invalidate();
         self.settings.search.index = on;
         if on {
             self.index_state = IndexState::Opening;
+            let generation = self.index_generation;
             let cfg = self.settings.search.clone();
-            background(move || indexer::open_existing(&cfg), Message::IndexOpened)
+            background(move || indexer::open_existing(&cfg), move |roots| Message::IndexOpened(generation, roots))
         } else {
             self.index_state = IndexState::Off;
             self.roots.clear();
             self.index_error = None;
             let cfg = self.settings.search.clone();
-            std::thread::spawn(move || indexer::remove_files(&cfg));
+            let generation = self.index_generation;
+            std::thread::spawn(move || indexer::remove_files(&cfg, generation));
             Task::none()
         }
     }
@@ -587,15 +618,16 @@ impl App {
 
     /// Something modal is up: lists don't take keys.
     pub(crate) fn modal(&self) -> bool {
-        self.menu.is_some() || self.dialog.is_some() || self.command.is_some()
+        self.menu.is_some() || self.dialog.is_some() || self.command.is_some() || self.phone.dialog.is_some()
     }
 
     // ------------------------------------------------------------------ thumbnails
 
-    fn start_thumbs(&self, jobs: Vec<(PathBuf, i64)>) -> Task<Message> {
-        Task::batch(jobs.into_iter().map(|(p, m)| {
+    fn start_thumbs(&self, jobs: Vec<thumbs::Job>) -> Task<Message> {
+        Task::batch(jobs.into_iter().map(|(p, m, cancel)| {
             let q = p.clone();
-            background(move || thumbs::load(&q, m), move |px| Message::Thumb(p.clone(), px))
+            let token = cancel.clone();
+            background(move || thumbs::load_cancellable(&q, m, &cancel), move |px| Message::Thumb(p.clone(), m, token.clone(), px))
         }))
     }
 
@@ -616,8 +648,21 @@ impl App {
 
     // ------------------------------------------------------------------ update
 
+    pub(crate) fn queue_dialog(&mut self, dialog: crate::overlay::Dialog) {
+        if self.dialog.is_none() { self.dialog = Some(dialog); } else { self.pending_dialogs.push_back(dialog); }
+    }
+
+    fn request_exit(&mut self) -> Task<Message> {
+        if crate::actions::busy() || self.undo_busy || self.transfers.iter().any(|t| t.running()) {
+            self.notice = Some("File operations are still running. Wait for them to finish, or cancel them before quitting.".into());
+            return Task::none();
+        }
+        iced::exit()
+    }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let t = self.handle(message);
+        if self.dialog.is_none() { self.dialog = self.pending_dialogs.pop_front(); }
         let p = self.sync_preview();
         self.sync_selection_size();
         for tr in &mut self.transfers {
@@ -632,7 +677,7 @@ impl App {
     fn sync_selection_size(&mut self) {
         let pane = self.pane();
         let dirs: Vec<PathBuf> = match pane.loaded.as_ref() {
-            Some(l) if self.mode == Mode::Files => pane.selected_entries().into_iter().filter(|&i| l.listing.is_dir(i)).take(10_000).map(|i| l.listing.path(i)).collect(),
+            Some(l) if self.mode == Mode::Files => pane.selected_bits().filter(|&i| i < l.listing.len() && l.listing.is_dir(i)).take(10_000).map(|i| l.listing.path(i)).collect(),
             _ => Vec::new(),
         };
         if self.sel_size.as_ref().map(|s| &s.0) == Some(&dirs) || (dirs.is_empty() && self.sel_size.is_none()) {
@@ -653,6 +698,23 @@ impl App {
 
     fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::OpenChecked(path, dir, result) => {
+                if let Err(e) = result { self.toast_error("Couldn't open the file".into(), e); }
+                if dir { self.go(path, true) } else { Task::none() }
+            }
+            Message::PathChecked(raw, result) => {
+                if self.path_edit.as_ref() != Some(&raw) { return Task::none(); }
+                match result {
+                    Ok((p, true)) => { self.path_edit = None; self.go(p, true) },
+                    Ok((p, false)) => {
+                        self.path_edit = None;
+                        let name = p.file_name().map(|n| n.to_os_string());
+                        let task = self.go(p.parent().unwrap_or(Path::new("/")).to_path_buf(), true);
+                        self.pane_mut().reveal = name.into_iter().collect(); task
+                    },
+                    Err(e) => { self.toast_error("Can't go there".into(), e); Task::none() },
+                }
+            }
             Message::Loaded { generation, loaded, order } => {
                 let hidden = self.show_hidden;
                 let timing = std::env::var_os("ECHOFILES_TIMING").is_some() || self.bench.is_some();
@@ -671,16 +733,21 @@ impl App {
                 }
                 pane.apply_loaded(loaded, order);
                 let id = pane.id;
-                let t = if pane.scope == Scope::Folder && !pane.query.is_empty() { pane.reorder(hidden) } else { Task::none() };
+                let t = pane.reorder(hidden);
                 self.refresh_cut();
                 let r = self.resume_rename(id);
                 Task::batch([t, r])
             }
-            Message::Reordered { generation, order } => {
+            Message::Reordered { generation, revision, order } => {
                 if let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.generation == generation) {
+                    if pane.order_revision.load(Ordering::Relaxed) != revision { return Task::none(); }
                     pane.order = order;
                     pane.cursor = None;
                 }
+                Task::none()
+            }
+            Message::PaneFs(generation, fs) => {
+                if let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.generation == generation) { pane.fs = fs; }
                 Task::none()
             }
             Message::LoadFailed { generation, error } => {
@@ -699,7 +766,7 @@ impl App {
                         }
                     }
                     // The facts shown belong to where the pane is back at, not the failed place.
-                    pane.fs = volume::fs_info(&pane.location);
+                    pane.fs = None;
                     self.notice = Some(error);
                 }
                 task
@@ -831,13 +898,7 @@ impl App {
                 let dir = pane.location.clone();
                 self.view_modes.insert(dir, on);
                 let text: String = self.view_modes.iter().map(|(p, g)| format!("{}\t{}\n", if *g { "grid" } else { "list" }, p.display())).collect();
-                std::thread::spawn(move || {
-                    let f = view_modes_file();
-                    if let Some(d) = f.parent() {
-                        let _ = std::fs::create_dir_all(d);
-                    }
-                    let _ = std::fs::write(f, text);
-                });
+                config::queue_state(view_modes_file(), text.into_bytes());
                 Task::none()
             }
             Message::TogglePreview => {
@@ -869,12 +930,13 @@ impl App {
                 self.mode = Mode::Files;
                 let pane = self.pane_mut();
                 pane.shares = None;
+                pane.phone = None;
                 if !pane.drives {
                     pane.drives = true;
                     pane.clear_search();
                 }
                 
-                background(|| ef_disks::windows_volumes().map_err(|e| e.to_string()), |r| Message::Drive(DriveMsg::Volumes(r)))
+                background(crate::drives::read_volumes, |r| Message::Drive(DriveMsg::Volumes(r)))
             }
             // ---- search
             Message::Search(q) => {
@@ -901,7 +963,10 @@ impl App {
             }
             Message::SearchDone { generation, results } => {
                 if let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.search_generation == generation) {
+                    if results.is_none() { self.notice = Some("Search could not read all requested locations. Reconnect unavailable locations and try again.".into()); }
                     pane.searching = false;
+                    pane.results = None;
+                    pane.result_cursor = None;
                     if let Some(r) = results {
                         pane.result_cursor = (!r.hits.is_empty()).then_some(0);
                         pane.results = Some(r);
@@ -914,11 +979,16 @@ impl App {
                 Task::none()
             }
             Message::ResultOpen(i) => match self.pane().results.as_ref().and_then(|r| r.hits.get(i)).map(|h| h.path.clone()) {
+                Some(p) if p.to_string_lossy().starts_with("phone://") => {
+                    let directory = self.pane().results.as_ref().and_then(|r| r.hits.get(i)).is_some_and(|h| h.is_dir);
+                    self.open_phone_result(&p, directory, false)
+                }
                 Some(p) => self.open_path(p),
                 None => Task::none(),
             },
             Message::ResultReveal(i) => {
                 let Some(h) = self.pane().results.as_ref().and_then(|r| r.hits.get(i)) else { return Task::none() };
+                if h.path.to_string_lossy().starts_with("phone://") { let p = h.path.clone(); return self.open_phone_result(&p, false, true); }
                 let (Some(parent), Some(name)) = (h.path.parent().map(Path::to_path_buf), h.path.file_name().map(|n| n.to_os_string())) else { return Task::none() };
                 self.pane_mut().scope = Scope::Folder;
                 let t = self.go(parent, true);
@@ -954,57 +1024,31 @@ impl App {
                         }
                     };
                 }
-                match self.resolve_typed_path(raw.trim()) {
-                    Ok(p) if p.is_dir() => {
-                        self.path_edit = None;
-                        self.go(p, true)
-                    }
-                    Ok(p) if p.exists() => {
-                        self.path_edit = None;
-                        let (parent, name) = (p.parent().map(Path::to_path_buf), p.file_name().map(|n| n.to_os_string()));
-                        match (parent, name) {
-                            (Some(dir), Some(n)) => {
-                                let t = self.go(dir, true);
-                                self.pane_mut().reveal = vec![n];
-                                t
-                            }
-                            _ => Task::none(),
-                        }
-                    }
-                    Ok(p) if ef_net::gvfs::is_network_path(&p) => {
-                        self.toast_error("That network place isn't connected".into(), "Connect it from the Network section, or type its address (smb://, sftp://, ftp://).".into());
-                        Task::none()
-                    }
-                    Ok(p) => {
-                        self.toast_error("No such folder".into(), format!("{} doesn't exist. Check the spelling.", p.display()));
-                        Task::none()
-                    }
-                    Err(e) => {
-                        self.toast_error("Can't go there".into(), e);
-                        Task::none()
-                    }
-                }
+                let resolved = self.resolve_typed_path(raw.trim());
+                background(move || resolved.and_then(|p| std::fs::metadata(&p).map(|m| (p, m.is_dir())).map_err(|e| e.to_string())), move |r| Message::PathChecked(raw.clone(), r))
             }
             // ---- subsystems
             Message::File(m) => self.file_update(m),
             Message::Drive(m) => self.drive_update(m),
             Message::Net(m) => self.net_update(m),
+            Message::Phone(m) => self.phone_update(m),
             Message::Fold(section, open) => {
                 match section {
                     crate::view::Fold::Windows => self.settings.sidebar.windows_open = open,
                     crate::view::Fold::Network => self.settings.sidebar.network_open = open,
+                    crate::view::Fold::Phone => self.settings.sidebar.phone_open = open,
                 }
                 self.persist_settings()
             }
             Message::Ui(m) => self.ui_update(m),
-            Message::Thumb(path, px) => {
-                let jobs = self.thumbs.done(path, px);
+            Message::Thumb(path, mtime, token, px) => {
+                let jobs = self.thumbs.done(path, mtime, &token, px);
                 self.start_thumbs(jobs)
             }
-            Message::Preview(path, data) => {
-                if self.preview_want.as_ref() == Some(&path) {
+            Message::Preview(generation, path, data) => {
+                if generation == self.preview_generation && self.preview_want.as_ref() == Some(&path) {
                     self.preview = Some((path, data));
-                }
+                } else { data.cancel.store(true, Ordering::Relaxed); }
                 Task::none()
             }
             Message::DismissNotice => {
@@ -1024,6 +1068,7 @@ impl App {
                 Task::none()
             }
             Message::Tick => {
+                self.dates = DateFormatter::new();
                 let stamp = theme_stamp();
                 if stamp != self.theme_stamp {
                     self.theme_stamp = stamp;
@@ -1031,6 +1076,7 @@ impl App {
                     self.icons = Icons::new(&self.palette);
                 }
                 self.expire_toasts();
+                self.phone_tick();
                 if indexer::settled(self.index_dirty, 1500) && self.index_state != IndexState::Building {
                     return self.build_index();
                 }
@@ -1052,11 +1098,13 @@ impl App {
                 // a sidebar place lands here.
                 let place = self.drop_place.take();
                 match (self.drag.take(), place) {
+                    (Some(d), Some(dest)) if dest == crate::phone_view::drop_target() => Task::batch([t, self.phone_update(PhoneMsg::SendPaths(d.paths))]),
                     (Some(d), Some(dest)) => Task::batch([t, self.drop_paths(d.paths, dest)]),
                     _ => t,
                 }
             }
-            Message::IndexOpened(roots) => {
+            Message::IndexOpened(generation, roots) => {
+                if generation != self.index_generation { return Task::none(); }
                 if !self.settings.search.index {
                     return Task::none();
                 }
@@ -1069,17 +1117,14 @@ impl App {
                 }
                 Task::none()
             }
-            Message::IndexBuilt(roots) => {
+            Message::IndexBuilt(generation, mut roots) => {
+                if generation != self.index_generation {
+                    if !self.settings.search.index { return Task::none(); }
+                    self.index_state = IndexState::Ready;
+                    return self.build_index();
+                }
+                for r in &mut roots { if r.map.is_none() { if let Some(old) = self.roots.iter().find(|old| old.root == r.root) { r.map = old.map.clone(); r.updated = old.updated; } } }
                 if !self.settings.search.index {
-                    // A build still running when the index was turned off saved its files
-                    // after `remove_files` ran; delete them again.
-                    let files: Vec<_> = roots.iter().map(|r| ef_config::index_file_for(&r.root)).collect();
-                    drop(roots);
-                    std::thread::spawn(move || {
-                        for f in files {
-                            let _ = std::fs::remove_file(f);
-                        }
-                    });
                     return Task::none();
                 }
                 self.index_error = roots.iter().find_map(|r| r.error.clone());
@@ -1092,7 +1137,8 @@ impl App {
             }
             Message::IndexTick => self.build_index(),
             Message::FsChanged(change) => {
-                if change.names_changed && change.visible {
+                if self.preview_want.as_ref().is_some_and(|p| p.parent() == Some(change.folder.as_path())) { self.preview_want = None; self.preview_generation += 1; }
+                if change.names_changed {
                     self.index_settings_changed();
                 }
                 if !(change.visible || self.show_hidden) || self.mode != Mode::Files {
@@ -1131,7 +1177,7 @@ impl App {
                     self.window = None;
                     window::close(id)
                 } else {
-                    iced::exit()
+                    self.request_exit()
                 }
             }
             Message::WindowClosed(id) => {
@@ -1139,7 +1185,7 @@ impl App {
                     self.window = None;
                 }
                 if self.window.is_none() && !self.settings.general.background {
-                    return iced::exit();
+                    return self.request_exit();
                 }
                 Task::none()
             }
@@ -1149,11 +1195,7 @@ impl App {
 
     /// Save settings changed outside the Settings screen (sidebar, preview).
     pub(crate) fn persist_settings(&self) -> Task<Message> {
-        let s = self.settings.clone();
-        std::thread::spawn(move || {
-            let _ = s.save();
-        });
-        Task::none()
+        crate::settings::persist(self.settings.clone())
     }
 
     /// Typed paths: `~/x`, absolute paths, and Windows paths (`D:\Work`) when the drive's
@@ -1254,7 +1296,7 @@ impl App {
                 let Some(l) = pane.loaded.clone() else { return Task::none() };
                 let Some(i) = pane.entry_at(pos) else { return Task::none() };
                 let path = l.listing.path(i);
-                if path.is_dir() { self.handle(Message::OpenTab(path)) } else { Task::none() }
+                if l.listing.is_dir(i) { self.handle(Message::OpenTab(path)) } else { Task::none() }
             }
             Action::DragStart => {
                 let Some(pane) = self.pane_by_id(id) else { return Task::none() };
@@ -1300,6 +1342,9 @@ impl App {
         if self.net.form.is_some() {
             return self.net_update(NetMsg::Close);
         }
+        if self.phone.dialog.is_some() {
+            return self.phone_update(PhoneMsg::Dialog(false));
+        }
         if self.rename.take().is_some() {
             return Task::none();
         }
@@ -1322,6 +1367,7 @@ impl App {
         if pane.special() {
             pane.drives = false;
             pane.shares = None;
+            pane.phone = None;
             return Task::none();
         }
         pane.clear_selection();
@@ -1333,7 +1379,7 @@ impl App {
         let shift = modifiers.shift();
         let alt = modifiers.alt();
         if matches!(key.as_ref(), Key::Character("q")) && ctrl {
-            return iced::exit();
+            return self.request_exit();
         }
         if self.mode == Mode::Settings {
             return Task::none();
@@ -1342,6 +1388,13 @@ impl App {
         if self.dialog.is_some() {
             return match key.as_ref() {
                 Key::Named(Named::Enter) => self.ui_update(UiMsg::DialogDefault),
+                Key::Named(Named::Tab) => tab(shift),
+                _ => Task::none(),
+            };
+        }
+        if self.phone.dialog.is_some() {
+            return match key.as_ref() {
+                Key::Named(Named::Enter) if self.phone.code.as_ref().is_some_and(|c| c.2) => self.phone_update(PhoneMsg::AcceptPair),
                 Key::Named(Named::Tab) => tab(shift),
                 _ => Task::none(),
             };
@@ -1488,7 +1541,7 @@ impl App {
                 f[f.len() - 1],
                 over
             );
-            return iced::exit();
+            return self.request_exit();
         }
         Task::none()
     }
@@ -1501,6 +1554,7 @@ impl App {
             || self.props_counting()
             || self.sel_size.as_ref().is_some_and(|s| !s.1.done.load(Ordering::Relaxed))
             || self.drag.is_some()
+            || self.phone_animating()
             || (self.animations && (self.menu.as_ref().is_some_and(|m| fresh(m.opened)) || self.dialog.as_ref().is_some_and(|d| fresh(d.opened())) || self.toasts.iter().any(|t| fresh(t.at)) || self.command.as_ref().is_some_and(|c| fresh(c.opened)) || self.net.form.as_ref().is_some_and(|f| fresh(f.opened))))
     }
 
@@ -1521,6 +1575,7 @@ impl App {
             Subscription::run(changes).map(Message::FsChanged),
             Subscription::run(crate::drives::prompts).map(|p| Message::Drive(DriveMsg::Prompt(p))),
             Subscription::run(crate::network::events).map(Message::Net),
+            Subscription::run(crate::phone::events).map(Message::Phone),
         ];
         if self.drag.is_some() || self.sidebar_drag.is_some() {
             subs.push(iced::event::listen_with(|event, _status, _window| match event {
@@ -1547,8 +1602,15 @@ impl App {
     // ------------------------------------------------------------------ preview data
 
     /// What the preview pane shows: the cursor item, else the single selected item.
+    pub(crate) fn visible_dir(&self, path: &Path) -> bool {
+        if self.pane().everywhere() { return self.pane().results.as_ref().is_some_and(|r| r.hits.iter().any(|h| h.path == path && h.is_dir)); }
+        self.pane().loaded.as_ref().is_some_and(|l| (0..l.listing.len()).any(|i| l.listing.path(i) == path && l.listing.is_dir(i)))
+    }
+
     pub(crate) fn preview_target(&self) -> Option<PathBuf> {
         let pane = self.pane();
+        if pane.special() { return None; }
+        if pane.everywhere() { return pane.targets().into_iter().next(); }
         let l = pane.loaded.as_ref()?;
         let i = pane.cursor.and_then(|c| pane.entry_at(c)).or_else(|| pane.selected_entries().first().copied())?;
         Some(l.listing.path(i))
@@ -1556,12 +1618,16 @@ impl App {
 
     fn sync_preview(&mut self) -> Task<Message> {
         if !self.settings.appearance.preview || self.mode != Mode::Files {
+            self.preview_generation += 1; self.preview_want = None;
+            if let Some((_, data)) = self.preview.take() { data.cancel.store(true, Ordering::Relaxed); }
             return Task::none();
         }
         let want = self.preview_target();
         if want == self.preview_want {
             return Task::none();
         }
+        self.preview_generation += 1;
+        let generation = self.preview_generation;
         self.preview_want = want.clone();
         if let Some((_, d)) = &self.preview {
             d.cancel.store(true, Ordering::Relaxed);
@@ -1572,12 +1638,12 @@ impl App {
         };
         let mut tasks = Vec::new();
         if thumbs::thumbnailable(&path) && self.thumbs.get(&path).is_none() {
-            let mtime = std::fs::metadata(&path).map(|m| std::os::unix::fs::MetadataExt::mtime(&m)).unwrap_or(0);
+            let mtime = self.pane().loaded.as_ref().and_then(|l| (0..l.listing.len()).find(|&i| l.listing.path(i) == path).map(|i| l.listing.mtime[i])).unwrap_or(0);
             let jobs = self.thumbs.want(vec![(path.clone(), mtime)]);
             tasks.push(self.start_thumbs(jobs));
         }
         let p = path.clone();
-        tasks.push(background(move || Arc::new(crate::preview::gather(&p)), move |d| Message::Preview(path.clone(), d)));
+        tasks.push(background(move || Arc::new(crate::preview::gather(&p)), move |d| Message::Preview(generation, path.clone(), d)));
         Task::batch(tasks)
     }
 }

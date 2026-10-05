@@ -1,0 +1,2 @@
+   Compiling echofiles-index v0.1.0 (/home/adityavardhansharma/Projects/EchoFiles_Linux/crates/index)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.15s

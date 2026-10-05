@@ -1,0 +1,22 @@
+<!-- @dsCard group="Connect" height=420 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>ClipItem</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec-pad", style:{maxWidth:380}}, h(E.ListGroup, null,
+  h(E.ClipItem, {dir:"to", text:"https://maps.app.goo.gl/x7KdQ2", when:"1 min ago"}),
+  h(E.ClipItem, {dir:"from", text:"ssh aditya@build-box -p 2222", when:"6 min ago"}),
+  h(E.ClipItem, {dir:"to", sensitive:true, when:"22 min ago"}),
+  h(E.ClipItem, {dir:"to", image:1, when:"40 min ago"}),
+  h(E.ClipItem, {dir:"from", text:"cargo run -p echofiles-phone", when:"1 h ago", via:"bt"})));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

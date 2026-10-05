@@ -157,8 +157,7 @@ impl Options {
 
     /// Whether `path` is an excluded path or inside one.
     pub fn excludes_path(&self, path: &Path) -> bool {
-        let path = path.as_os_str().as_bytes();
-        self.exclude_paths.iter().any(|p| path.strip_prefix(p.as_slice()).is_some_and(|rest| rest.is_empty() || rest[0] == b'/'))
+        self.exclude_paths.iter().any(|p| path.starts_with(Path::new(OsStr::from_bytes(p))))
     }
 }
 
@@ -230,6 +229,7 @@ fn open_dir(path: &[u8], follow: bool) -> io::Result<rustix::fd::OwnedFd> {
 }
 
 fn walk<'s>(path: Vec<u8>, dir: u32, crawl: &'s Crawl<'s>, scope: &rayon::Scope<'s>) {
+    if crawl.opts.excludes_path(Path::new(OsStr::from_bytes(&path))) { return; }
     let Ok(fd) = open_dir(&path, dir == 0) else {
         crawl.unreadable.fetch_add(1, Ordering::Relaxed);
         return;
@@ -574,4 +574,18 @@ impl Index {
             assert_eq!(f, self.view().folded_name(i));
         }
     }
+}
+
+/// Cached phone file names remain searchable when the phone is offline.
+pub mod phone;
+
+/// The common cross-root ranking key, also used when merging live and mapped results.
+pub fn rank_name(text: &str, name: &[u8]) -> u64 {
+    matcher::Matcher::new(&Query::new(text)).map_or(u64::MAX, |m| { let mut folded = Vec::new(); fold::fold_into(name, &mut folded); m.rank(&folded) })
+}
+
+pub fn rank_paths(paths: &mut Vec<PathBuf>, q: &Query) {
+    paths.sort_by_cached_key(|p| (rank_name(q.text, p.file_name().unwrap_or_default().as_bytes()), p.clone()));
+    paths.dedup();
+    if let Some(limit) = q.limit { paths.truncate(limit); }
 }

@@ -1,0 +1,19 @@
+<!-- @dsCard group="Feedback" height=90 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>StatePill</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec-pad"}, h("div", {className:"ec-row-flex"},
+  h(E.StatePill, {tone:"success"}, "Connected"), h(E.StatePill, {tone:"success"}, "Automatic"), h(E.StatePill, {tone:"warning"}, "Paused"),
+  h(E.StatePill, null, "Tap to send"), h(E.StatePill, {tone:"danger"}, "Failed"), h(E.StatePill, {tone:"accent"}, "Recommended"), h(E.StatePill, {icon:"eye-off"}, "Hidden")));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+Cases: /tmp/ef-deep-review-o5qo7pmb
+Cross-device target: /dev/shm/ef-deep-review-dom2j59n
+Exit: 0
+merge_undo_copy: existing file remains in destination = false
+merge_undo_move: existing file remains in destination = false
+failed_replace: old destination exists = false; errors = ["Couldn't copy /tmp/ef-deep-review-o5qo7pmb/cases/replace/a/x: it no longer exists."]
+copy_via_alias: source still exists = false; errors = ["Couldn't copy /tmp/ef-deep-review-o5qo7pmb/cases/alias/source/x: it no longer exists."]
+selfcopy_alias: plan accepted = true
+symlink_merge: outside file = "new"; errors = []
+cross_device_fifo: source = false; destination = false; done = 1; errors = []
+copied_xattrs: []
+malformed_index: panicked instead of returning error = true
+
+
+thread 'main' (33295) panicked at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/num/mod.rs:1449:5:
+attempt to add with overflow
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

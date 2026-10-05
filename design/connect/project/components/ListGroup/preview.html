@@ -1,0 +1,19 @@
+<!-- @dsCard group="Navigation" height=260 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>ListGroup</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec-pad", style:{maxWidth:380}}, h(E.ListGroup, {title:"Shared with the laptop", foot:"Turning one off stops it on both devices."},
+  h(E.ListRow, {icon:"bell", title:"Notifications", sub:"Shown on the laptop; reply from there", trailing:h(E.Switch, {defaultChecked:true, label:"Notifications"})}),
+  h(E.ListRow, {icon:"clipboard", title:"Clipboard", sub:"Automatic · set up 2 Oct", chevron:true})));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

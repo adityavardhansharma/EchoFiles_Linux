@@ -1,0 +1,9 @@
+replace undo journal=false: result=Ok("Moved 1 copy to the Trash"); old destination restored=false
+replace undo journal=true: result=Ok("Transfer undone"); old destination restored=true
+failed replacement: old preserved=true; errors=1
+copy through alias: source preserved=true; successful destinations=1
+FIFO copy: execution errors=1; source preserved=true; destination absent=true
+single file copy progress: files_done=2; files_total=1
+malformed mmap header: panicked=true
+concurrent config saves: save errors=293/400; malformed final files=0/50
+phone JSONL search 10,000 entries top50: median=52.885ms; range=52.389..54.327ms (dev build, loaded host, exploratory)

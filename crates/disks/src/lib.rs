@@ -258,7 +258,7 @@ unsafe extern "C" {
 /// way records every partition's drive letter.
 pub fn mount(v: &Volume, write_system: bool) -> Result<Mounted, MountError> {
     let conn = Connection::system().map_err(|e| MountError::Failed(e.to_string()))?;
-    let want_ro = v.system && !write_system;
+    let want_ro = !write_system;
     let (mp, forced) = match call_mount(&conn, &v.object, want_ro) {
         Ok(mp) => (mp, None),
         Err(MountError::NotAuthorized) => return Err(MountError::NotAuthorized),
@@ -279,12 +279,18 @@ pub fn mount(v: &Volume, write_system: bool) -> Result<Mounted, MountError> {
             cache.system.push(v.part_uuid.clone());
         }
         letters::save(&cache);
-        // First mount of C: happened read-write because we didn't know yet: redo it read-only.
-        if !v.system && !write_system && forced.is_none() {
-            call_unmount(&conn, &v.object)?;
-            let mp = call_mount(&conn, &v.object, true)?;
-            return Ok(Mounted { mount_point: mp, read_only: true, forced_read_only: None, system });
-        }
+    }
+    // Identify an unfamiliar volume while read-only. Only a non-system volume is
+    // reopened writable automatically; a Windows system volume needs explicit consent.
+    if !system && want_ro && forced.is_none() {
+        call_unmount(&conn, &v.object)?;
+        return match call_mount(&conn, &v.object, false) {
+            Ok(mp) => Ok(Mounted { mount_point: mp, read_only: false, forced_read_only: None, system }),
+            Err(e) => {
+                let mp = call_mount(&conn, &v.object, true)?;
+                Ok(Mounted { mount_point: mp, read_only: true, forced_read_only: Some(format!("Opened read-only: {e}")), system })
+            }
+        };
     }
     let read_only = want_ro || forced.is_some();
     Ok(Mounted { mount_point: mp, read_only, forced_read_only: forced, system })

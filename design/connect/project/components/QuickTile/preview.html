@@ -1,0 +1,17 @@
+<!-- @dsCard group="Android" height=120 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>QuickTile</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec-pad", style:{maxWidth:380, background:"var(--bg-deep)"}}, h("div", {style:{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8}}, h(E.QuickTile, {on:true}), h(E.QuickTile, {icon:"moon", label:"Do not disturb", sub:"Synced with laptop"})));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

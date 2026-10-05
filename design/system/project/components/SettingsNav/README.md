@@ -1,6 +1,6 @@
 # SettingsNav
 
-The Settings page list, in the sidebar's place: General · Search & index · AI agents · Appearance · About.
+The Settings page list, in the sidebar's place: General · Search & index · AI agents · Phone · Appearance · About.
 
 **Provide** `page`, `onChange`.
 

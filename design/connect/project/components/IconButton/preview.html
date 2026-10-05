@@ -1,0 +1,19 @@
+<!-- @dsCard group="Actions" height=100 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>IconButton</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec-pad"}, h("div", {className:"ec-row-flex"},
+  h(E.IconButton, {icon:"arrow-left", label:"Back"}), h(E.IconButton, {icon:"qr", label:"Pair another laptop"}), h(E.IconButton, {icon:"copy", label:"Copy again"}),
+  h(E.IconButton, {icon:"bell-off", label:"Mute", pressed:true}), h(E.IconButton, {icon:"trash", label:"Clear history"}), h(E.IconButton, {icon:"close", label:"Stop", disabled:true})));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

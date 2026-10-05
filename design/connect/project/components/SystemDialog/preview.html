@@ -1,0 +1,17 @@
+<!-- @dsCard group="Android" height=360 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>SystemDialog</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec-pad", style:{alignItems:"center"}}, h(E.SystemDialog, null));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

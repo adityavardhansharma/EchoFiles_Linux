@@ -1,0 +1,19 @@
+<!-- @dsCard group="Navigation" height=170 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>AppBar</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec", style:{maxWidth:380, display:"flex", flexDirection:"column", gap:12, padding:12}},
+  h(E.AppBar, {title:"EchoConnect", actions:[{icon:"qr", label:"Pair another laptop"}]}),
+  h(E.AppBar, {title:"Automatic clipboard", back:true}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

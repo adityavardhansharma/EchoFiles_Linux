@@ -1,0 +1,18 @@
+<!-- @dsCard group="Inputs" height=200 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>TextField</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec-pad", style:{maxWidth:380}}, h(E.TextField, {id:"ip", label:"Laptop address", placeholder:"192.168.1.2", icon:"laptop", hint:"Shown in EchoFiles → Connect phone"}),
+  h(E.TextField, {id:"ip2", label:"Laptop address", defaultValue:"192.168.1", icon:"laptop", error:"That isn't a full address. It looks like 192.168.1.2."}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

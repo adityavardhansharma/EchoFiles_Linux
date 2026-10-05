@@ -34,6 +34,20 @@
 //! windows_open = false        # sections start collapsed; the head row toggles them
 //! network_open = false
 //!
+//! phone = true                # show the Phone section
+//! phone_open = true
+//!
+//! [phone]                     # pairings live in ~/.config/echofiles/phone/
+//! files = true                # browse the phone's files and photos
+//! clipboard = true            # shared clipboard
+//! messages = false            # texts (SMS)
+//! notifications = "app"       # "off", "app" (Notifications page only) or "desktop"
+//! muted_apps = []
+//! battery_warning = true
+//! auto_accept = true          # save files the phone sends without asking
+//! save_to = "~/Downloads/Phone"
+//! picture = "photo"           # what the phone on the hub shows: "photo" or "echofiles"
+//!
 //! [[network.servers]]           # the Network section, in order
 //! uri = "smb://nas.local/Media" # never holds a password (GVfs keeps those in the keyring)
 //! name = "Media"                # optional; the address's own name otherwise
@@ -135,7 +149,7 @@ impl SearchConfig {
     /// Excluded paths, expanded, that lie inside `root` (and aren't `root` itself).
     pub fn exclude_paths_in(&self, root: &Path) -> Vec<PathBuf> {
         let root = expand(&root.to_string_lossy());
-        self.exclude_paths.iter().map(|p| expand(p)).filter(|p| p.starts_with(&root) && p != &root).collect()
+        self.exclude_paths.iter().map(|p| expand(p)).filter(|p| p.starts_with(&root) || root.starts_with(p)).collect()
     }
 }
 
@@ -185,11 +199,15 @@ pub struct Sidebar {
     pub windows_open: bool,
     /// The Network section is expanded (collapsed by default).
     pub network_open: bool,
+    /// Show the Phone section.
+    pub phone: bool,
+    /// The Phone section is expanded (open by default).
+    pub phone_open: bool,
 }
 
 impl Default for Sidebar {
     fn default() -> Self {
-        Sidebar { pinned: Vec::new(), width: 236, hidden: false, windows: true, network: true, windows_open: false, network_open: false }
+        Sidebar { pinned: Vec::new(), width: 236, hidden: false, windows: true, network: true, windows_open: false, network_open: false, phone: true, phone_open: true }
     }
 }
 
@@ -207,6 +225,68 @@ pub struct Network {
     pub servers: Vec<Server>,
 }
 
+/// Where phone notifications show up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PhoneNotifications {
+    /// Nothing comes over.
+    Off,
+    /// On the phone's Notifications page only.
+    #[default]
+    App,
+    /// Also as desktop notifications.
+    Desktop,
+}
+
+/// What the phone drawn on the hub shows on its screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PhonePicture {
+    #[default]
+    Photo,
+    Echofiles,
+}
+
+/// Settings → Phone. Pairings themselves live in `~/.config/echofiles/phone/`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Phone {
+    pub otp: bool,
+    pub dnd_sync: bool,
+    pub autolock: bool,
+    pub phone_index: bool,
+    pub backup: bool,
+    /// Browse the phone's files and photos.
+    pub files: bool,
+    pub clipboard: bool,
+    pub messages: bool,
+    pub notifications: PhoneNotifications,
+    /// App names whose notifications are dropped.
+    pub muted_apps: Vec<String>,
+    pub battery_warning: bool,
+    /// Save files the phone sends without asking.
+    pub auto_accept: bool,
+    pub save_to: String,
+    pub picture: PhonePicture,
+}
+
+impl Default for Phone {
+    fn default() -> Self {
+        Phone {
+            otp: false, dnd_sync: false, autolock: false, phone_index: false, backup: false,
+            files: true,
+            clipboard: true,
+            messages: false,
+            notifications: PhoneNotifications::App,
+            muted_apps: Vec::new(),
+            battery_warning: true,
+            auto_accept: true,
+            save_to: "~/Downloads/Phone".into(),
+            picture: PhonePicture::Photo,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -216,6 +296,7 @@ pub struct Settings {
     pub appearance: Appearance,
     pub sidebar: Sidebar,
     pub network: Network,
+    pub phone: Phone,
 }
 
 pub fn home() -> PathBuf {
@@ -243,7 +324,12 @@ pub fn state_dir() -> PathBuf {
 
 /// `$XDG_RUNTIME_DIR/echofiles.sock` — the running app listens here.
 pub fn socket_path() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("echofiles.sock")
+    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| {
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = config_dir().join("runtime");
+        let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
+        dir
+    }).join("echofiles.sock")
 }
 
 /// The index file for one indexed folder: a stable name derived from its path.
@@ -282,9 +368,7 @@ impl Settings {
             std::fs::create_dir_all(dir)?;
         }
         let text = toml::to_string_pretty(self).map_err(io::Error::other)?;
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(tmp, path)
+        atomic_write(path, text.as_bytes())
     }
 
     pub fn save(&self) -> io::Result<()> {
@@ -354,5 +438,41 @@ mod tests {
         assert_eq!(a, index_file_for(Path::new("/home/me")));
         assert_ne!(a, index_file_for(Path::new("/home/you")));
         assert!(a.file_name().unwrap().to_string_lossy().starts_with("me-"));
+    }
+}
+
+/// Publish a private, complete snapshot; concurrent writers never share a staging inode.
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().ok_or_else(|| io::Error::other("missing parent"))?;
+    std::fs::create_dir_all(dir)?;
+    let mut file = tempfile::NamedTempFile::new_in(dir)?;
+    file.write_all(bytes)?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|e| e.error)?;
+    std::fs::File::open(dir)?.sync_all()
+}
+
+/// FIFO snapshots, enqueued before spawning work so older state cannot land last.
+pub fn queue_state(path: PathBuf, bytes: Vec<u8>) {
+    static WRITER: std::sync::OnceLock<std::sync::mpsc::Sender<(PathBuf, Vec<u8>)>> = std::sync::OnceLock::new();
+    let tx = WRITER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<(PathBuf, Vec<u8>)>();
+        std::thread::spawn(move || for (path, bytes) in rx { if let Err(e) = atomic_write(&path, &bytes) { eprintln!("Couldn't save {}: {e}", path.display()); } });
+        tx
+    });
+    let _ = tx.send((path, bytes));
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+    #[test]
+    fn competing_settings_writers_publish_valid_complete_snapshots() {
+        let root = tempfile::tempdir().unwrap(); let file = root.path().join("settings.toml");
+        std::thread::scope(|scope| for n in 0..8 { let file = &file; scope.spawn(move || {
+            let mut s = Settings::default(); s.sidebar.width = 200 + n;
+            for _ in 0..20 { s.save_to(file).unwrap(); let loaded = Settings::load_from(file).unwrap(); assert!((200..208).contains(&loaded.sidebar.width)); }
+        }); });
     }
 }

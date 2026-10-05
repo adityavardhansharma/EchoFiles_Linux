@@ -33,7 +33,7 @@ pub struct DriveState {
 
 #[derive(Debug, Clone)]
 pub enum DriveMsg {
-    Volumes(Result<Vec<Volume>, String>),
+    Volumes(Result<(Vec<Volume>, Vec<Option<ef_core::volume::FsInfo>>, Option<ef_core::volume::FsInfo>), String>),
     Animations(bool),
     Click(usize),
     Mounted { device: String, result: Result<Mounted, MountError>, open: bool },
@@ -103,7 +103,7 @@ fn ensure_agent() {
 
 impl App {
     fn volumes_task(&self) -> Task<Message> {
-        background(|| ef_disks::windows_volumes().map_err(|e| e.to_string()), |r| Message::Drive(DriveMsg::Volumes(r)))
+        background(read_volumes, |r| Message::Drive(DriveMsg::Volumes(r)))
     }
 
     fn mount_task(&mut self, i: usize, open: bool) -> Task<Message> {
@@ -121,8 +121,9 @@ impl App {
 
     pub(crate) fn drive_update(&mut self, msg: DriveMsg) -> Task<Message> {
         match msg {
-            DriveMsg::Volumes(Ok(v)) => {
-                self.volume_fs = v.iter().map(|v| v.mount_points.first().and_then(|m| fs_of(Path::new(m)))).collect();
+            DriveMsg::Volumes(Ok((v, fs, root))) => {
+                self.volume_fs = fs;
+                self.root_fs = root;
                 for (vol, fs) in v.iter().zip(&self.volume_fs) {
                     let st = self.drive_state.entry(vol.device.clone()).or_default();
                     st.read_only = fs.as_ref().is_some_and(|f| f.read_only);
@@ -221,7 +222,7 @@ impl App {
                 self.volumes_task()
             }
             DriveMsg::AskWrite(i) => {
-                self.dialog = Some(Dialog::WriteSystem { drive: i, opened: Instant::now() });
+                self.queue_dialog(Dialog::WriteSystem { drive: i, opened: Instant::now() });
                 Task::none()
             }
             DriveMsg::AllowWrite(i) => {
@@ -244,7 +245,7 @@ impl App {
             }
             DriveMsg::Prompt(p) => {
                 self.menu = None;
-                self.dialog = Some(Dialog::Password { prompt: p, value: String::new(), opened: Instant::now() });
+                self.queue_dialog(Dialog::Password { prompt: p, value: String::new(), opened: Instant::now() });
                 iced::widget::operation::focus(crate::overlay::PASSWORD_ID)
             }
         }
@@ -392,7 +393,7 @@ impl App {
     /// Every drive as a card: Linux first, then Windows by letter (design system `DriveCard`).
     pub(crate) fn drives_view(&self) -> Element<'_, Message> {
         let p = &self.palette;
-        let root = fs_of(Path::new("/"));
+        let root = self.root_fs.clone();
         let mut cards: Vec<Element<'_, Message>> = vec![self.drive_card(
             "Linux (/)".into(),
             "drive",
@@ -441,4 +442,10 @@ impl App {
         .spacing(6);
         w::fill(scrollable(container(column![head, grid, Space::new().height(24)].spacing(style::SPACE_5)).padding([24, 28])).height(Length::Fill), p.bg).width(Length::Fill).height(Length::Fill).into()
     }
+}
+
+pub(crate) fn read_volumes() -> Result<(Vec<Volume>, Vec<Option<ef_core::volume::FsInfo>>, Option<ef_core::volume::FsInfo>), String> {
+    let volumes = ef_disks::windows_volumes().map_err(|e| e.to_string())?;
+    let fs = volumes.iter().map(|v| v.mount_points.first().and_then(|m| fs_of(Path::new(m)))).collect();
+    Ok((volumes, fs, fs_of(Path::new("/"))))
 }

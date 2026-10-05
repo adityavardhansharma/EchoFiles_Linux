@@ -1,0 +1,12 @@
+   Compiling echofiles v0.1.0 (/home/adityavardhansharma/Projects/EchoFiles_Linux/crates/ui)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.27s
+     Running tests/deep_review_probe.rs (target/debug/deps/deep_review_probe-ed2e7ca00ec55613)
+
+running 1 test
+phone page still targets: ["/tmp/ef-ui-review-38707/important.txt"]
+empty everywhere results still target: ["/tmp/ef-ui-review-38707/important.txt"]
+generation after clearing search: 42
+test audit_hidden_file_targets ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.01s
+

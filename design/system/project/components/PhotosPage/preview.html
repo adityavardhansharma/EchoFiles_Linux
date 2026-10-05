@@ -1,0 +1,17 @@
+<!-- @dsCard group="Phone" height=760 width=1100 page -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>PhotosPage</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef", style:{height:750, overflow:"auto", background:"var(--bg)"}}, h(E.PhotosPage, null));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

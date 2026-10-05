@@ -1,0 +1,18 @@
+<!-- @dsCard group="Feedback" height=230 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Banner</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.EchoConnect, h = React.createElement;
+function App(){
+return h("div", {className:"ec-pad", style:{maxWidth:380}}, h(E.Banner, {title:"On Samsung", icon:"battery"}, " Settings → Battery → Background usage limits → Never sleeping apps → add EchoConnect."),
+  h(E.Banner, {tone:"warning", title:"Automatic clipboard paused."}, " Allow log access once to switch it back on."));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

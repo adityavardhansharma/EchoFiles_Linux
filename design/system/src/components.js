@@ -429,7 +429,7 @@
 
   function StatusBar(p) {
     return h("footer", { className: "ef-status", role: "status" },
-      h("span", null, h("strong", null, p.count), " items"),
+      p.text ? h("span", null, p.text) : h("span", null, h("strong", null, p.count), " items"),
       p.selected ? h("span", { className: "ef-status-sep" }) : null,
       p.selected ? h("span", null, h("strong", null, p.selected), " selected", p.selectedSize ? " · " + p.selectedSize : "") : null,
       h("span", { className: "ef-status-grow" }),
@@ -627,6 +627,10 @@
         h(DriveItem, { name: "AVS (D:)", state: "mounted", used: 58, world: "windows", meta: "NTFS", free: "66 GB free", active: p.active === "d" }),
         h(DriveItem, { name: "AVS (E:)", state: "unmounted", meta: "295 GB · click to mount" }),
         h(SidebarItem, { icon: "sliders", label: "All drives" })),
+      h(SidebarSection, { title: "Phone", world: "phone", collapsible: true, defaultOpen: true },
+        h(PhoneItem, { state: p.phone || "connected", name: "Galaxy S24", battery: 72, charging: true, active: !!p.phone && (p.phoneView || "hub") === "hub", keep: true }),
+        p.phone === "none" || p.phone === "away" ? null : h(SidebarItem, { icon: "folder", label: "Files", indent: true }),
+        p.phone === "none" || p.phone === "away" ? null : h(SidebarItem, { icon: "image", label: "Photos", indent: true, trail: "32 new", active: p.phoneView === "photos" })),
       h(SidebarSection, { title: "Network", world: "network", count: 1, collapsible: true, action: h(IconButton, { icon: "plus", label: "Connect to server (Ctrl+Shift+S)" }) },
         h(NetworkItem, { name: "Media", protocol: "SMB", where: "nas.local", state: "connected", keep: true }),
         h(NetworkItem, { name: "build-box", protocol: "SFTP", where: "me@build-box" }),
@@ -762,13 +766,13 @@
       h(SettingBlock, null, h("div", { className: "ef-chips" },
         names.map(function (n, i) {
           return h("span", { key: n, className: "ef-namechip" }, n,
-            h("button", { type: "button", "aria-label": "Stop skipping " + n, onClick: function () { st[1](names.filter(function (_, k) { return k !== i; })); } }, h(Icon, { name: "close", size: 12 })));
+            h("button", { type: "button", "aria-label": (p.reset === false ? "Remove " : "Stop skipping ") + n, onClick: function () { st[1](names.filter(function (_, k) { return k !== i; })); } }, h(Icon, { name: "close", size: 12 })));
         }))),
       h(SettingBlock, null, h("div", { className: "ef-plist-add" },
         h("div", { className: "ef-field", style: { flex: 1 } },
-          h("input", { id: p.id, value: input[0], placeholder: "Folder name, like node_modules", "aria-label": "Folder name to skip", onChange: function (e) { input[1](e.target.value); }, onKeyDown: function (e) { if (e.key === "Enter") add(); } })),
+          h("input", { id: p.id, value: input[0], placeholder: p.placeholder || "Folder name, like node_modules", "aria-label": p.inputLabel || "Folder name to skip", onChange: function (e) { input[1](e.target.value); }, onKeyDown: function (e) { if (e.key === "Enter") add(); } })),
         h(Button, { icon: "plus", onClick: add }, "Add"),
-        h(Button, { variant: "ghost", icon: "undo" }, "Reset to recommended"))));
+        p.reset === false ? null : h(Button, { variant: "ghost", icon: "undo" }, "Reset to recommended"))));
   }
 
   var INDEX = {
@@ -800,6 +804,7 @@
     { id: "general", icon: "sliders", label: "General" },
     { id: "search", icon: "search", label: "Search & index" },
     { id: "agents", icon: "terminal", label: "AI agents" },
+    { id: "phone", icon: "phone", label: "Phone" },
     { id: "appearance", icon: "image", label: "Appearance" },
     { id: "about", icon: "info", label: "About" }];
 
@@ -831,6 +836,7 @@
   }
 
   function settingsPage(page) {
+    if (page === "phone") return phoneSettings({});
     if (page === "general") return [
       h(PageHead, { key: "h", title: "General" }, "How EchoFiles starts, runs and opens."),
       h(SettingsGroup, { key: "a", title: "Running" },
@@ -859,7 +865,8 @@
         h(SettingRow, { label: "Folders open as", description: "Automatic uses a grid in Pictures, Videos and camera folders and a list everywhere else. Changing this resets views you switched by hand (Ctrl+1 / Ctrl+2)." }, h(SegmentedControl, { label: "Folders open as", value: "auto", options: [{ value: "auto", text: "Automatic" }, { value: "list", text: "List" }, { value: "grid", text: "Grid" }] }))),
       h(SettingsGroup, { key: "c", title: "Sidebar" },
         h(SettingRow, { label: "Windows drives", description: "The Windows section with your NTFS and BitLocker drives. Click its heading to open or close it." }, h(Switch, { label: "Windows drives", defaultChecked: true })),
-        h(SettingRow, { label: "Network places", description: "The Network section with Windows shares, SSH and FTP servers. Ctrl+Shift+S connects to a server either way." }, h(Switch, { label: "Network places", defaultChecked: true })))];
+        h(SettingRow, { label: "Network places", description: "The Network section with Windows shares, SSH and FTP servers. Ctrl+Shift+S connects to a server either way." }, h(Switch, { label: "Network places", defaultChecked: true })),
+        h(SettingRow, { label: "Phone", description: "The Phone section with your paired phone, its files and photos. Pairing stays when it's hidden." }, h(Switch, { label: "Phone", defaultChecked: true })))];
     if (page === "about") return [
       h(PageHead, { key: "h", title: "About" }, "Where EchoFiles keeps things, and how to drive it from the keyboard."),
       h(SettingsGroup, { key: "a", title: "EchoFiles" },
@@ -891,6 +898,449 @@
   function SettingsPage(p) {
     var st = useState(p.page || "search");
     return h(SettingsShell, { height: p.height, saved: p.saved, page: st[0], onPage: st[1] }, settingsPage(st[0]));
+  }
+
+  // ------------------------------------------------------------ phone
+  var phoneUid = 0;
+  var PHONE_SANS = "Inter, 'SF Pro Display', Roboto, 'Segoe UI', system-ui, sans-serif";
+
+  /** A small battery that fills to `level`, green when charging, warning at 20% and below. */
+  function BatteryMeter(p) {
+    var lv = Math.max(0, Math.min(100, p.level || 0));
+    var tone = p.charging ? "var(--success)" : lv <= 10 ? "var(--danger)" : lv <= 20 ? "var(--warning)" : "currentColor";
+    return h("span", { className: "ef-batt", role: "meter", "aria-label": "Battery " + lv + "%" + (p.charging ? ", charging" : ""), "aria-valuenow": lv },
+      h("span", { className: "ef-batt-body" }, h("i", { style: { width: lv + "%", background: tone } })),
+      p.charging ? h(Icon, { name: "bolt", size: 11, className: "ef-batt-bolt" }) : null,
+      p.label === false ? null : h("span", { className: "ef-batt-num" }, lv + "%"));
+  }
+
+  /** Stand-in photos: small painted scenes, seeded so every render shows the same picture. */
+  var SCENES = [
+    ["#ff9a5a", "#c2477d", "#2b1846", "#ffd27a"], ["#7cc6ff", "#3b6fd8", "#13285c", "#fff6c9"], ["#ffcf8a", "#ff7b54", "#3a1f3d", "#fff1c1"],
+    ["#a7e3c4", "#3d9a7a", "#0f3b36", "#f4ffd8"], ["#c9b6ff", "#6a4cd6", "#1d1647", "#ffe0f2"], ["#ffd6e0", "#e0637f", "#41203a", "#fff5e0"],
+    ["#9fd8ff", "#2d8bc9", "#0b2f4f", "#ffffff"], ["#ffe08a", "#f0883e", "#4a2512", "#fff8d6"]];
+  function photoSrc(i, kind) {
+    var s = SCENES[i % SCENES.length], svg;
+    if (kind === "screenshot") {
+      svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 90 160"><rect width="90" height="160" fill="#101320"/><rect x="6" y="10" width="40" height="5" rx="2" fill="#e8ecff"/><rect x="6" y="22" width="78" height="34" rx="5" fill="' + s[1] + '"/>' +
+        '<rect x="6" y="62" width="78" height="10" rx="3" fill="#232842"/><rect x="6" y="76" width="60" height="10" rx="3" fill="#232842"/><rect x="6" y="90" width="70" height="10" rx="3" fill="#232842"/><rect x="6" y="140" width="78" height="12" rx="6" fill="' + s[0] + '"/></svg>';
+    } else if (kind === "portrait") {
+      svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><linearGradient id="g" x2="0" y2="1"><stop offset="0" stop-color="' + s[0] + '"/><stop offset="1" stop-color="' + s[1] + '"/></linearGradient></defs><rect width="100" height="100" fill="url(#g)"/>' +
+        '<circle cx="50" cy="42" r="16" fill="' + s[2] + '" opacity=".85"/><path d="M18 100c4-22 18-32 32-32s28 10 32 32z" fill="' + s[2] + '" opacity=".85"/></svg>';
+    } else {
+      svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice"><defs><linearGradient id="g" x2="0" y2="1"><stop offset="0" stop-color="' + s[0] + '"/><stop offset=".7" stop-color="' + s[1] + '"/></linearGradient></defs><rect width="100" height="100" fill="url(#g)"/>' +
+        '<circle cx="' + (30 + (i * 17) % 45) + '" cy="40" r="11" fill="' + s[3] + '" opacity=".9"/><path d="M0 70 22 50l14 12 20-22 22 24 22-14v50H0z" fill="' + s[2] + '"/><path d="M0 82 30 68l26 10 22-8 22 8v22H0z" fill="#000" opacity=".28"/></svg>';
+    }
+    return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
+  }
+
+  /** The phone, drawn flat like the colour icons: a flat-sided Android phone in theme slot colours, thin even bezels, a pin-hole camera and a One UI–style lock screen. */
+  function PhoneDevice(p) {
+    var id = useState(function () { return "ph" + (++phoneUid); })[0];
+    var w = p.width || 220, state = p.state || "connected";
+    var off = state === "away";
+    var lv = p.battery === undefined ? 72 : p.battery;
+    var u = function (n) { return "url(#" + id + n + ")"; };
+    var white = "#ffffff";
+    var time = (p.time || "10:42").split(":");
+    var X = 14, Y = 14, W = 276, H = 592, R = 30; // screen
+    var wall = p.wallpaper === "photo"
+      ? [h("image", { key: "img", href: photoSrc(p.photo || 0), x: X, y: Y, width: W, height: H, preserveAspectRatio: "xMidYMid slice" })]
+      : [h("rect", { key: "b", x: X, y: Y, width: W, height: H, fill: "#0b0d14" }),
+        h("circle", { key: "c1", cx: 300, cy: 300, r: 110, style: { fill: "var(--world-network)" }, opacity: 0.5 }),
+        h("circle", { key: "c2", cx: 10, cy: 520, r: 120, style: { fill: "var(--accent)" }, opacity: 0.35 }),
+        h("circle", { key: "c3", cx: 260, cy: 620, r: 130, style: { fill: "var(--world-linux)" }, opacity: 0.45 })];
+    var font = { fontFamily: PHONE_SANS };
+    var screen = off
+      ? [h("rect", { key: "off", x: X, y: Y, width: W, height: H, fill: "#040506" }),
+        h("text", Object.assign({ key: "t", x: 152, y: 300, textAnchor: "middle", fill: "#4d5262", fontSize: 14 }, font), "Not nearby")]
+      : wall.concat([
+        // status bar: time + notification icons left, signal / wifi / battery right
+        h("text", Object.assign({ key: "st", x: 34, y: 40, fill: white, fontSize: 12.5, fontWeight: 600 }, font), time.join(":")),
+        h("g", { key: "ni", fill: white, fillOpacity: 0.85 },
+          h("circle", { cx: 80, cy: 36, r: 3.2 }), h("rect", { x: 88, y: 32.5, width: 7, height: 7, rx: 1.5 })),
+        h("g", { key: "sb", transform: "translate(206 29)", fill: white, stroke: "none" },
+          h("path", { d: "M0 11h2v2H0zM3.5 8h2v5h-2zM7 5h2v8H7zM10.5 2h2v11h-2z" }),
+          h("path", { d: "M17 6.2a9 9 0 0 1 12 0l-6 7z", fillOpacity: 0.95 }),
+          h("text", Object.assign({ x: 33, y: 11.5, fontSize: 11, fontWeight: 600 }, font), lv + "%"),
+          h("rect", { x: 57, y: 2, width: 8, height: 12, rx: 2, fill: "none", stroke: white, strokeWidth: 1.2 }),
+          h("rect", { x: 59, y: 2 + 2 + 8 * (1 - lv / 100), width: 4, height: 8 * lv / 100, rx: 0.8 })),
+        // One UI clock: date and weather above, hours stacked over minutes, bold
+        h("text", Object.assign({ key: "dt", x: 36, y: 96, fill: white, fillOpacity: 0.9, fontSize: 14, fontWeight: 500 }, font), p.date || "Fri 2 October  ·  24°"),
+        h("text", Object.assign({ key: "hh", x: 30, y: 186, fill: white, fontSize: 96, fontWeight: 700, letterSpacing: -4 }, font), time[0]),
+        h("text", Object.assign({ key: "mm", x: 30, y: 274, fill: white, fillOpacity: 0.92, fontSize: 96, fontWeight: 700, letterSpacing: -4 }, font), time[1]),
+        state === "ringing"
+          ? h("g", { key: "ring" },
+            h("rect", { x: 26, y: 380, width: 252, height: 92, rx: 26, fill: "#0b0f24", fillOpacity: 0.62 }),
+            h("circle", { cx: 66, cy: 426, r: 22, fill: "#ff8a3d" }),
+            h("path", { d: "M56 432h20l-3-4v-6a7 7 0 0 0-14 0v6zM63 435.5a3 3 0 0 0 6 0", fill: "none", stroke: white, strokeWidth: 2.2, strokeLinejoin: "round", strokeLinecap: "round" }),
+            h("text", Object.assign({ x: 100, y: 420, fill: white, fontSize: 14, fontWeight: 600 }, font), "Ringing from EchoFiles"),
+            h("text", Object.assign({ x: 100, y: 440, fill: white, fillOpacity: 0.72, fontSize: 12 }, font), "Swipe to stop"))
+          : h("g", { key: "nt" },
+            h("rect", { x: 26, y: 392, width: 252, height: 78, rx: 26, fill: "#0b0f24", fillOpacity: 0.55 }),
+            h("rect", { x: 42, y: 408, width: 18, height: 18, rx: 9, style: { fill: "var(--accent)" } }),
+            h("path", { d: "M46.5 415l4.5-1.4 4.5 1.4v5.2l-4.5 1.4-4.5-1.4z", fill: "none", stroke: white, strokeWidth: 1.4, strokeLinejoin: "round" }),
+            h("text", Object.assign({ x: 68, y: 421, fill: white, fillOpacity: 0.75, fontSize: 11 }, font), "EchoFiles  ·  now"),
+            h("text", Object.assign({ x: 42, y: 443, fill: white, fontSize: 13, fontWeight: 600 }, font), "Connected to your laptop"),
+            h("text", Object.assign({ x: 42, y: 460, fill: white, fillOpacity: 0.72, fontSize: 11.5 }, font), p.notice || "Files, photos and clipboard ready")),
+        // in-display fingerprint, corner shortcuts, gesture handle
+        h("g", { key: "fp", fill: "none", stroke: white, strokeOpacity: 0.8, strokeWidth: 1.5, strokeLinecap: "round" },
+          h("path", { d: "M145 530a7 7 0 0 1 14 0v6M141 528a11 11 0 0 1 22 0v8M152 530v10M148 534v5M156 534v4" })),
+        h("g", { key: "sc", fill: white, fillOpacity: 0.12 }, h("circle", { cx: 52, cy: 568, r: 19 }), h("circle", { cx: 252, cy: 568, r: 19 })),
+        h("g", { key: "sci", fill: "none", stroke: white, strokeWidth: 1.6, strokeLinejoin: "round", strokeLinecap: "round" },
+          h("path", { d: "M46 561c0 7 4 12 12 13l2-3.5-3.5-2.5-2 1.6c-2-1-3.6-2.6-4.6-4.6l1.6-2-2.5-3.5z" }),
+          h("rect", { x: 243, y: 562, width: 18, height: 12, rx: 2.5 }), h("circle", { cx: 252, cy: 568, r: 3 })),
+        h("rect", { key: "gb", x: 128, y: 596, width: 48, height: 3, rx: 1.5, fill: white, fillOpacity: 0.7 })]);
+    return h("div", { className: cx("ef-phone", "ef-phone-" + state), style: { width: w }, role: "img", "aria-label": (p.name || "Phone") + (off ? ", not nearby" : ", " + lv + "% battery") },
+      state === "ringing" ? h("span", { className: "ef-phone-waves", "aria-hidden": "true" }, h("i"), h("i"), h("i")) : null,
+      h("svg", { viewBox: "0 0 304 620", width: "100%", style: { display: "block", overflow: "visible" } },
+        h("defs", null, h("clipPath", { id: id + "clip" }, h("rect", { x: X, y: Y, width: W, height: H, rx: R }))),
+        // volume rocker and side key, both on the right like Galaxy phones
+        h("rect", { x: 300, y: 128, width: 4, height: 70, rx: 1.5, style: { fill: "var(--icon-slate)" } }),
+        h("rect", { x: 300, y: 214, width: 4, height: 38, rx: 1.5, style: { fill: "var(--icon-slate)" } }),
+        // frame
+        h("rect", { x: 2, y: 2, width: 300, height: 616, rx: 40, style: { fill: "var(--icon-slate-deep)" } }),
+        // antenna bands
+        h("g", { style: { fill: "var(--icon-slate)" } },
+          h("rect", { x: 2, y: 70, width: 4, height: 3 }), h("rect", { x: 298, y: 70, width: 4, height: 3 }),
+          h("rect", { x: 2, y: 548, width: 4, height: 3 }), h("rect", { x: 298, y: 548, width: 4, height: 3 })),
+        // glass with thin, even black border
+        h("rect", { x: 8, y: 8, width: 288, height: 604, rx: 35, fill: "#020203" }),
+        h("g", { clipPath: u("clip") }, screen),
+        // pin-hole front camera
+        h("circle", { cx: 152, cy: 31, r: 6, fill: "#000" }),
+        h("circle", { cx: 152, cy: 31, r: 3, fill: "#0e1328" }),
+        h("circle", { cx: 150.8, cy: 29.8, r: 1, fill: "#7684ff", fillOpacity: 0.7 })));
+  }
+
+  /** The phone in the sidebar: Connect phone, or its name, how it's reached and its battery. */
+  function PhoneItem(p) {
+    var s = p.state || "connected";
+    if (s === "none") return h(SidebarItem, { icon: "plus", label: "Connect phone", active: p.active });
+    var on = s === "connected";
+    var meta = s === "pairing" ? h(StatePill, { tone: "info" }, "Pairing…") : s === "away" ? (p.seen ? "Not nearby · " + p.seen : "Not nearby") : "Wi-Fi · " + (p.network || "home");
+    return h("div", { className: cx("ef-net ef-phone-item", s === "away" && "ef-net-off"), "aria-current": p.active ? "true" : undefined, role: "button", tabIndex: 0, title: on ? p.name + " · " + p.battery + "% battery" : p.name },
+      h(Icon, { name: "phone", size: 16, className: "ef-phone-item-icon" }),
+      h("span", { className: "ef-net-name" }, p.name || "Galaxy S24"),
+      on ? h(BatteryMeter, { level: p.battery === undefined ? 72 : p.battery, charging: p.charging, label: false }) : h("span"),
+      h("span", { className: "ef-net-meta" }, meta, on ? h("span", { className: "ef-phone-item-pct" }, (p.battery === undefined ? 72 : p.battery) + "%") : null));
+  }
+
+  /** One fact on the hub: label, big value, a meter and a line under it. */
+  function PhoneStat(p) {
+    return h("div", { className: "ef-phstat" },
+      h("span", { className: "ef-phstat-label" }, h(Icon, { name: p.icon, size: 14 }), p.label),
+      h("span", { className: "ef-phstat-value" }, p.value, p.unit ? h("small", null, p.unit) : null),
+      p.meter !== undefined ? h("span", { className: "ef-phstat-bar" }, h("i", { style: { width: p.meter + "%", background: p.color || "var(--accent)" } })) : null,
+      h("span", { className: "ef-phstat-sub" }, p.sub));
+  }
+
+  /** A hub fact as a ring gauge: what it is, the number, one line under it. */
+  function Gauge(p) {
+    var r = 22, C = 2 * Math.PI * r, pct = Math.max(0, Math.min(100, p.pct || 0));
+    return h("div", { className: "ef-gauge" },
+      h("span", { className: "ef-gauge-ring" },
+        h("svg", { viewBox: "0 0 56 56", width: 56, height: 56, "aria-hidden": "true" },
+          h("circle", { cx: 28, cy: 28, r: r, fill: "none", stroke: "var(--line)", strokeWidth: 5 }),
+          h("circle", { className: "ef-gauge-arc", cx: 28, cy: 28, r: r, fill: "none", stroke: p.color || "var(--accent)", strokeWidth: 5, strokeLinecap: "round", strokeDasharray: C, strokeDashoffset: C * (1 - pct / 100), transform: "rotate(-90 28 28)" })),
+        h(Icon, { name: p.bolt ? "bolt" : p.icon, size: 16, className: cx("ef-gauge-glyph", p.bolt && "ef-gauge-bolt") })),
+      h("span", { className: "ef-gauge-text" },
+        h("span", { className: "ef-gauge-label" }, p.label),
+        h("span", { className: "ef-gauge-value" }, p.value, p.unit ? h("small", null, p.unit) : null),
+        h("span", { className: "ef-gauge-sub" }, p.sub)));
+  }
+
+  /** Files coming from the phone: name, progress or when it landed, and where. */
+  function ReceivedList(p) {
+    var items = p.items || [
+      { name: "IMG_20261002_1031.jpg", size: "4.1 MB", progress: 62, done: "2.5 of 4.1 MB · 18 MB/s" },
+      { name: "boarding-pass.pdf", size: "212 KB", when: "2 min ago" },
+      { name: "VID_20261001_2210.mp4", size: "84 MB", when: "Yesterday" }];
+    return h("div", { className: "ef-recv" },
+      h("div", { className: "ef-recv-head" },
+        h("span", { className: "ef-group-head", style: { height: "auto" } }, p.title || "Received from phone"),
+        h(Button, { size: "sm", variant: "ghost", icon: "folder" }, "Open folder")),
+      items.length === 0 ? h("p", { className: "ef-muted", style: { fontSize: 12, margin: "8px 0 0" } }, "Share a file to your laptop from any app on the phone. It lands in ~/Downloads/Phone.") :
+        items.map(function (f, i) {
+          var going = f.progress !== undefined && f.progress < 100;
+          return h("div", { key: i, className: "ef-recv-row" },
+            h(FileIcon, { name: iconFor(f.name), size: 28 }),
+            h("span", { className: "ef-recv-text" },
+              h("span", { className: "ef-recv-name" }, f.name),
+              going ? h("span", { className: "ef-progress", role: "progressbar", "aria-valuenow": f.progress }, h("i", { style: { width: f.progress + "%" } }))
+                : h("span", { className: "ef-recv-sub" }, f.size + " · " + f.when)),
+            going ? h("span", { className: "ef-recv-sub" }, f.done) : h(Button, { size: "sm", variant: "ghost" }, "Show"),
+            going ? h(IconButton, { icon: "close", label: "Stop receiving" }) : null);
+        }));
+  }
+
+  /** One feature on the hub: what it is, one live line, and where it goes. */
+  function FeatureTile(p) {
+    return h("button", { type: "button", className: cx("ef-feat", p.off && "ef-feat-off") },
+      h("span", { className: "ef-feat-icon" }, h(Icon, { name: p.icon, size: 18 })),
+      h("span", { className: "ef-feat-name" }, p.label),
+      h("span", { className: "ef-feat-sub" }, p.off ? "Off · turn on in settings" : p.sub),
+      p.badge && !p.off ? h("span", { className: "ef-feat-badge" }, p.badge) : null);
+  }
+
+  /** Shared clipboard on the hub: the switch and the last few things that crossed. */
+  function ClipboardCard(p) {
+    var items = p.items || [["from", "https://maps.app.goo.gl/x7Kd…", "1 min ago"], ["to", "ssh aditya@build-box", "6 min ago"], ["from", "OTP 482 913", "22 min ago"]];
+    return h("div", { className: "ef-phcard" },
+      h("div", { className: "ef-phcard-head" }, h(Icon, { name: "clipboard", size: 16 }), h("strong", null, "Shared clipboard"), h("span", { className: "ef-status-grow" }), h(Switch, { defaultChecked: p.on !== false, label: "Shared clipboard" })),
+      items.map(function (it, i) {
+        return h("div", { key: i, className: "ef-clip-row" },
+          h(Icon, { name: it[0] === "from" ? "arrow-down" : "arrow-up", size: 14, className: "ef-clip-dir" }),
+          h("span", { className: "ef-clip-text" }, it[1]),
+          h("span", { className: "ef-clip-when" }, it[2]),
+          h(IconButton, { icon: "copy", label: "Copy again" }));
+      }),
+      h("p", { className: "ef-phcard-foot" }, "Copy on one, paste on the other. Works while EchoFiles is open."));
+  }
+
+  var PHONE_DEMO = { name: "Galaxy S24", battery: 72, charging: true, network: "home", storage: [41, 128] };
+
+  /** The phone's home: the device, its facts, Ring / Send / Get, what came in, and every feature. */
+  function PhoneHub(p) {
+    var ring = useState(!!p.ringing);
+    var state = p.state || "connected";
+    var away = state === "away";
+    var d = Object.assign({}, PHONE_DEMO, p.phone || {});
+    var off = p.off || {};
+    return h("div", { className: "ef-hub" },
+      h("div", { className: cx("ef-hub-hero", away && "ef-hub-hero-away") },
+        h("div", { className: "ef-hub-stage" },
+          h(PhoneDevice, { state: away ? "away" : ring[0] ? "ringing" : "connected", wallpaper: p.wallpaper, battery: d.battery, name: d.name, width: p.deviceWidth || 188 })),
+        h("div", { className: "ef-hub-facts" },
+          h("div", { className: "ef-hub-top" },
+            away ? h(StatePill, { tone: null }, "Not nearby · last seen 2 h ago") : h(StatePill, { tone: "success" }, "Connected"),
+            h(IconButton, { icon: "settings", label: "Phone settings" })),
+          h("h1", { className: "ef-hub-name" }, d.name),
+          h("div", { className: "ef-hub-meta" },
+            h("span", null, h(Icon, { name: "wifi", size: 13 }), d.network + " Wi-Fi"),
+            h("span", null, h(Icon, { name: "link", size: 13 }), "KDE Connect"),
+            h("span", null, h(Icon, { name: "shield", size: 13 }), "Paired 2 Oct")),
+          h("div", { className: "ef-hub-gauges" },
+            h(Gauge, { icon: "battery", label: "Battery", value: d.battery, unit: "%", pct: d.battery, color: d.battery <= 20 ? "var(--warning)" : "var(--success)", sub: away ? "2 h ago" : d.charging ? "Charging" : "On battery", bolt: d.charging && !away }),
+            h(Gauge, { icon: "sd-card", label: "Storage", value: d.storage[0], unit: " GB free", pct: Math.round(100 - d.storage[0] / d.storage[1] * 100), color: "var(--accent)", sub: "of " + d.storage[1] + " GB" }),
+            h("button", { type: "button", className: "ef-gauge ef-newphotos" },
+              h("span", { className: "ef-newphotos-stack", "aria-hidden": "true" }, [2, 1, 0].map(function (k) { return h("img", { key: k, src: photoSrc(k), alt: "" }); })),
+              h("span", { className: "ef-gauge-text" },
+                h("span", { className: "ef-gauge-label" }, "New photos"),
+                h("span", { className: "ef-gauge-value" }, "32"),
+                h("span", { className: "ef-gauge-sub" }, "Import", h(Icon, { name: "arrow-right", size: 12 }))))),
+          h("div", { className: "ef-hub-dock", role: "group", "aria-label": "Phone actions" },
+            h("button", { type: "button", className: cx("ef-dock-btn", ring[0] && "ef-dock-on"), disabled: away, onClick: function () { ring[1](!ring[0]); } }, h(Icon, { name: "phone-ring", size: 14 }), ring[0] ? "Stop ringing" : "Ring phone"),
+            h("button", { type: "button", className: "ef-dock-btn", disabled: away }, h(Icon, { name: "upload", size: 14 }), "Send files"),
+            h("button", { type: "button", className: "ef-dock-btn", disabled: away }, h(Icon, { name: "download", size: 14 }), "Get files")),
+          ring[0] ? h("p", { className: "ef-hub-hint" }, "Ringing at full volume, even on silent. It stops when you tap the phone or press Stop ringing.") : null)),
+      h("div", { className: "ef-hub-grid" },
+        h("div", { className: "ef-hub-col" },
+          h("div", { className: "ef-feats" },
+            h(FeatureTile, { icon: "folder", label: "Files", sub: "Camera, Downloads, WhatsApp…" }),
+            h(FeatureTile, { icon: "image", label: "Photos", sub: "2,481 photos", badge: "32 new" }),
+            h(FeatureTile, { icon: "message", label: "Messages", sub: "Priya: See you at 7?", badge: "3", off: off.messages }),
+            h(FeatureTile, { icon: "bell", label: "Notifications", sub: "WhatsApp, Gmail, Swiggy", badge: "5", off: off.notifications })),
+          h(ReceivedList, { items: p.received })),
+        h("div", { className: "ef-hub-col" }, off.clipboard ? h("div", { className: "ef-phcard" }, h(FeatureTile, { icon: "clipboard", label: "Shared clipboard", off: true })) : h(ClipboardCard, null))));
+  }
+
+  var PHONE_STEPS = ["Get the app", "Choose your phone", "Check the code", "Allow files"];
+  /** Connect phone: four steps inside EchoFiles; the stock KDE Connect app is the only thing on the phone. */
+  function PairPhone(p) {
+    var st = useState(p.step || 0);
+    var step = st[0];
+    var next = function () { st[1](Math.min(3, step + 1)); };
+    var body, foot;
+    if (step === 0) {
+      body = [
+        h("p", { key: "a" }, "EchoFiles talks to the free KDE Connect app on your Android phone. Install it, open it, and keep the phone on the same Wi-Fi as this laptop."),
+        h("div", { key: "b", className: "ef-pair-stores" },
+          h("div", { className: "ef-pair-store" }, h(Icon, { name: "download", size: 16 }), h("span", null, h("strong", null, "Google Play"), h("small", null, "KDE Connect · KDE Community"))),
+          h("div", { className: "ef-pair-store" }, h(Icon, { name: "download", size: 16 }), h("span", null, h("strong", null, "F-Droid"), h("small", null, "org.kde.kdeconnect_tp")))),
+        h("p", { key: "c", className: "ef-muted" }, "No KDE apps are needed on this laptop — EchoFiles handles the connection itself.")];
+      foot = [h(Button, { key: "c", variant: "ghost", kbd: ["Esc"] }, "Cancel"), h(Button, { key: "n", variant: "primary", kbd: ["Enter"], onClick: next }, "It's open on my phone")];
+    } else if (step === 1) {
+      var none = p.nearby === "none";
+      body = [
+        h("p", { key: "a" }, "Phones running KDE Connect on this network:"),
+        h("div", { key: "b", className: "ef-pair-list" },
+          none ? h("div", { className: "ef-pair-wait" }, h(Spinner, null), "Looking for phones…") :
+            [["Galaxy S24", "Phone · 192.168.1.42"], ["Pixel Tablet", "Tablet · 192.168.1.57"]].map(function (r, i) {
+              return h("button", { key: i, type: "button", className: "ef-pair-dev", onClick: next },
+                h(Icon, { name: "phone", size: 18 }), h("span", { className: "ef-listrow-text" }, h("span", null, r[0]), h("span", { className: "ef-listrow-sub" }, r[1])), h("span", { className: "ef-pair-go" }, "Pair", h(Icon, { name: "chevron-right", size: 12 })));
+            })),
+        none ? h("div", { key: "c", className: "ef-pair-help" },
+          h("strong", null, "Can't see your phone after 10 seconds?"),
+          h("ol", null,
+            h("li", null, "Check both are on the same Wi-Fi, and the KDE Connect app is open."),
+            h("li", null, "Your firewall may be blocking it. ", h(Button, { size: "sm", icon: "shield" }, "Allow KDE Connect…"), h("span", { className: "ef-muted" }, " asks for your password once and opens ports 1714–1764.")),
+            h("li", null, "Or type the phone's address in KDE Connect → Add device by IP: ", h("code", null, "192.168.1.20")))) : null];
+      foot = [h(Button, { key: "c", variant: "ghost", kbd: ["Esc"] }, "Cancel"), h("span", { key: "g", className: "ef-grow" }), h(IconButton, { key: "r", icon: "refresh", label: "Look again" })];
+    } else if (step === 2) {
+      body = [
+        h("p", { key: "a" }, "Your phone is asking to pair. Make sure it shows the same code, then tap Accept on the phone."),
+        h("div", { key: "b", className: "ef-pair-code", "aria-label": "Pairing code 4F9A 2C71" }, ["4F", "9A", "2C", "71"].map(function (c, i) { return h("span", { key: i }, c); })),
+        h("div", { key: "c", className: "ef-pair-wait" }, h(Spinner, null), "Waiting for Galaxy S24…")];
+      foot = [h(Button, { key: "c", variant: "ghost", kbd: ["Esc"] }, "Codes don't match"), h("span", { key: "g", className: "ef-grow" }), h(Button, { key: "n", onClick: next }, "Accepted on the phone")];
+    } else {
+      body = [
+        h("p", { key: "a" }, h("strong", { style: { color: "var(--success-ink)" } }, "Paired with Galaxy S24. "), "One switch left so EchoFiles can see the phone's files:"),
+        h("ol", { key: "b", className: "ef-pair-steps" },
+          h("li", null, "In KDE Connect, open ", h("strong", null, "Galaxy S24 → Plugin settings"), "."),
+          h("li", null, "Turn on ", h("strong", null, "Filesystem expose"), ", and allow ", h("strong", null, "All files access"), " when Android asks.")),
+        h("div", { key: "c", className: "ef-pair-check" }, h(StatePill, { tone: p.filesOk ? "success" : "warning" }, p.filesOk ? "Files available" : "Files not shared yet"), h("span", { className: "ef-muted" }, p.filesOk ? "Everything's ready." : "EchoFiles checks again on its own."))];
+      foot = [h(Button, { key: "s", variant: "ghost" }, "Skip for now"), h("span", { key: "g", className: "ef-grow" }), h(Button, { key: "n", variant: "primary", icon: "phone", kbd: ["Enter"] }, "Open Galaxy S24")];
+    }
+    return h(Dialog, { title: "Connect your phone", icon: "phone", height: p.height || 520, footer: foot },
+      h("ol", { className: "ef-stepper", "aria-label": "Steps" }, PHONE_STEPS.map(function (s, i) {
+        return h("li", { key: i, className: cx(i < step && "ef-step-done", i === step && "ef-step-now"), onClick: function () { st[1](i); } },
+          h("span", { className: "ef-step-n" }, i < step ? h(Icon, { name: "check", size: 11, strokeWidth: 3 }) : i + 1), s);
+      })),
+      body);
+  }
+
+  /** A phone asking to send files while auto-accept is off. */
+  function ReceiveToast(p) {
+    return h(Toast, { title: (p.from || "Galaxy S24") + " wants to send " + (p.what || "3 files · 12 MB"), icon: "download",
+      actions: [h(Button, { key: "a", size: "sm", variant: "primary" }, "Accept"), h(Button, { key: "d", size: "sm", variant: "ghost" }, "Decline")] },
+      "IMG_2041.jpg, boarding-pass.pdf and 1 more · saves to ~/Downloads/Phone");
+  }
+
+  var PHOTO_DAYS = [
+    ["Today", [[0], [1], [2, "screenshot"], [3], [4, "portrait"], [5], [6]]],
+    ["Yesterday", [[7, "video", "0:42"], [1], [2], [5, "portrait"], [0, "screenshot"]]],
+    ["Monday, 28 September", [[3], [6], [4], [7, "video", "1:05"], [2], [1], [0], [5]]]];
+  /** Every photo on the phone in one timeline, newest first, with Import new and Save to. */
+  function PhotosPage(p) {
+    var sel = useState(p.selected || ["0-1", "0-3", "1-0"]);
+    var has = function (k) { return sel[0].indexOf(k) >= 0; };
+    var toggle = function (k) { sel[1](has(k) ? sel[0].filter(function (x) { return x !== k; }) : sel[0].concat([k])); };
+    return h("div", { className: "ef-photos" },
+      h("div", { className: "ef-photos-head" },
+        h("div", null, h("h1", { className: "ef-shares-title" }, "Photos"), h("p", { className: "ef-muted", style: { margin: 0 } }, "2,481 photos and videos from Galaxy S24")),
+        h("span", { className: "ef-status-grow" }),
+        h(SegmentedControl, { label: "Show", value: "all", options: [{ value: "all", text: "All" }, { value: "camera", text: "Camera" }, { value: "shots", text: "Screenshots" }, { value: "chat", text: "WhatsApp" }] }),
+        h(Button, { variant: "primary", icon: "download" }, "Import 32 new")),
+      sel[0].length ? h("div", { className: "ef-photos-bar" },
+        h("strong", null, sel[0].length + " selected"), h("span", { className: "ef-muted" }, "· 11.8 MB"),
+        h("span", { className: "ef-status-grow" }),
+        h(Button, { size: "sm", icon: "download" }, "Save to…"), h(Button, { size: "sm", icon: "copy" }, "Copy"), h(Button, { size: "sm", variant: "ghost", onClick: function () { sel[1]([]); } }, "Clear")) : null,
+      PHOTO_DAYS.map(function (day, di) {
+        return h("section", { key: di, className: "ef-photos-day" },
+          h("h3", { className: "ef-photos-date" }, day[0], h("span", null, day[1].length)),
+          h("div", { className: "ef-photos-grid" }, day[1].map(function (ph, pi) {
+            var k = di + "-" + pi;
+            return h("button", { key: k, type: "button", className: cx("ef-photo", has(k) && "ef-photo-sel", ph[1] === "screenshot" && "ef-photo-shot"), "aria-pressed": String(has(k)), onClick: function () { toggle(k); } },
+              h("img", { src: photoSrc(ph[0], ph[1] === "video" ? null : ph[1]), alt: "" }),
+              ph[1] === "video" ? h("span", { className: "ef-photo-dur" }, h(Icon, { name: "play", size: 10 }), ph[2]) : null,
+              h("span", { className: "ef-photo-check" }, h(Icon, { name: "check", size: 12, strokeWidth: 3 })));
+          })));
+      }));
+  }
+
+  var THREADS = [
+    ["Priya", "See you at 7? I'll bring the charger", "10:31", 2],
+    ["Mom", "Call me when you're free", "09:12", 1],
+    ["HDFC Bank", "Your OTP is 482913. Do not share it…", "08:40"],
+    ["Rahul", "Sent you the slides", "Yesterday"],
+    ["Swiggy", "Your order is on the way", "Yesterday"]];
+  /** Texts from the phone: conversations on the left, the chat on the right, a reply box that sends through the phone. */
+  function MessagesPage(p) {
+    var act = useState(0);
+    return h("div", { className: "ef-msgs" },
+      h("div", { className: "ef-msgs-list" },
+        h("div", { className: "ef-msgs-search" }, h(SearchField, { placeholder: "Search messages" })),
+        THREADS.map(function (t, i) {
+          return h("button", { key: i, type: "button", className: "ef-thread", "aria-current": i === act[0] ? "true" : undefined, onClick: function () { act[1](i); } },
+            h("span", { className: "ef-avatar", style: { background: "var(--icon-" + ["purple", "orange", "blue", "green", "red"][i] + ")" } }, t[0][0]),
+            h("span", { className: "ef-thread-text" }, h("span", { className: "ef-thread-name" }, t[0]), h("span", { className: "ef-thread-last" }, t[1])),
+            h("span", { className: "ef-thread-meta" }, h("span", null, t[2]), t[3] ? h("span", { className: "ef-thread-unread" }, t[3]) : null));
+        })),
+      h("div", { className: "ef-chat" },
+        h("div", { className: "ef-chat-head" }, h("span", { className: "ef-avatar", style: { background: "var(--icon-purple)" } }, "P"), h("strong", null, THREADS[act[0]][0]), h("span", { className: "ef-muted" }, "+91 98xxx xx210")),
+        h("div", { className: "ef-chat-body" },
+          h("div", { className: "ef-chat-day" }, "Today"),
+          h("div", { className: "ef-bubble" }, "Are we still on for dinner?", h("time", null, "10:24")),
+          h("div", { className: "ef-bubble ef-bubble-me" }, "Yes! Booked the table for 7:30", h("time", null, "10:27")),
+          h("div", { className: "ef-bubble" }, "See you at 7? I'll bring the charger", h("time", null, "10:31"))),
+        h("div", { className: "ef-chat-compose" },
+          h("div", { className: "ef-field", style: { flex: 1 } }, h("input", { placeholder: "Text message", "aria-label": "Text message" })),
+          h(Button, { variant: "primary", icon: "send", kbd: ["Enter"] }, "Send")),
+        h("p", { className: "ef-chat-foot" }, "Sends from Galaxy S24 as a normal SMS. Carrier rates apply.")));
+  }
+
+  var NOTES = [
+    ["WhatsApp", "green", [["Priya", "See you at 7? I'll bring the charger", "now", true], ["Family", "Mom: sent a photo", "12 min", true]]],
+    ["Gmail", "red", [["Your boarding pass", "IndiGo · 6E 2134 · BLR → DEL", "1 h", false]]],
+    ["Swiggy", "orange", [["Order on the way", "Arriving in 12 minutes", "8 min", false]]]];
+  /** Notifications from the phone, grouped by app: dismiss, or reply where the app allows it. */
+  function NotificationsPage(p) {
+    var mode = p.mode || "app";
+    return h("div", { className: "ef-notes" },
+      h("div", { className: "ef-photos-head" },
+        h("div", null, h("h1", { className: "ef-shares-title" }, "Notifications"),
+          h("p", { className: "ef-muted", style: { margin: 0 } }, mode === "desktop" ? "Shown here and as desktop pop-ups." : "Shown here only — no desktop pop-ups. Change it in phone settings.")),
+        h("span", { className: "ef-status-grow" }),
+        h(Button, { variant: "ghost", icon: "close" }, "Dismiss all")),
+      NOTES.map(function (g, gi) {
+        return h("section", { key: gi, className: "ef-note-group" },
+          h("div", { className: "ef-note-app" }, h("span", { className: "ef-app-dot", style: { background: "var(--icon-" + g[1] + ")" } }, g[0][0]), g[0], h("span", { className: "ef-muted" }, "· " + g[2].length)),
+          g[2].map(function (n, ni) {
+            return h("div", { key: ni, className: "ef-note" },
+              h("div", { className: "ef-note-text" }, h("strong", null, n[0]), h("span", null, n[1])),
+              h("span", { className: "ef-note-when" }, n[2]),
+              h(IconButton, { icon: "close", label: "Dismiss on the phone too" }),
+              n[3] && gi === 0 && ni === 0 ? h("div", { className: "ef-note-reply" },
+                h("div", { className: "ef-field", style: { flex: 1 } }, h("input", { placeholder: "Reply to Priya", "aria-label": "Reply" })),
+                h(Button, { size: "sm", icon: "send" }, "Reply")) : null);
+          }));
+      }));
+  }
+
+  /** Settings → Phone: what this phone may do, receiving, and notifications. */
+  function phoneSettings(p) {
+    var bg = p && p.background;
+    return [
+      h(PageHead, { key: "h", title: "Phone" }, "Your Android phone over Wi-Fi, through the KDE Connect app. Features you turn off stop on both devices."),
+      h(SettingsGroup, { key: "a", title: "This phone" },
+        h("div", { className: "ef-setrow" },
+          h("div", { className: "ef-phset-who" }, h(PhoneDevice, { width: 34, battery: 72 }),
+            h("div", { className: "ef-setrow-text" }, h("span", { className: "ef-setrow-label" }, "Galaxy S24"), h("span", { className: "ef-setrow-desc" }, "Connected over Wi-Fi · paired 2 Oct 2026"))),
+          h("div", { className: "ef-setrow-control" }, h(Button, { variant: "ghost", icon: "unlink" }, "Forget phone"))),
+        h(SettingRow, { label: "Phone picture", description: "What the phone on the hub shows on its screen." }, h(SegmentedControl, { label: "Phone picture", value: "photo", options: [{ value: "photo", text: "Latest photo" }, { value: "aurora", text: "EchoFiles" }] }))),
+      h(SettingsGroup, { key: "b", title: "Features" },
+        h(SettingRow, { label: "Files and photos", description: "Browse the phone in the sidebar and copy both ways. Needs Filesystem expose on in KDE Connect." }, h(Switch, { defaultChecked: true, label: "Files and photos" })),
+        h(SettingRow, { label: "Shared clipboard", description: "Copy on one, paste on the other. Works while EchoFiles is open." }, h(Switch, { defaultChecked: true, label: "Shared clipboard" })),
+        h(SettingRow, { label: "Messages", description: "Read and send texts from the laptop. The phone asks for SMS permission the first time." }, h(Switch, { label: "Messages" })),
+        h(SettingRow, { label: "Low battery warning", description: "A notice when the phone drops to 15%." }, h(Switch, { defaultChecked: true, label: "Low battery warning" }))),
+      h(SettingsGroup, { key: "c", title: "Receiving files" },
+        h(SettingRow, { label: "Accept files automatically", description: "Files you share to this laptop save straight away. Turn off to approve each one." }, h(Switch, { defaultChecked: true, label: "Accept files automatically" })),
+        h(SettingRow, { label: "Save to", description: "~/Downloads/Phone" }, h(Button, { variant: "ghost", icon: "folder" }, "Change…"))),
+      h(SettingsGroup, { key: "d", title: "Notifications" },
+        h(SettingRow, { label: "Phone notifications", description: "Off brings nothing over. In app shows them on the phone's Notifications page only. Desktop too also pops them up like any other notification." },
+          h(SegmentedControl, { label: "Phone notifications", value: "app", options: [{ value: "off", text: "Off" }, { value: "app", text: "In app" }, { value: "desktop", text: "Desktop too" }] })),
+        bg ? null : h(SettingBlock, { muted: true }, "Desktop too needs Keep running in the background (General), so pop-ups arrive with the window closed."),
+        h(SettingBlock, { muted: true }, "Never show notifications from:"),
+        h(NameChips, { id: "napps", names: ["Instagram", "Google Photos", "Play Store"], placeholder: "App name, like Instagram", inputLabel: "App to mute", reset: false }))];
+  }
+  function PhoneSettings(p) {
+    return h(SettingsShell, { height: p.height, page: "phone" }, phoneSettings(p));
+  }
+
+  /** The whole app with the phone hub open: sidebar Phone section, hub in the pane. */
+  function PhoneWindow(p) {
+    var view = p.view || "hub";
+    var crumbs = [{ label: "Galaxy S24", icon: "phone" }];
+    if (view !== "hub") crumbs.push({ label: { photos: "Photos", messages: "Messages", notifications: "Notifications" }[view] });
+    var main = view === "photos" ? h(PhotosPage, null) : view === "messages" ? h(MessagesPage, null) : view === "notifications" ? h(NotificationsPage, null) : h(PhoneHub, { state: p.state, wallpaper: p.wallpaper });
+    return h("div", { className: "ef ef-app", style: { height: p.height || 760 } },
+      h(TabStrip, { tabs: [{ label: "Galaxy S24", icon: "phone" }, { label: "Downloads", icon: "download" }], active: 0 }),
+      h(Toolbar, { segments: crumbs }),
+      h("div", { className: "ef-app-main" },
+        h(DemoSidebar, { phone: p.state || "connected", phoneView: view }),
+        h("div", { className: "ef-app-center" }, h("div", { className: "ef-app-scroll" }, main))),
+      h(StatusBar, view === "photos" ? { count: "2,481", selected: 3, selectedSize: "11.8 MB", volume: "Phone · KDE Connect", free: "41 GB free" } : { text: "Galaxy S24 · 72% · charging", volume: "Phone · KDE Connect", free: "41 GB free" }));
   }
 
   // ------------------------------------------------------------ search results
@@ -930,6 +1380,9 @@
     TransferToast: TransferToast, Dialog: Dialog, ConflictDialog: ConflictDialog, Tooltip: Tooltip,
     ContextMenu: ContextMenu, CommandPalette: CommandPalette, PreviewPane: PreviewPane, AppWindow: AppWindow,
     DualPane: DualPane, MotionSpec: MotionSpec, SettingsGroup: SettingsGroup, PathListEditor: PathListEditor, NameChips: NameChips, SettingRow: SettingRow, SettingBlock: SettingBlock, SettingsPage: SettingsPage,
+    BatteryMeter: BatteryMeter, PhoneDevice: PhoneDevice, PhoneItem: PhoneItem, PhoneStat: PhoneStat, Gauge: Gauge, ReceivedList: ReceivedList, FeatureTile: FeatureTile,
+    ClipboardCard: ClipboardCard, PhoneHub: PhoneHub, PairPhone: PairPhone, ReceiveToast: ReceiveToast, PhotosPage: PhotosPage, MessagesPage: MessagesPage,
+    NotificationsPage: NotificationsPage, PhoneSettings: PhoneSettings, PhoneWindow: PhoneWindow, photoSrc: photoSrc,
     SettingsShell: SettingsShell, SettingsNav: SettingsNav, IndexStatus: IndexStatus, CommandList: CommandList, SearchResults: SearchResults, SearchScope: SearchScope, iconFor: iconFor, DEMO_FILES: DEMO_FILES
   };
 })();
