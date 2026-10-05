@@ -2,7 +2,8 @@ name: EchoConnect release
 
 # Manual only: Actions → EchoConnect release → Run workflow.
 # Signs the release APK and attaches EchoConnect.apk to the echoconnect-v<version>
-# GitHub release. Tests are not run here; use the "Rust regression tests" workflow.
+# GitHub release. Without the ECHOCONNECT_* signing secrets it signs with a one-off key.
+# Tests are not run here; use the "Rust regression tests" workflow.
 on:
   workflow_dispatch:
     inputs:
@@ -56,9 +57,21 @@ jobs:
           ECHOCONNECT_KEY_PASSWORD: ${{ secrets.ECHOCONNECT_KEY_PASSWORD }}
           ECHOCONNECT_KEYSTORE: ${{ runner.temp }}/echoconnect.jks
         run: |
-          test -n "$KEYSTORE_BASE64" || { echo 'Configure the EchoConnect signing secrets first.'; exit 1; }
-          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$ECHOCONNECT_KEYSTORE"
           trap 'rm -f "$ECHOCONNECT_KEYSTORE"' EXIT
+          if [[ -n "$KEYSTORE_BASE64" ]]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$ECHOCONNECT_KEYSTORE"
+          else
+            # No signing secrets yet: sign with a key made for this run only. Each release
+            # then has a different key, so installing it means uninstalling the previous one.
+            echo '::warning::No signing secrets set; signing with a one-off key. Uninstall the old EchoConnect before installing this APK.'
+            ECHOCONNECT_KEYSTORE_PASSWORD=$(openssl rand -hex 24)
+            echo "::add-mask::$ECHOCONNECT_KEYSTORE_PASSWORD"
+            export ECHOCONNECT_KEYSTORE_PASSWORD ECHOCONNECT_KEY_PASSWORD="$ECHOCONNECT_KEYSTORE_PASSWORD" ECHOCONNECT_KEY_ALIAS=echoconnect
+            keytool -genkeypair -keystore "$ECHOCONNECT_KEYSTORE" -storetype PKCS12 \
+              -alias "$ECHOCONNECT_KEY_ALIAS" -keyalg RSA -keysize 4096 -validity 10000 \
+              -dname 'CN=EchoConnect (test build)' \
+              -storepass "$ECHOCONNECT_KEYSTORE_PASSWORD" -keypass "$ECHOCONNECT_KEY_PASSWORD"
+          fi
           cd android
           ./gradlew assembleRelease
           cp app/build/outputs/apk/release/app-release.apk EchoConnect.apk
