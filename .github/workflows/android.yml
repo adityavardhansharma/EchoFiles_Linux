@@ -38,12 +38,15 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: android-actions/setup-android@v3
+        with:
+          # The default list includes the retired 'tools' package, which no longer exists.
+          packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;30.0.16248370
+          log-accepted-android-sdk-licenses: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
       - uses: Swatinem/rust-cache@v2
       - uses: gradle/actions/setup-gradle@v4
-      - run: sdkmanager 'platforms;android-37.0' 'build-tools;36.0.0' 'ndk;30.0.16248370'
       - run: cargo install cargo-ndk --locked
       - name: Signed release APK
         env:
