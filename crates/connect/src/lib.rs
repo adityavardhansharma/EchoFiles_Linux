@@ -106,6 +106,8 @@ impl Core {
         Ok(Arc::new(Core { svc, progress, sftp: Mutex::new(None), dir }))
     }
 
+    pub fn expect_qr(&self, id: String, fingerprint: String) { self.svc.expect_qr(&id, &fingerprint); }
+
     pub fn device_id(&self) -> String {
         self.svc.device_id().to_string()
     }
@@ -137,6 +139,16 @@ impl Core {
 
     pub fn accept_pair(&self, id: String) {
         self.svc.accept_pair(&id);
+    }
+
+    pub fn accept_pair_code(&self, id: String, code: String) {
+        self.svc.accept_pair_code(&id, &code);
+    }
+
+    /// Revoke active work and release network services when Android stops its owner.
+    pub fn shutdown(&self) {
+        self.svc.shutdown();
+        self.stop_sftp();
     }
 
     pub fn reject_pair(&self, id: String) {
@@ -179,6 +191,8 @@ impl Core {
         self.svc.accept_file(transfer, dir.into());
     }
 
+    pub fn cancel_transfer(&self, transfer: u64) { self.svc.cancel_transfer(transfer); }
+
     pub fn reject_file(&self, transfer: u64) {
         self.svc.reject_file(transfer);
     }
@@ -215,7 +229,7 @@ impl Core {
         };
         let port = server.port();
         let body = json!({
-            "port": port, "user": server.user(), "password": server.password(),
+            "port": port, "user": server.user(), "password": server.password(), "hostKeyFingerprint": server.fingerprint(),
             "path": roots.first().cloned().unwrap_or_default(), "multiPaths": roots, "pathNames": names,
         });
         *slot = Some(server);

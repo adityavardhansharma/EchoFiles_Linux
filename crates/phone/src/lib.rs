@@ -77,6 +77,7 @@ pub struct Notification {
     pub silent: bool,
     /// Set when the app takes quick replies.
     pub reply_id: Option<String>,
+    pub actions: Vec<String>,
 }
 
 /// One text message.
@@ -91,6 +92,7 @@ pub struct Sms {
     /// Sent from the phone (otherwise received).
     pub outgoing: bool,
     pub read: bool,
+    pub attachments: Vec<Value>,
 }
 
 /// Where the phone's SFTP server is listening (valid while the phone keeps it running).
@@ -100,6 +102,7 @@ pub struct Sftp {
     pub port: u16,
     pub user: String,
     pub password: String,
+    pub host_key_fingerprint: String,
     /// The storage root, e.g. `/storage/emulated/0`.
     pub path: String,
     /// Other storage (SD card), with the phone's names for them.

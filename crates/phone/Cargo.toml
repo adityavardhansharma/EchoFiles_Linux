@@ -8,6 +8,7 @@ license.workspace = true
 name = "ef_phone"
 
 [dependencies]
+tempfile = "3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 x509-parser = "0.16"

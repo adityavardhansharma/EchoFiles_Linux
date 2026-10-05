@@ -20,6 +20,7 @@ pub struct Server {
     port: u16,
     user: String,
     password: String,
+    fingerprint: String,
 }
 
 impl Drop for Server {
@@ -39,7 +40,7 @@ fn random_hex(n: usize) -> String {
 impl Server {
     /// Serve `roots` on a free port in 1739–1764.
     pub fn start(roots: Vec<String>) -> Result<Server, String> {
-        let roots: Vec<PathBuf> = roots.into_iter().map(PathBuf::from).filter(|p| p.is_dir()).collect();
+        let roots: Vec<PathBuf> = roots.into_iter().filter_map(|p| std::fs::canonicalize(p).ok()).filter(|p| p.is_dir()).collect();
         if roots.is_empty() {
             return Err("Nothing to share: allow All files access for EchoConnect.".into());
         }
@@ -59,6 +60,7 @@ impl Server {
         });
         let listener = listener.ok_or("No free port for file browsing (1739–1764).")?;
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        let fingerprint = key.public_key().fingerprint(russh::keys::HashAlg::Sha256).to_string();
         let config = Arc::new(russh::server::Config {
             auth_rejection_time: Duration::from_secs(2),
             auth_rejection_time_initial: Some(Duration::from_secs(0)),
@@ -70,7 +72,7 @@ impl Server {
         rt.spawn(async move {
             let _ = app.run_on_socket(config, &listener).await;
         });
-        Ok(Server { rt: Some(rt), port, user, password })
+        Ok(Server { rt: Some(rt), port, user, password, fingerprint })
     }
 
     pub fn port(&self) -> u16 {
@@ -79,6 +81,7 @@ impl Server {
     pub fn user(&self) -> String {
         self.user.clone()
     }
+    pub fn fingerprint(&self) -> String { self.fingerprint.clone() }
     pub fn password(&self) -> String {
         self.password.clone()
     }
@@ -139,7 +142,7 @@ impl russh::server::Handler for Conn {
 }
 
 enum Open {
-    Dir(Vec<File>, bool),
+    Dir(std::collections::VecDeque<File>, bool),
     File(std::fs::File),
 }
 
@@ -182,11 +185,15 @@ impl Sftp {
     /// The path, if it's inside a shared folder (the bare `/` lists them).
     fn inside(&self, path: &str) -> Result<PathBuf, StatusCode> {
         let p = normal(&self.roots[0], path);
-        if self.roots.iter().any(|r| p.starts_with(r)) {
-            Ok(p)
-        } else {
-            Err(StatusCode::PermissionDenied)
+        let mut ancestor = p.as_path();
+        while !ancestor.exists() {
+            // A dangling symlink must not become a writable escape hatch.
+            if std::fs::symlink_metadata(ancestor).is_ok() { return Err(StatusCode::PermissionDenied); }
+            ancestor = ancestor.parent().ok_or(StatusCode::PermissionDenied)?;
         }
+        let resolved = std::fs::canonicalize(ancestor).map_err(code)?;
+        let target = resolved.join(p.strip_prefix(ancestor).map_err(|_| StatusCode::PermissionDenied)?);
+        if self.roots.iter().any(|r| target.starts_with(r)) { Ok(target) } else { Err(StatusCode::PermissionDenied) }
     }
 
     fn handle(&mut self, o: Open) -> String {
@@ -244,7 +251,7 @@ impl russh_sftp::server::Handler for Sftp {
                 files.push(File::new(e.file_name().to_string_lossy(), attrs(&m)));
             }
         }
-        Ok(Handle { id, handle: self.handle(Open::Dir(files, false)) })
+        Ok(Handle { id, handle: self.handle(Open::Dir(files.into(), false)) })
     }
 
     async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, StatusCode> {
@@ -358,4 +365,18 @@ mod tests {
         assert_eq!(normal(base, "DCIM/../Download"), PathBuf::from("/storage/emulated/0/Download"));
         assert_eq!(normal(base, "/storage/emulated/0/../../../etc"), PathBuf::from("/etc"));
     }
+    #[test]
+    fn shared_roots_reject_symlink_escapes() {
+        use super::*;
+        let root = std::env::temp_dir().join(format!("echo-sftp-test-{}", std::process::id()));
+        let shared = root.join("shared"); std::fs::create_dir_all(&shared).unwrap();
+        let outside = root.join("outside"); std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, shared.join("escape")).unwrap();
+        let server = Sftp { roots: Arc::new(vec![shared.clone()]), open: HashMap::new(), next: 0 };
+        assert!(server.inside("escape/private.txt").is_err());
+        assert!(server.inside("../outside/private.txt").is_err());
+        assert_eq!(server.inside("new.txt").unwrap(), shared.join("new.txt"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
 }
