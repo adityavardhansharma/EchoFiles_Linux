@@ -24,7 +24,7 @@ The laptop already speaks the KDE Connect protocol itself (`crates/phone`, no `k
 | Clipboard phone → laptop | **Automatic** via a one-time developer-mode setup (main path). **Tap to send** for anyone who declines |
 | Clipboard laptop → phone | Always automatic; Android allows background clipboard writes |
 | Distribution | APK on GitHub Releases, installable and updatable through Obtainium; F-Droid later. Not the Play Store, which restricts the SMS, log and accessibility permissions this needs |
-| Test phone | Samsung (One UI) |
+| Test phone | Samsung Galaxy S24+, Android 15; exact One UI build to record on device |
 
 ## Clipboard, phone → laptop
 
@@ -134,5 +134,5 @@ Every UI phase updates both design systems (EchoFiles for the laptop side, EchoC
 ## Open questions
 
 1. Call routing: headset link on demand (recommended) or always while unlocked.
-2. Samsung model and One UI version, to test the setup flow and background limits.
+2. Samsung Galaxy S24+ / Android 15 confirmed by the owner; record the exact One UI build during physical-device testing.
 3. Whether one-time codes should also cross over Bluetooth (currently Wi-Fi only).

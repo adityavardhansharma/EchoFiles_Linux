@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Echo theme grounds; Compose draws everything else from the laptop's tokens. -->
+    <style name="Theme.EchoConnect" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+    <style name="Theme.EchoConnect.Sheet" parent="Theme.EchoConnect">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
+    <style name="Theme.EchoConnect.Invisible" parent="android:Theme.Translucent.NoTitleBar">
+        <item name="android:windowNoDisplay">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+    </style>
+    <color name="bg">#0B1030</color>
+</resources>
