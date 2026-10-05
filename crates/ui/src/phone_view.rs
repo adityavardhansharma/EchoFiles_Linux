@@ -561,10 +561,41 @@ impl App {
         ]
         .spacing(style::SPACE_3);
         let left = column![tiles, self.received_list()].spacing(style::SPACE_5).width(Length::FillPortion(3));
-        let right = column![self.clipboard_card()].width(Length::FillPortion(2));
+        let right = column![self.clipboard_card(), self.connect_controls()].width(Length::FillPortion(2));
         let lower: Element<'a, Message> = if narrow { column![left, right].spacing(style::SPACE_5).into() } else { row![left, right].spacing(style::SPACE_5).into() };
 
         scrollable(container(column![hero, lower, Space::new().height(24)].spacing(style::SPACE_5).max_width(1080)).padding([24, 28])).height(Length::Fill).into()
+    }
+
+    fn connect_controls(&self) -> Element<'_, Message> {
+        let p = &self.palette;
+        let action = |label: &str, name: &str| w::text_button(p, &self.icons, label, None, None, Variant::Secondary, Some(pm(PhoneMsg::Extra(name.into()))));
+        let mut c = column![self.ptb("ECHOCONNECT", style::LABEL, p.ink_muted)].spacing(style::SPACE_3);
+        if !self.phone.signal.is_empty() { c = c.push(self.pt(self.phone.signal.clone(), style::META, p.ink_muted)); }
+        c = c.push(action("Refresh media players", "media-refresh"));
+        for (player, state) in &self.phone.players {
+            c = c.push(self.pt(format!("{} · {}", state["title"].as_str().unwrap_or(player), state["artist"].as_str().unwrap_or("")), style::META, p.ink));
+            c = c.push(row![action("Previous", &format!("media:Previous:{player}")), action("Play / pause", &format!("media:PlayPause:{player}")), action("Next", &format!("media:Next:{player}"))].spacing(8));
+        }
+        if let Some(call) = &self.phone.call {
+            c = c.push(self.ptb(format!("{} · {}", call["contactName"].as_str().unwrap_or("Call"), call["event"].as_str().unwrap_or("")), style::BODY, p.ink_strong))
+                .push(row![action("Answer on laptop", "answer"), action("Hang up", "hangup"), action("Use phone", "phone")].spacing(8));
+        }
+        c = c.push(row![action("Take photo", "photo"), action("Scan document", "scan")].spacing(8));
+        for (label, key, on) in [("Sync Do Not Disturb", "dnd-sync", self.settings.phone.dnd_sync), ("Copy one-time codes", "otp", self.settings.phone.otp), ("Lock laptop when away", "autolock", self.settings.phone.autolock), ("Index phone files", "index", self.settings.phone.phone_index), ("Receive camera backup", "backup", self.settings.phone.backup)] {
+            c = c.push(action(&format!("{} · {}", label, if on { "On" } else { "Off" }), key));
+        }
+        c = c.push(row![action("Do Not Disturb on", "dnd"), action("Off", "dnd-off")].spacing(8));
+        c = c.push(self.ptb("AUTOMATIC CLIPBOARD", style::LABEL, p.ink_muted))
+            .push(self.pt("On the phone: Developer options → Wireless debugging → Pair device with pairing code. Enter its pairing address, code and connection address below.", style::META, p.ink_muted));
+        for (i, label, value) in [(0, "Pairing IP:port", &self.phone.extra_address), (1, "Six-digit pairing code", &self.phone.extra_code), (2, "Connection IP:port", &self.phone.extra_connect)] {
+            c = c.push(text_input(label, value).on_input(move |v| pm(PhoneMsg::ExtraField(i, v))).size(style::BODY).font(style::FONT).padding(8).style(w::field_style(p, false)));
+        }
+        c = c.push(action("Grant clipboard permission", "clipboard-setup"));
+        c = c.push(action("Set up with a QR code", "clipboard-qr"));
+        if let Some(qr) = &self.phone.clipboard_qr { c = c.push(svg(qr.clone()).width(240).height(240)); }
+        if !self.phone.extra_status.is_empty() { c = c.push(self.pt(self.phone.extra_status.clone(), style::META, p.ink_muted)); }
+        container(c).padding(16).width(Length::Fill).style(bordered(p, p.bg_raised, p.line)).into()
     }
 
     fn received_list(&self) -> Element<'_, Message> {
@@ -823,7 +854,7 @@ impl App {
             let r = row![
                 avatar(&m.address),
                 column![
-                    self.pt(m.address.clone(), style::BODY, if unread || active { p.ink_strong } else { p.ink }).font(if unread { style::FONT_BOLD } else { style::FONT }).wrapping(text::Wrapping::None),
+                    self.pt(self.phone.contacts.get(&m.address).cloned().unwrap_or_else(|| m.address.clone()), style::BODY, if unread || active { p.ink_strong } else { p.ink }).font(if unread { style::FONT_BOLD } else { style::FONT }).wrapping(text::Wrapping::None),
                     self.pt(format!("{}{}", if m.outgoing { "You: " } else { "" }, m.body.lines().next().unwrap_or_default()), style::META, p.ink_muted).wrapping(text::Wrapping::None),
                 ]
                 .spacing(2)
@@ -857,6 +888,7 @@ impl App {
                         .max_width(460)
                         .style(move |_| container::Style { background: Some(Background::Color(color(bg))), border: Border { color: color(edge), width: 1.0, radius: 12.0.into() }, ..Default::default() });
                     msgs = msgs.push(if m.outgoing { container(bubble).align_right(Length::Fill) } else { container(bubble).align_left(Length::Fill) });
+                    for attachment in &m.attachments { msgs = msgs.push(w::text_button(p, &self.icons, attachment["filename"].as_str().unwrap_or("Download attachment"), Some("download"), None, Variant::Secondary, Some(pm(PhoneMsg::Attachment(attachment.clone()))))); }
                 }
                 let input = text_input("Text message", &self.phone.compose).id(crate::phone::SMS_ID).on_input(|t| pm(PhoneMsg::Compose(t))).on_submit(pm(PhoneMsg::SendSms)).size(style::BODY).font(style::FONT).padding([6, 10]).style(w::field_style(p, false));
                 let can = self.phone_online(id) && !self.phone.compose.trim().is_empty();
@@ -910,6 +942,7 @@ impl App {
                     line = line.push(self.tip(w::icon_button(p, &self.icons, "close", Some(pm(PhoneMsg::Dismiss(n.key.clone()))), false), "Dismiss on the phone too", None));
                 }
                 let mut body = column![line].spacing(style::SPACE_3);
+                for action in &n.actions { body = body.push(w::text_button(p, &self.icons, action, None, None, Variant::Secondary, Some(pm(PhoneMsg::NotificationAction(n.key.clone(), action.clone()))))); }
                 if n.reply_id.is_some() {
                     let draft = self.phone.reply.get(&n.key).cloned().unwrap_or_default();
                     let key = n.key.clone();
@@ -997,11 +1030,12 @@ impl App {
                 foot.push(w::text_button(p, &self.icons, &format!("Open {name}"), Some("phone"), None, Variant::Primary, Some(pm(PhoneMsg::Select(id.clone())))));
             }
             (None, None) => {
-                body = body.push(self.pt("EchoFiles talks to the free KDE Connect app on your Android phone — nothing else to install on this laptop. Get KDE Connect from Google Play or F-Droid, open it, and keep the phone on the same Wi-Fi.", style::META, p.ink_muted));
+                body = body.push(self.pt("Open EchoConnect on your phone and scan this code. Keep both on the same Wi-Fi. KDE Connect also works with manual pairing.", style::META, p.ink_muted));
+                if let Some(qr) = &self.phone.qr { body = body.push(svg(qr.clone()).width(200).height(200)); }
                 let unpaired_none = unpaired.is_empty();
                 let mut list = column![self.ptb("PHONES ON THIS NETWORK", style::LABEL, p.ink_muted)].spacing(style::SPACE_1 + 2.0);
                 if unpaired.is_empty() {
-                    list = list.push(row![w::glyph(&self.icons, "sync", 14.0, color(p.info.ink)), self.pt("Looking for phones with KDE Connect open…", style::META, p.ink_muted)].spacing(6).align_y(Alignment::Center));
+                    list = list.push(row![w::glyph(&self.icons, "sync", 14.0, color(p.info.ink)), self.pt("Looking for EchoConnect or KDE Connect…", style::META, p.ink_muted)].spacing(6).align_y(Alignment::Center));
                 }
                 for dev in unpaired {
                     let r = row![

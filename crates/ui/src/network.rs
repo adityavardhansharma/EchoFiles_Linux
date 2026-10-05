@@ -121,6 +121,8 @@ enum Event {
 static EVENTS: OnceLock<Mutex<Option<mpsc::UnboundedReceiver<Event>>>> = OnceLock::new();
 static EVENT_TX: OnceLock<mpsc::UnboundedSender<Event>> = OnceLock::new();
 
+pub(crate) fn forward_ask(ask: Ask) { let _ = event_tx().unbounded_send(Event::Ask(ask)); }
+
 fn event_tx() -> mpsc::UnboundedSender<Event> {
     EVENT_TX
         .get_or_init(|| {
@@ -299,13 +301,7 @@ impl App {
         self.net.recent.insert(0, uri);
         self.net.recent.truncate(RECENT_MAX);
         let text = self.net.recent.join("\n");
-        std::thread::spawn(move || {
-            let f = recent_file();
-            if let Some(d) = f.parent() {
-                let _ = std::fs::create_dir_all(d);
-            }
-            let _ = std::fs::write(f, text);
-        });
+        config::queue_state(recent_file(), text.into_bytes());
     }
 
     fn save_server(&mut self, a: &Address) -> Task<Message> {
@@ -439,12 +435,12 @@ impl App {
                 };
                 let focus = if ask.need_user && user.is_empty() { LOGIN_USER_ID } else { LOGIN_PASSWORD_ID };
                 let domain = ask.default_domain.clone();
-                self.dialog = Some(Dialog::Login { ask, user, domain, password: String::new(), guest: false, remember: false, opened: Instant::now() });
+                self.queue_dialog(Dialog::Login { ask, user, domain, password: String::new(), guest: false, remember: false, opened: Instant::now() });
                 iced::widget::operation::focus(focus)
             }
             NetMsg::Ask(Ask::Question(ask)) => {
                 self.menu = None;
-                self.dialog = Some(Dialog::Question { ask, opened: Instant::now() });
+                self.queue_dialog(Dialog::Question { ask, opened: Instant::now() });
                 Task::none()
             }
             NetMsg::Ask(Ask::Withdrawn(op)) => {

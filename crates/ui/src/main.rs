@@ -20,6 +20,7 @@ mod kinds;
 mod overlay;
 mod pane;
 mod phone;
+mod connect;
 mod phone_view;
 mod preview;
 mod search;
@@ -44,9 +45,14 @@ pub fn since_start_ms() -> f64 {
 
 fn main() -> iced::Result {
     START.get_or_init(Instant::now);
+    // Integrated GPU, Vulkan, and on hybrid laptops no NVIDIA driver load (see gpu.rs).
+    // SAFETY: still single-threaded; nothing else reads the environment yet.
+    unsafe { gpu::configure() };
+
+
 
     // One EchoFiles: a second launch hands its request to the running one and exits.
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
     if args.iter().any(|a| a == "--sync-agent-skill") {
         if let Err(e) = system::sync_skill_from_settings() {
             eprintln!("{e}");
@@ -62,17 +68,18 @@ fn main() -> iced::Result {
         let request = if args.iter().any(|a| a == "--settings") {
             system::Request::Settings
         } else {
-            args.iter().find(|a| !a.starts_with("--")).map(|a| system::request_for(a)).unwrap_or(system::Request::Open(None))
+            std::env::args_os().skip(1).find(|a| !a.as_encoded_bytes().starts_with(b"--")).map(|a| system::request_for_os(&a)).unwrap_or(system::Request::Open(None))
         };
         if system::forward_to_running(&request) {
             return Ok(());
         }
         owns_socket = system::listen();
+        if !owns_socket {
+            for _ in 0..20 { if system::forward_to_running(&request) { return Ok(()); } std::thread::sleep(std::time::Duration::from_millis(50)); }
+            eprintln!("Couldn't acquire the EchoFiles instance socket");
+            return Ok(());
+        }
     }
-
-    // Integrated GPU, Vulkan, and on hybrid laptops no NVIDIA driver load (see gpu.rs).
-    // SAFETY: still single-threaded; nothing else reads the environment yet.
-    unsafe { gpu::configure() };
 
     // Iced parses every system font before it can draw text (714 files, ~450 ms here). Load
     // just the UI font now and the rest on a background thread (vendor/iced_graphics patch).
@@ -97,7 +104,7 @@ fn main() -> iced::Result {
         .antialiasing(false)
         .run();
     if owns_socket {
-        let _ = std::fs::remove_file(ef_config::socket_path());
+        system::remove_own_socket();
     }
     result
 }

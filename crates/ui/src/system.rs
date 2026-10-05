@@ -2,7 +2,9 @@
 //! skill for AI agents. Every change here is something the user switched on in Settings,
 //! and every one is undone when they switch it off.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{Read, Write};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::{OpenOptionsExt, MetadataExt, PermissionsExt, FileTypeExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -33,23 +35,29 @@ pub fn request_for(arg: &str) -> Request {
     }
     let path = match arg.strip_prefix("file://") {
         // file:///home/me or file://localhost/home/me
-        Some(rest) => PathBuf::from(ef_net::address::decode(rest.strip_prefix("localhost").unwrap_or(rest))),
+        Some(rest) => decode_path(rest.strip_prefix("localhost").unwrap_or(rest)),
         None => ef_config::expand(arg),
     };
-    Request::Open(Some(std::fs::canonicalize(&path).unwrap_or(path)))
+    Request::Open(Some(if path.is_absolute() { path } else { std::env::current_dir().unwrap_or_default().join(path) }))
 }
 
 /// If EchoFiles is already running, hand it this launch's request and return `true`.
 pub fn forward_to_running(req: &Request) -> bool {
-    let Ok(mut s) = UnixStream::connect(config::socket_path()) else { return false };
-    let line = match req {
-        Request::Open(Some(p)) => format!("open\t{}\n", p.display()),
-        Request::Open(None) => "open\n".into(),
-        Request::Connect(uri) => format!("connect\t{uri}\n"),
-        Request::Settings => "settings\n".into(),
+    let path = config::socket_path();
+    if !private_runtime(&path) || !std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_socket() && m.uid() == unsafe { libc::getuid() }) { return false; }
+    let Ok(mut s) = UnixStream::connect(path) else { return false };
+    let (tag, data) = match req {
+        Request::Open(Some(p)) => (1, p.as_os_str().as_bytes()),
+        Request::Open(None) => (0, &b""[..]),
+        Request::Connect(uri) => (2, uri.as_bytes()),
+        Request::Settings => (3, &b""[..]),
     };
-    s.write_all(line.as_bytes()).is_ok()
+    if data.len() > 1024 * 1024 { return false; }
+    let _ = s.set_write_timeout(Some(std::time::Duration::from_secs(2)));
+    s.write_all(&[tag]).and_then(|_| s.write_all(&(data.len() as u32).to_le_bytes())).and_then(|_| s.write_all(data)).is_ok()
 }
+
+static OWN_SOCKET: OnceLock<(PathBuf, u64, u64)> = OnceLock::new();
 
 static INBOX: OnceLock<Mutex<Option<mpsc::UnboundedReceiver<Request>>>> = OnceLock::new();
 
@@ -57,8 +65,17 @@ static INBOX: OnceLock<Mutex<Option<mpsc::UnboundedReceiver<Request>>>> = OnceLo
 /// this process bound the socket (and so should remove it on exit).
 pub fn listen() -> bool {
     let path = config::socket_path();
-    let _ = std::fs::remove_file(&path); // stale socket from a crash; `forward_to_running` failed
+    if !private_runtime(&path) { return false; }
+    static OWNER: OnceLock<std::fs::File> = OnceLock::new();
+    let lock_path = path.with_extension("lock");
+    let Ok(lock) = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(lock_path) else { return false };
+    if rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive).is_err() { return false; }
+    // Only the process holding the lifetime lock may unlink a stale socket.
+    let _ = std::fs::remove_file(&path);
     let Ok(listener) = UnixListener::bind(&path) else { return false };
+    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    if let Ok(m) = std::fs::symlink_metadata(&path) { let _ = OWN_SOCKET.set((path.clone(), m.dev(), m.ino())); }
+    let _ = OWNER.set(lock);
     let (tx, rx) = mpsc::unbounded();
     INBOX.get_or_init(|| Mutex::new(Some(rx)));
     std::thread::Builder::new()
@@ -67,16 +84,19 @@ pub fn listen() -> bool {
             for stream in listener.incoming().flatten() {
                 // A client that never sends a line must not block every later launch.
                 let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
-                let mut line = String::new();
-                if BufReader::new(stream).read_line(&mut line).is_err() {
-                    continue;
-                }
-                let line = line.trim_end_matches('\n');
-                let req = match line.split_once('\t') {
-                    Some(("open", p)) if !p.is_empty() => Request::Open(Some(PathBuf::from(p))),
-                    Some(("connect", u)) if !u.is_empty() => Request::Connect(u.to_string()),
-                    _ if line == "settings" => Request::Settings,
-                    _ => Request::Open(None),
+                let mut stream = stream;
+                let mut header = [0u8; 5];
+                if stream.read_exact(&mut header).is_err() { continue; }
+                let len = u32::from_le_bytes(header[1..].try_into().unwrap()) as usize;
+                if len > 1024 * 1024 { continue; }
+                let mut data = vec![0; len];
+                if stream.read_exact(&mut data).is_err() { continue; }
+                let req = match header[0] {
+                    0 if len == 0 => Request::Open(None),
+                    1 => Request::Open(Some(PathBuf::from(std::ffi::OsString::from_vec(data)))),
+                    2 => match String::from_utf8(data) { Ok(u) => Request::Connect(u), Err(_) => continue },
+                    3 if len == 0 => Request::Settings,
+                    _ => continue,
                 };
                 if tx.unbounded_send(req).is_err() {
                     return;
@@ -120,8 +140,8 @@ pub fn set_start_at_login(on: bool) -> Result<(), String> {
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let text = format!(
-        "[Desktop Entry]\nType=Application\nName=EchoFiles\nComment=Keeps EchoFiles ready and its search index fresh\nExec={} --background\nIcon=echofiles\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n",
-        exe.display()
+        "[Desktop Entry]\nType=Application\nName=EchoFiles\nComment=Keeps EchoFiles ready and its search index fresh\nExec={} --background\nIcon=echofiles\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\nX-EchoFiles-Owned=true\n",
+        desktop_arg(exe.to_str().ok_or("Executable path cannot be represented in a desktop entry")?)
     );
     std::fs::create_dir_all(file.parent().unwrap())
         .and_then(|_| std::fs::write(&file, text))
@@ -248,12 +268,61 @@ pub fn ef_on_path() -> Option<PathBuf> {
 
 /// Last folder (for "Open new windows at: Last folder").
 pub fn save_last_folder(p: &Path) {
-    let dir = config::state_dir();
-    let _ = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join("last-folder"), p.as_os_str().as_encoded_bytes()));
+    config::queue_state(config::state_dir().join("last-folder"), p.as_os_str().as_bytes().to_vec());
 }
 
 pub fn last_folder() -> Option<PathBuf> {
     let bytes = std::fs::read(config::state_dir().join("last-folder")).ok()?;
-    let p = PathBuf::from(String::from_utf8(bytes).ok()?);
+    let p = PathBuf::from(std::ffi::OsString::from_vec(bytes));
     p.is_dir().then_some(p)
+}
+
+fn decode_path(value: &str) -> PathBuf {
+    let bytes = value.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Some(n) = std::str::from_utf8(&bytes[i+1..i+3]).ok().and_then(|s| u8::from_str_radix(s, 16).ok()) { out.push(n); i += 3; continue; }
+        }
+        out.push(bytes[i]); i += 1;
+    }
+    PathBuf::from(std::ffi::OsString::from_vec(out))
+}
+
+pub fn request_for_os(arg: &std::ffi::OsStr) -> Request {
+    match arg.to_str() { Some(s) => request_for(s), None => Request::Open(Some(PathBuf::from(arg))) }
+}
+
+fn desktop_arg(value: &str) -> String {
+    let mut quoted = String::from("\"");
+    for c in value.chars() {
+        if matches!(c, '\\' | '\"' | '`' | '$') { quoted.push('\\'); }
+        if c == '%' { quoted.push('%'); }
+        quoted.push(c);
+    }
+    quoted.push('\"');
+    quoted.replace('\\', "\\\\").replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t")
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    #[test]
+    fn raw_uri_paths_and_desktop_arguments() {
+        let Request::Open(Some(p)) = request_for("file:///tmp/new%0Aline%FF") else { panic!() };
+        assert_eq!(p.as_os_str().as_bytes(), b"/tmp/new\nline\xff");
+        let arg = desktop_arg("/tmp/a b%\"$`\\/echofiles");
+        assert!(arg.starts_with('"') && arg.ends_with('"')); assert!(arg.contains("%%")); assert!(arg.contains("\\\\\""));
+    }
+}
+
+fn private_runtime(socket: &Path) -> bool {
+    socket.parent().and_then(|p| std::fs::symlink_metadata(p).ok()).is_some_and(|m| m.is_dir() && m.uid() == unsafe { libc::getuid() } && m.mode() & 0o077 == 0)
+}
+
+pub fn remove_own_socket() {
+    if let Some((path, dev, ino)) = OWN_SOCKET.get() {
+        if std::fs::symlink_metadata(path).is_ok_and(|m| m.dev() == *dev && m.ino() == *ino) { let _ = std::fs::remove_file(path); }
+    }
 }

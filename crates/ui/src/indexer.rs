@@ -6,12 +6,22 @@
 use std::mem::MaybeUninit;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime};
 
 use ef_config::{self as config, SearchConfig};
 use ef_index::{Index, MappedIndex, Options};
 use rustix::fd::OwnedFd;
 use rustix::fs::inotify;
+
+// Serialize publication and cleanup with settings changes. A completed crawl may be
+// obsolete even before its completion message reaches the UI.
+static PUBLICATION: Mutex<()> = Mutex::new(());
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+pub fn invalidate() -> u64 {
+    GENERATION.fetch_add(1, Ordering::AcqRel) + 1
+}
 
 /// Background work (crawls, live "everywhere" search) runs here: few threads, low CPU and
 /// idle I/O priority, so it never delays the folder you're opening.
@@ -69,15 +79,15 @@ pub fn open_existing(cfg: &SearchConfig) -> Vec<RootIndex> {
             let file = config::index_file_for(&root);
             let updated = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
             match MappedIndex::open(&file) {
-                Ok(m) => RootIndex { root, map: Some(Arc::new(m)), updated, error: None },
-                Err(_) => RootIndex { root, map: None, updated: None, error: None },
+                Ok(m) if m.options() == &Options::from_search(cfg, &root) => RootIndex { root, map: Some(Arc::new(m)), updated, error: None },
+                _ => RootIndex { root, map: None, updated: None, error: None },
             }
         })
         .collect()
 }
 
 /// Crawl every indexed folder, save, and map the new files. Runs on the background pool.
-pub fn build_all(cfg: &SearchConfig) -> Vec<RootIndex> {
+pub fn build_all(cfg: &SearchConfig, generation: u64) -> Vec<RootIndex> {
     let cfg = cfg.clone();
     background_pool().install(move || {
         cfg.roots()
@@ -85,8 +95,17 @@ pub fn build_all(cfg: &SearchConfig) -> Vec<RootIndex> {
             .map(|root| {
                 let file = config::index_file_for(&root);
                 let built = Index::build_with(&root, &Options::from_search(&cfg, &root))
-                    .and_then(|idx| std::fs::create_dir_all(config::index_dir()).and_then(|_| idx.save(&file)))
-                    .and_then(|_| MappedIndex::open(&file));
+                    .and_then(|idx| {
+                        let _publication = PUBLICATION.lock().unwrap();
+                        if GENERATION.load(Ordering::Acquire) != generation { return Err(std::io::Error::other("index settings changed during the crawl")); }
+                        std::fs::create_dir_all(config::index_dir())?;
+                        idx.save(&file)?;
+                        if GENERATION.load(Ordering::Acquire) != generation {
+                            let _ = std::fs::remove_file(&file);
+                            return Err(std::io::Error::other("index settings changed during publication"));
+                        }
+                        MappedIndex::open(&file)
+                    });
                 match built {
                     Ok(m) => RootIndex { root, map: Some(Arc::new(m)), updated: Some(SystemTime::now()), error: None },
                     Err(e) => RootIndex { root: root.clone(), map: None, updated: None, error: Some(format!("Couldn't index {}: {e}", config::tilde(&root))) },
@@ -97,7 +116,9 @@ pub fn build_all(cfg: &SearchConfig) -> Vec<RootIndex> {
 }
 
 /// Delete the index files (search index turned off).
-pub fn remove_files(cfg: &SearchConfig) {
+pub fn remove_files(cfg: &SearchConfig, generation: u64) {
+    let _publication = PUBLICATION.lock().unwrap();
+    if GENERATION.load(Ordering::Acquire) != generation { return; }
     for root in cfg.roots() {
         let _ = std::fs::remove_file(config::index_file_for(&root));
     }
@@ -148,6 +169,9 @@ impl Watcher {
                     loop {
                         match reader.next() {
                             Ok(ev) => {
+                                if ev.events().contains(inotify::ReadFlags::QUEUE_OVERFLOW) {
+                                    changed.push(Change { folder: PathBuf::new(), names_changed: true, visible: true });
+                                }
                                 let wd = ev.wd();
                                 let names = !ev.events().contains(inotify::ReadFlags::CLOSE_WRITE);
                                 let visible = ev.file_name().is_some_and(|n| n.to_bytes().first() != Some(&b'.'));

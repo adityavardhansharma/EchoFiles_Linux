@@ -6,6 +6,7 @@ license.workspace = true
 build = "build.rs"
 
 [dependencies]
+tempfile = "3"
 ef-core.workspace = true
 ef-disks.workspace = true
 ef-theme.workspace = true
@@ -24,3 +25,9 @@ libc = "0.2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 png = "0.17"
 md5 = "0.8.1"
+
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+sha2 = "0.10"
+getrandom = "0.3"
+
+serde_json = "1"

@@ -157,31 +157,7 @@ fn validate(cfg: &SearchConfig, field: Field, raw: &str) -> Result<String, Strin
 impl App {
     fn save_settings(&mut self) -> Task<Message> {
         self.settings_ui.save = SaveState::Saving;
-        let s = self.settings.clone();
-        // Saves run on their own threads and share one tmp file: take turns, and never let an
-        // older snapshot land after a newer one.
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        static WRITTEN: Mutex<u64> = Mutex::new(0);
-        let generation = NEXT.fetch_add(1, Ordering::Relaxed);
-        Task::perform(
-            async move {
-                let (tx, rx) = iced::futures::channel::oneshot::channel();
-                std::thread::spawn(move || {
-                    let mut written = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
-                    if *written > generation {
-                        let _ = tx.send(Ok(()));
-                        return;
-                    }
-                    let r = s.save().map_err(|e| format!("Couldn't save settings to {}: {e}", config::tilde(&config::Settings::path())));
-                    if r.is_ok() {
-                        *written = generation;
-                    }
-                    let _ = tx.send(r);
-                });
-                rx.await.unwrap_or(Ok(()))
-            },
-            |r| Message::Settings(SettingsMsg::Saved(r)),
-        )
+        self.persist_settings()
     }
 
     fn list_mut(&mut self, f: Field) -> &mut Vec<String> {
@@ -342,6 +318,7 @@ impl App {
                 self.update(Message::Navigate(target))
             }
             SettingsMsg::Saved(r) => {
+                if let Err(e) = &r { self.notice = Some(format!("Settings were not saved: {e}")); }
                 self.settings_ui.save = match r {
                     Ok(()) => SaveState::Saved,
                     Err(e) => SaveState::Failed(e),
@@ -999,4 +976,19 @@ fn fmt_count(n: usize) -> String {
     let mut s = String::new();
     ef_core::fmt::count(n, &mut s);
     s
+}
+
+/// Tickets are allocated on the UI thread before workers start. One writer serializes
+/// every settings source and discards obsolete snapshots.
+pub(crate) fn persist(s: config::Settings) -> Task<Message> {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    static WRITTEN: Mutex<u64> = Mutex::new(0);
+    let generation = NEXT.fetch_add(1, Ordering::Relaxed);
+    crate::app::background(move || {
+        let mut written = WRITTEN.lock().unwrap();
+        if *written > generation { return Ok(()); }
+        let r = s.save().map_err(|e| e.to_string());
+        if r.is_ok() { *written = generation; }
+        r
+    }, |r| Message::Settings(SettingsMsg::Saved(r)))
 }
