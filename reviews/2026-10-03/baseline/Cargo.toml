@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/disks", "crates/vfs", "crates/theme", "crates/ui", "crates/index", "crates/config", "crates/net", "crates/phone"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+rust-version = "1.90"
+
+[workspace.dependencies]
+ef-core = { path = "crates/core", package = "echofiles-core" }
+ef-disks = { path = "crates/disks", package = "echofiles-disks" }
+ef-vfs = { path = "crates/vfs", package = "echofiles-vfs" }
+ef-theme = { path = "crates/theme", package = "echofiles-theme" }
+ef-index = { path = "crates/index", package = "echofiles-index" }
+ef-config = { path = "crates/config", package = "echofiles-config" }
+ef-net = { path = "crates/net", package = "echofiles-net" }
+ef-phone = { path = "crates/phone", package = "echofiles-phone" }
+rustix = { version = "1.1", features = ["fs"] }
+rayon = "1.12"
+zbus = { version = "5.19", default-features = false, features = ["blocking-api", "async-io"] }
+mimalloc = "0.1"
+toml = "1.1"
+serde = { version = "1", features = ["derive"] }
+iced = { version = "0.14", default-features = false, features = ["wgpu", "svg", "advanced", "thread-pool"] }
+divan = "0.1"
+
+# Release profile per build plan §2.7
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = 3
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# EchoFiles patch: deferred system-font loading (see vendor/iced_graphics/ECHOFILES_PATCH.md).
+[patch.crates-io]
+iced_graphics = { path = "vendor/iced_graphics" }

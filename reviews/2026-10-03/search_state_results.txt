@@ -1,0 +1,7 @@
+Fixtures: /tmp/ef-search-review-y2rxm4ys
+Exit: 0
+multi_root_ranking: exact match shown = false; total = 301
+cache_exclusion: indexed = 0; live = 1
+excluded_root: secrets still indexed = 1
+concurrent_settings: save errors = 184; final TOML parses = true
+

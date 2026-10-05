@@ -1,0 +1,27 @@
+Starting a Gradle Daemon, 1 busy and 1 incompatible Daemons could not be reused, use --status for details
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preDebugBuild UP-TO-DATE
+> Task :app:generateDebugBuildConfig UP-TO-DATE
+> Task :app:generateDebugResources UP-TO-DATE
+> Task :app:packageDebugResources UP-TO-DATE
+> Task :app:processDebugNavigationResources UP-TO-DATE
+> Task :app:parseDebugLocalResources UP-TO-DATE
+> Task :app:generateDebugRFile UP-TO-DATE
+
+> Task :app:uniffiKotlin
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.49s
+
+> Task :app:compileDebugKotlin
+w: file:///home/adityavardhansharma/Projects/EchoFiles_Linux/android/app/src/main/java/app/echoconnect/calls/Calls.kt:14:27 'class PhoneStateListener : Any' is deprecated. Deprecated in Java.
+w: file:///home/adityavardhansharma/Projects/EchoFiles_Linux/android/app/src/main/java/app/echoconnect/capture/Capture.kt:39:27 The corresponding parameter in the supertype 'ComponentActivity' is named 'savedInstanceState'. This may cause problems when calling this function with named arguments.
+w: file:///home/adityavardhansharma/Projects/EchoFiles_Linux/android/app/src/main/java/app/echoconnect/capture/Capture.kt:49:38 The corresponding parameter in the supertype 'ComponentActivity' is named 'outState'. This may cause problems when calling this function with named arguments.
+w: file:///home/adityavardhansharma/Projects/EchoFiles_Linux/android/app/src/main/java/app/echoconnect/signal/Signal.kt:10:27 'class PhoneStateListener : Any' is deprecated. Deprecated in Java.
+w: file:///home/adityavardhansharma/Projects/EchoFiles_Linux/android/app/src/main/java/app/echoconnect/ui/MainActivity.kt:31:27 The corresponding parameter in the supertype 'ComponentActivity' is named 'savedInstanceState'. This may cause problems when calling this function with named arguments.
+w: file:///home/adityavardhansharma/Projects/EchoFiles_Linux/android/app/src/main/java/app/echoconnect/ui/MainActivity.kt:279:27 The corresponding parameter in the supertype 'ComponentActivity' is named 'savedInstanceState'. This may cause problems when calling this function with named arguments.
+w: file:///home/adityavardhansharma/Projects/EchoFiles_Linux/android/app/src/main/java/app/echoconnect/ui/MainActivity.kt:290:27 The corresponding parameter in the supertype 'ComponentActivity' is named 'savedInstanceState'. This may cause problems when calling this function with named arguments.
+w: file:///home/adityavardhansharma/Projects/EchoFiles_Linux/android/app/src/main/java/app/echoconnect/ui/ScanActivity.kt:24:27 The corresponding parameter in the supertype 'ComponentActivity' is named 'savedInstanceState'. This may cause problems when calling this function with named arguments.
+w: Detected multiple Kotlin daemon sessions at 
+
+BUILD SUCCESSFUL in 1m 19s
+8 actionable tasks: 2 executed, 6 up-to-date
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.5.0/userguide/configuration_cache_enabling.html

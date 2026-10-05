@@ -3,10 +3,11 @@
 //! partitions, USB drives) go to `$topdir/.Trash/$uid` or `$topdir/.Trash-$uid`.
 
 use std::ffi::OsString;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
+use std::os::fd::AsRawFd;
 use std::io::{self, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 /// Where one item went, enough to put it back.
@@ -58,24 +59,29 @@ pub fn topdir(p: &Path) -> PathBuf {
 }
 
 /// The trash directory for `path` and the `Path=` value its info file records.
-fn trash_for(path: &Path) -> io::Result<(PathBuf, PathBuf)> {
+fn trash_for(path: &Path) -> io::Result<(PathBuf, PathBuf, File)> {
     let dev = fs::symlink_metadata(path)?.dev();
     let home = home_trash();
     if dev_of(&home) == Some(dev) {
-        return Ok((home, path.to_path_buf()));
+        if let Some(parent) = home.parent() { fs::create_dir_all(parent)?; }
+        let fd = secure_dir(&home)?;
+        return Ok((home, path.to_path_buf(), fd));
     }
     let top = topdir(path);
     let rel = path.strip_prefix(&top).map(Path::to_path_buf).unwrap_or_else(|_| path.to_path_buf());
     // $topdir/.Trash/$uid, only when .Trash is a real sticky directory (spec).
     let shared = top.join(".Trash");
-    if let Ok(m) = fs::symlink_metadata(&shared)
-        && m.is_dir() && m.permissions().mode() & 0o1000 != 0 {
+    if let Ok(shared_fd) = OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW).open(&shared) {
+        let m = shared_fd.metadata()?;
+        if m.is_dir() && m.mode() & 0o1000 != 0 {
             let dir = shared.join(uid().to_string());
-            if fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).is_ok() {
-                return Ok((dir, rel));
-            }
+            let pinned = PathBuf::from(format!("/proc/self/fd/{}", shared_fd.as_raw_fd())).join(uid().to_string());
+            if let Ok(fd) = secure_dir(&pinned) { return Ok((dir, rel, fd)); }
         }
-    Ok((top.join(format!(".Trash-{}", uid())), rel))
+    }
+    let dir = top.join(format!(".Trash-{}", uid()));
+    let fd = secure_dir(&dir)?;
+    Ok((dir, rel, fd))
 }
 
 /// Percent-encode a path for `Path=` (RFC 2396, keeping `/`).
@@ -130,29 +136,33 @@ fn numbered(name: &[u8], n: usize) -> Vec<u8> {
 /// Move `path` to the trash.
 pub fn trash(path: &Path) -> io::Result<Trashed> {
     let path = if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir()?.join(path) };
-    let (dir, recorded) = trash_for(&path)?;
+    let (dir, recorded, root_fd) = trash_for(&path)?;
     let (files, info) = (dir.join("files"), dir.join("info"));
-    for d in [&dir, &files, &info] {
-        fs::DirBuilder::new().recursive(true).mode(0o700).create(d)?;
-    }
+    let pinned = PathBuf::from(format!("/proc/self/fd/{}", root_fd.as_raw_fd()));
+    let files_fd = secure_dir(&pinned.join("files"))?;
+    let info_fd = secure_dir(&pinned.join("info"))?;
+    let pinned_files = PathBuf::from(format!("/proc/self/fd/{}", files_fd.as_raw_fd()));
+    let pinned_info = PathBuf::from(format!("/proc/self/fd/{}", info_fd.as_raw_fd()));
     let base = path.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "can't trash a filesystem root"))?.as_bytes().to_vec();
     let body = format!("[Trash Info]\nPath={}\nDeletionDate={}\n", encode(&recorded), now_local());
     for n in 1..10_000 {
         let name = OsString::from_vec(numbered(&base, n));
-        let info_path = info.join(format!("{}.trashinfo", name.to_string_lossy()));
-        let target = files.join(&name);
+        let mut info_name = name.clone(); info_name.push(".trashinfo");
+        let info_path = pinned_info.join(&info_name);
+        let target = pinned_files.join(&name);
         if fs::symlink_metadata(&target).is_ok() {
             continue;
         }
         // The info file is created exclusively first: it reserves the name (spec).
-        match OpenOptions::new().write(true).create_new(true).open(&info_path) {
+        match OpenOptions::new().write(true).create_new(true).mode(0o600).open(&info_path) {
             Ok(mut f) => {
                 f.write_all(body.as_bytes())?;
-                if let Err(e) = fs::rename(&path, &target) {
+                f.sync_all()?;
+                if let Err(e) = crate::ops::rename_noreplace(&path, &target) {
                     let _ = fs::remove_file(&info_path);
                     return Err(e);
                 }
-                return Ok(Trashed { original: path, file: target, info: info_path });
+                return Ok(Trashed { original: path, file: files.join(name), info: info.join(info_name) });
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
@@ -186,7 +196,9 @@ pub struct Entry {
 pub fn entry_for(file: &Path) -> Option<Entry> {
     let files = file.parent()?;
     let dir = files.parent()?;
-    let info = dir.join("info").join(format!("{}.trashinfo", file.file_name()?.to_string_lossy()));
+    let mut info_name = file.file_name()?.to_os_string();
+    info_name.push(".trashinfo");
+    let info = dir.join("info").join(info_name);
     let text = fs::read_to_string(&info).ok()?;
     let mut original = None;
     let mut deleted = String::new();
@@ -203,11 +215,25 @@ pub fn entry_for(file: &Path) -> Option<Entry> {
 
 /// Is `dir` the `files` folder of a trash?
 pub fn is_trash_files(dir: &Path) -> bool {
-    dir.file_name().is_some_and(|n| n == "files")
-        && dir.parent().and_then(|t| t.file_name()).is_some_and(|n| {
-            let n = n.to_string_lossy();
-            n == "Trash" || n.starts_with(".Trash-") || n.parse::<u32>().is_ok()
-        })
+    if dir.file_name().is_none_or(|n| n != "files") { return false; }
+    let Some(root) = dir.parent() else { return false };
+    let top = topdir(root);
+    let correct = root == home_trash() || root == top.join(format!(".Trash-{}", uid())) || root == top.join(".Trash").join(uid().to_string());
+    correct && valid_dir(root) && valid_dir(dir) && valid_dir(&root.join("info"))
+}
+
+fn valid_dir(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.is_dir() && m.uid() == uid() && m.mode() & 0o077 == 0)
+}
+
+fn secure_dir(path: &Path) -> io::Result<File> {
+    match fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {}, Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}, Err(e) => return Err(e),
+    }
+    let file = OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW).open(path)?;
+    let m = file.metadata()?;
+    if !m.is_dir() || m.uid() != uid() || m.mode() & 0o077 != 0 { return Err(io::Error::new(io::ErrorKind::PermissionDenied, "unsafe Trash directory ownership or permissions")); }
+    Ok(file)
 }
 
 /// Permanently remove everything in the home trash.

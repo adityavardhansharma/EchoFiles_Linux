@@ -1,0 +1,555 @@
+    Checking echofiles-phone v0.1.0 (/home/adityavardhansharma/Projects/EchoFiles_Linux/crates/phone)
+    Checking echofiles-index v0.1.0 (/home/adityavardhansharma/Projects/EchoFiles_Linux/crates/index)
+    Checking echofiles-core v0.1.0 (/home/adityavardhansharma/Projects/EchoFiles_Linux/crates/core)
+warning: manual implementation of `.is_multiple_of()`
+  --> crates/core/src/fmt.rs:30:21
+   |
+30 |         if i > 0 && (s.len() - i) % 3 == 0 {
+   |                     ^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `(s.len() - i).is_multiple_of(3)`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_is_multiple_of
+   = note: `#[warn(clippy::manual_is_multiple_of)]` on by default
+
+warning: this function has too many arguments (9/7)
+   --> crates/core/src/ops.rs:468:1
+    |
+468 | fn transfer_entry(kind: Kind, src: &Path, dst: &Path, choice: Resolution, fixes: &HashMap<&Path, &str>, progress: &Progress, out: &mut Outcome, links: &mut HashMap<(u64, u64), PathBuf>, recovery_parent: &Path) -> io::Result<()> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+    = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: this `if` statement can be collapsed
+   --> crates/core/src/ops.rs:548:9
+    |
+548 | /         if replaced {
+549 | |             if let Err(restore) = rename_noreplace(&backup, &dst) {
+550 | |                 let recovery = stage.keep();
+551 | |                 return Err(io::Error::other(format!("{e}; original retained in {} ({restore})", recovery.display())));
+552 | |             }
+553 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+    = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+    |
+548 ~         if replaced
+549 ~             && let Err(restore) = rename_noreplace(&backup, &dst) {
+550 |                 let recovery = stage.keep();
+551 |                 return Err(io::Error::other(format!("{e}; original retained in {} ({restore})", recovery.display())));
+552 ~             }
+    |
+
+warning: using `chunks_exact` with a constant chunk size
+  --> crates/phone/src/identity.rs:42:18
+   |
+42 |     s.as_bytes().chunks_exact(2).map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()).collect()
+   |                  ^^^^^^^^^^^^^^^ help: consider using `as_chunks` instead: `as_chunks::<2>().0.iter()`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#chunks_exact_to_as_chunks
+   = note: `#[warn(clippy::chunks_exact_to_as_chunks)]` on by default
+
+warning: items after a test module
+    --> crates/phone/src/service.rs:1387:1
+     |
+1387 | mod tests {
+     | ^^^^^^^^^
+...
+1411 | struct Permit(Arc<AtomicUsize>);
+     | ^^^^^^^^^^^^^
+1412 | impl Permit {
+     | ^^^^^^^^^^^
+...
+1418 | impl Drop for Permit { fn drop(&mut self) { self.0.fetch_sub(1, Ordering::AcqRel); } }
+     | ^^^^^^^^^^^^^^^^^^^^
+1419 |
+1420 | fn connect_bounded(inner: &Arc<Inner>, to: SocketAddr) {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1432 | struct Deadline<S> { inner: S, until: Option<Instant> }
+     | ^^^^^^^^^^^^^^^^^^
+1433 | impl<S> Deadline<S> {
+     | ^^^^^^^^^^^^^^^^^^^
+...
+1438 | impl<S: Read> Read for Deadline<S> { fn read(&mut self, b: &mut [u8]) -> io::Result<usize> { self.check()?; self.inner.read(b) } }
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+1439 | impl<S: Write> Write for Deadline<S> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1443 | impl<S: Sock> Sock for Deadline<S> { fn timeout(&self, d: Option<Duration>) -> io::Result<()> { self.inner.timeout(d) } }
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+1444 |
+1445 | struct Startup { inner: Arc<Inner>, complete: bool }
+     | ^^^^^^^^^^^^^^
+1446 | impl Drop for Startup { fn drop(&mut self) { if !self.complete { self.inner.stopped.store(true, Ordering::Release); } } }
+     | ^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#items_after_test_module
+     = note: `#[warn(clippy::items_after_test_module)]` on by default
+     = help: move the items to before the test module was defined
+
+warning: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/index/tests/search.rs:498:5
+    |
+498 |     cfg.exclude_paths = vec![format!("{}/Private/", root.display()), "/elsewhere/x".into()];
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `ef_index::ef_config::SearchConfig { exclude_paths: vec![format!("{}/Private/", root.display()), "/elsewhere/x".into()], ..Default::default() }` and removing relevant reassignments
+   --> crates/index/tests/search.rs:497:5
+    |
+497 |     let mut cfg = ef_index::config::SearchConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#field_reassign_with_default
+    = note: `#[warn(clippy::field_reassign_with_default)]` on by default
+
+warning: this `if` statement can be collapsed
+   --> crates/phone/src/service.rs:611:9
+    |
+611 | ...   if let Some(pending) = pending { if complete_pair(&self.inner, id, &pending) { self.inner.send(id, "kdeconnect.pair", json!({ "pair": true })); } }
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+    = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+    |
+611 -         if let Some(pending) = pending { if complete_pair(&self.inner, id, &pending) { self.inner.send(id, "kdeconnect.pair", json!({ "pair": true })); } }
+611 +         if let Some(pending) = pending && complete_pair(&self.inner, id, &pending) { self.inner.send(id, "kdeconnect.pair", json!({ "pair": true })); }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/phone/src/service.rs:616:9
+    |
+616 | /         if let Some(pending) = pending {
+617 | |             if complete_pair(&self.inner, id, &pending) {
+618 | |                 self.inner.send(id, "kdeconnect.pair", json!({ "pair": true }));
+619 | |             }
+620 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+616 ~         if let Some(pending) = pending
+617 ~             && complete_pair(&self.inner, id, &pending) {
+618 |                 self.inner.send(id, "kdeconnect.pair", json!({ "pair": true }));
+619 ~             }
+    |
+
+warning: `echofiles-index` (test "search") generated 1 warning
+warning: `echofiles-core` (lib) generated 3 warnings (run `cargo clippy --fix --lib -p echofiles-core -- ` to apply 2 suggestions)
+warning: `echofiles-core` (lib test) generated 3 warnings (3 duplicates)
+warning: `echofiles-phone` (lib test) generated 4 warnings (run `cargo clippy --fix --lib -p echofiles-phone --tests -- ` to apply 4 suggestions)
+warning: `echofiles-phone` (lib) generated 3 warnings (3 duplicates)
+    Checking echoconnect-core v0.1.0 (/home/adityavardhansharma/Projects/EchoFiles_Linux/crates/connect)
+    Checking echofiles v0.1.0 (/home/adityavardhansharma/Projects/EchoFiles_Linux/crates/ui)
+warning: unnecessary use of `clone` to create a slice from a reference
+  --> crates/core/tests/review_regressions.rs:41:35
+   |
+41 |     assert!(ops::plan(Kind::Copy, &[src.clone()], &inner_alias, &Progress::default()).is_err());
+   |                                   ^^^^^^^^^^^^^^ help: try: `std::slice::from_ref(&src)`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#cloned_ref_to_slice_refs
+   = note: `#[warn(clippy::cloned_ref_to_slice_refs)]` on by default
+
+warning: `echofiles-core` (test "review_regressions") generated 1 warning (run `cargo clippy --fix --test "review_regressions" -p echofiles-core -- ` to apply 1 suggestion)
+warning: using `chunks_exact` with a constant chunk size
+  --> crates/phone/tests/../src/identity.rs:42:18
+   |
+42 |     s.as_bytes().chunks_exact(2).map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()).collect()
+   |                  ^^^^^^^^^^^^^^^ help: consider using `as_chunks` instead: `as_chunks::<2>().0.iter()`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#chunks_exact_to_as_chunks
+   = note: `#[warn(clippy::chunks_exact_to_as_chunks)]` on by default
+
+warning: `echofiles-phone` (test "security") generated 1 warning (run `cargo clippy --fix --test "security" -p echofiles-phone -- ` to apply 1 suggestion)
+warning: very complex type used. Consider factoring parts into `type` definitions
+  --> crates/connect/src/lib.rs:39:15
+   |
+39 |     progress: Arc<Mutex<HashMap<u64, (u64, Arc<AtomicU64>)>>>,
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+   = note: `#[warn(clippy::type_complexity)]` on by default
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+  --> crates/connect/src/lib.rs:96:23
+   |
+96 |         let progress: Arc<Mutex<HashMap<u64, (u64, Arc<AtomicU64>)>>> = Arc::new(Mutex::new(HashMap::new()));
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+
+warning: `echoconnect-core` (lib test) generated 2 warnings (2 duplicates)
+warning: `echoconnect-core` (lib) generated 2 warnings
+warning: this `if` statement can be collapsed
+    --> crates/ui/src/app.rs:1126:39
+     |
+1126 | ... { if r.map.is_none() { if let Some(old) = self.roots.iter().find(|old| old.root == r.root) { r.map = old.map.clone(); r.updated = old.updated; } } }
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+     = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+     |
+1126 -                 for r in &mut roots { if r.map.is_none() { if let Some(old) = self.roots.iter().find(|old| old.root == r.root) { r.map = old.map.clone(); r.updated = old.updated; } } }
+1126 +                 for r in &mut roots { if r.map.is_none() && let Some(old) = self.roots.iter().find(|old| old.root == r.root) { r.map = old.map.clone(); r.updated = old.updated; } }
+     |
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+  --> crates/ui/src/drives.rs:36:13
+   |
+36 |     Volumes(Result<(Vec<Volume>, Vec<Option<ef_core::volume::FsInfo>>, Option<ef_core::volume::FsInfo>), String>),
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+   = note: `#[warn(clippy::type_complexity)]` on by default
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+   --> crates/ui/src/drives.rs:447:33
+    |
+447 | pub(crate) fn read_volumes() -> Result<(Vec<Volume>, Vec<Option<ef_core::volume::FsInfo>>, Option<ef_core::volume::FsInfo>), String> {
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+
+warning: this `if` statement can be collapsed
+  --> crates/ui/src/gpu.rs:24:9
+   |
+24 | /         if unset("VK_LOADER_DRIVERS_SELECT") && !wants_high {
+25 | |             if let Some(glob) = display_gpu_driver_glob() {
+26 | |                 std::env::set_var("VK_LOADER_DRIVERS_SELECT", glob);
+27 | |             }
+28 | |         }
+   | |_________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+   |
+24 ~         if unset("VK_LOADER_DRIVERS_SELECT") && !wants_high
+25 ~             && let Some(glob) = display_gpu_driver_glob() {
+26 |                 std::env::set_var("VK_LOADER_DRIVERS_SELECT", glob);
+27 ~             }
+   |
+
+warning: large size difference between variants
+   --> crates/ui/src/network.rs:80:1
+    |
+ 80 | / pub enum NetMsg {
+ 81 | |     Mounts(Result<Vec<Mount>, String>),
+ 82 | |     Protocols(Result<Vec<Protocol>, String>),
+ 83 | |     /// Some app connected or disconnected a place.
+...   |
+ 98 | |     Connected { op: u64, address: Address, save: bool, result: Result<Mount, ef_net::Error> },
+    | |     ----------------------------------------------------------------------------------------- the largest variant contains at least 409 bytes
+ 99 | |     Shares { op: u64, address: Address, result: Result<Vec<String>, ef_net::Error> },
+    | |     -------------------------------------------------------------------------------- the second-largest variant contains at least 168 bytes
+...   |
+113 | |     Answer(usize),
+114 | | }
+    | |_^ the entire enum is at least 416 bytes
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#large_enum_variant
+    = note: `#[warn(clippy::large_enum_variant)]` on by default
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+    |
+ 98 -     Connected { op: u64, address: Address, save: bool, result: Result<Mount, ef_net::Error> },
+ 98 +     Connected { op: u64, address: Address, save: bool, result: Box<Result<Mount, ef_net::Error>> },
+    |
+
+warning: large size difference between variants
+  --> crates/ui/src/overlay.rs:50:1
+   |
+50 | / pub enum Entry {
+51 | |     Item(MenuItem),
+   | |     -------------- the largest variant contains at least 528 bytes
+52 | |     Sep,
+53 | |     Heading(String),
+   | |     --------------- the second-largest variant contains at least 24 bytes
+54 | | }
+   | |_^ the entire enum is at least 528 bytes
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#large_enum_variant
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   |
+51 -     Item(MenuItem),
+51 +     Item(Box<MenuItem>),
+   |
+
+warning: this `if` statement can be collapsed
+   --> crates/ui/src/phone.rs:318:13
+    |
+318 | ...   if let Some(state) = crate::connect::dnd_state() { if previous != Some(state) { previous = Some(state); if event_tx().unbounded_send(PhoneMsg::LocalDnd(state)).is_err() { break; } } }
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+318 -             if let Some(state) = crate::connect::dnd_state() { if previous != Some(state) { previous = Some(state); if event_tx().unbounded_send(PhoneMsg::LocalDnd(state)).is_err() { break; } } }
+318 +             if let Some(state) = crate::connect::dnd_state() && previous != Some(state) { previous = Some(state); if event_tx().unbounded_send(PhoneMsg::LocalDnd(state)).is_err() { break; } }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/ui/src/phone.rs:364:5
+    |
+364 |     if let Ok(mut child) = command.spawn() { if ...send(PhoneMsg::LocalImage(bytes)); } } } } }
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^...^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+364 -     if let Ok(mut child) = command.spawn() { if let Some(out) = child.stdout.take() { use base64::Engine; for line in std::io::BufReader::new(out).lines().map_while(Result::ok) { if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(line.trim()) { if !bytes.is_empty() && bytes.len() <= 16*1024*1024 { let _ = event_tx().unbounded_send(PhoneMsg::LocalImage(bytes)); } } } } }
+364 +     if let Ok(mut child) = command.spawn() && let Some(out) = child.stdout.take() { use base64::Engine; for line in std::io::BufReader::new(out).lines().map_while(Result::ok) { if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(line.trim()) { if !bytes.is_empty() && bytes.len() <= 16*1024*1024 { let _ = event_tx().unbounded_send(PhoneMsg::LocalImage(bytes)); } } } }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/ui/src/phone.rs:364:180
+    |
+364 | ... { if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(line.trim()) { if !bytes.is_empty() && bytes.len() <= 16*1024*1024 { let _ = event_tx().unbounded_send(PhoneMsg::LocalImage(bytes)); } } } } }
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+364 -     if let Ok(mut child) = command.spawn() { if let Some(out) = child.stdout.take() { use base64::Engine; for line in std::io::BufReader::new(out).lines().map_while(Result::ok) { if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(line.trim()) { if !bytes.is_empty() && bytes.len() <= 16*1024*1024 { let _ = event_tx().unbounded_send(PhoneMsg::LocalImage(bytes)); } } } } }
+364 +     if let Ok(mut child) = command.spawn() { if let Some(out) = child.stdout.take() { use base64::Engine; for line in std::io::BufReader::new(out).lines().map_while(Result::ok) { if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(line.trim()) && !bytes.is_empty() && bytes.len() <= 16*1024*1024 { let _ = event_tx().unbounded_send(PhoneMsg::LocalImage(bytes)); } } } }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/ui/src/phone.rs:853:9
+    |
+853 | / ...   if let (Some(s), Some(id)) = (service(), self.phone_id()) {
+854 | | ...       if self.phone.devices.get(&id).is_some_and(|d| d.echoconnect()) { self.phone.photos_loading = true; s.send_packet(&id, ...
+855 | | ...   }
+    | |_______^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+853 ~         if let (Some(s), Some(id)) = (service(), self.phone_id())
+854 ~             && self.phone.devices.get(&id).is_some_and(|d| d.echoconnect()) { self.phone.photos_loading = true; s.send_packet(&id, "echofiles.photos.request", ef_phone::json!({})); return Task::none(); }
+    |
+
+warning: this `if` statement can be collapsed
+    --> crates/ui/src/phone.rs:1079:21
+     |
+1079 | ...   if self.settings.phone.dnd_sync { if let (Some(s), Some(id)) = (service(), self.phone_id()) { s.send_packet(&id, "echofiles.dnd", ef_phone::json!({"enabled":enabled})); } }
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1079 -                     if self.settings.phone.dnd_sync { if let (Some(s), Some(id)) = (service(), self.phone_id()) { s.send_packet(&id, "echofiles.dnd", ef_phone::json!({"enabled":enabled})); } }
+1079 +                     if self.settings.phone.dnd_sync && let (Some(s), Some(id)) = (service(), self.phone_id()) { s.send_packet(&id, "echofiles.dnd", ef_phone::json!({"enabled":enabled})); }
+     |
+
+warning: this `if` statement can be collapsed
+    --> crates/ui/src/phone.rs:1381:17
+     |
+1381 | ...   if self.phone.photo_more { if let (Some(s), Some(id), Some((before, before_id))) = (service(), self.phone_id(), self.phone.photo_before) { s.send_packet(&id, "echofiles.photos.request", ef_phone::json!({"before":before,"beforeId":before_id})); } }
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1381 -                 if self.phone.photo_more { if let (Some(s), Some(id), Some((before, before_id))) = (service(), self.phone_id(), self.phone.photo_before) { s.send_packet(&id, "echofiles.photos.request", ef_phone::json!({"before":before,"beforeId":before_id})); } }
+1381 +                 if self.phone.photo_more && let (Some(s), Some(id), Some((before, before_id))) = (service(), self.phone_id(), self.phone.photo_before) { s.send_packet(&id, "echofiles.photos.request", ef_phone::json!({"before":before,"beforeId":before_id})); }
+     |
+
+warning: this `if` statement can be collapsed
+    --> crates/ui/src/phone.rs:1719:17
+     |
+1719 | ...   if let Some(state) = self.phone.states.remove(&id) { if let Some((m, _)) = state.mount { std::thread::spawn(move || { let _ = gvfs::unmount(&m, true); }); } }
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1719 -                 if let Some(state) = self.phone.states.remove(&id) { if let Some((m, _)) = state.mount { std::thread::spawn(move || { let _ = gvfs::unmount(&m, true); }); } }
+1719 +                 if let Some(state) = self.phone.states.remove(&id) && let Some((m, _)) = state.mount { std::thread::spawn(move || { let _ = gvfs::unmount(&m, true); }); }
+     |
+
+warning: this `if` statement can be collapsed
+    --> crates/ui/src/phone.rs:1771:17
+     |
+1771 | ...   if self.settings.phone.otp { if let Some(code) = crate::connect::otp(&format!("{} {}", n.title, n.text)) { std::thread::spawn(move || set_clipboard(&code)); self.push_toast(Tone::Accent, "One-time code copied".into(), None, None); } }
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1771 -                 if self.settings.phone.otp { if let Some(code) = crate::connect::otp(&format!("{} {}", n.title, n.text)) { std::thread::spawn(move || set_clipboard(&code)); self.push_toast(Tone::Accent, "One-time code copied".into(), None, None); } }
+1771 +                 if self.settings.phone.otp && let Some(code) = crate::connect::otp(&format!("{} {}", n.title, n.text)) { std::thread::spawn(move || set_clipboard(&code)); self.push_toast(Tone::Accent, "One-time code copied".into(), None, None); }
+     |
+
+warning: this `if` statement can be collapsed
+    --> crates/ui/src/phone.rs:1791:73
+     |
+1791 | ... { if !message.read && !message.outgoing && now...code copied".into(), None, None); break; } } } }
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^...^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1791 -                 if self.settings.phone.otp { for message in &messages { if !message.read && !message.outgoing && now_s()*1000 - message.date < 120000 { if let Some(code) = crate::connect::otp(&message.body) { std::thread::spawn(move || set_clipboard(&code)); self.push_toast(Tone::Accent, "One-time code copied".into(), None, None); break; } } } }
+1791 +                 if self.settings.phone.otp { for message in &messages { if !message.read && !message.outgoing && now_s()*1000 - message.date < 120000 && let Some(code) = crate::connect::otp(&message.body) { std::thread::spawn(move || set_clipboard(&code)); self.push_toast(Tone::Accent, "One-time code copied".into(), None, None); break; } } }
+     |
+
+warning: this `if` statement can be collapsed
+    --> crates/ui/src/phone.rs:1912:25
+     |
+1912 | ...   if data.len() <= 65536 { if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) { std::thread::spawn(move || { if let Some(png) = normal_image(&bytes) { let _ = event_tx().unbounded_send(PhoneMsg::RemoteImage(png)); } }); } }
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1912 -                         if data.len() <= 65536 { if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) { std::thread::spawn(move || { if let Some(png) = normal_image(&bytes) { let _ = event_tx().unbounded_send(PhoneMsg::RemoteImage(png)); } }); } }
+1912 +                         if data.len() <= 65536 && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) { std::thread::spawn(move || { if let Some(png) = normal_image(&bytes) { let _ = event_tx().unbounded_send(PhoneMsg::RemoteImage(png)); } }); }
+     |
+
+warning: this `if` statement can be collapsed
+    --> crates/ui/src/phone.rs:2010:25
+     |
+2010 | / ...   if kind == "photo-copy" {
+2011 | | ...       if let Some((remaining, paths)) = &mut self.phone.copy_photos { paths.push(path.clone()); *remaining = remaining.satur...
+2012 | | ...   }
+     | |_______^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+2010 ~                         if kind == "photo-copy"
+2011 ~                             && let Some((remaining, paths)) = &mut self.phone.copy_photos { paths.push(path.clone()); *remaining = remaining.saturating_sub(1); if *remaining == 0 { self.clip = Some(crate::actions::Clip { paths: paths.clone(), cut: false }); self.phone.copy_photos = None; } }
+     |
+
+warning: this `if` statement can be collapsed
+   --> crates/ui/src/connect.rs:222:5
+    |
+222 | /     if let Ok(name) = std::fs::read_to_string(&marker) {
+223 | |         if Path::new(&name).file_name().is_some_and(|n| n == name.as_str()) {
+224 | |             let original = dir.join(&name);
+225 | |             if original != path {
+...   |
+233 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+222 ~     if let Ok(name) = std::fs::read_to_string(&marker)
+223 ~         && Path::new(&name).file_name().is_some_and(|n| n == name.as_str()) {
+224 |             let original = dir.join(&name);
+...
+231 |             }
+232 ~         }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/ui/src/connect.rs:225:13
+    |
+225 | /             if original != path {
+226 | |                 if let Ok(mut file) = std::fs::File::open(&original) {
+227 | |                     let mut hash = Sha256::new();
+228 | |                     loop { let n = file.read(&mut buf)?; if n == 0 { break; } hash.update(&buf[..n]); }
+...   |
+231 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+225 ~             if original != path
+226 ~                 && let Ok(mut file) = std::fs::File::open(&original) {
+227 |                     let mut hash = Sha256::new();
+228 |                     loop { let n = file.read(&mut buf)?; if n == 0 { break; } hash.update(&buf[..n]); }
+229 |                     if format!("{:x}", hash.finalize()) == digest { std::fs::remove_file(path)?; return Ok(original); }
+230 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/ui/src/connect.rs:276:5
+    |
+276 |     if let Some(text) = input { if let Some(mut stdin) = child.stdin.take() { writeln!(stdin, "{text}").map_err(|e| e.to_string())?; } }
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+276 -     if let Some(text) = input { if let Some(mut stdin) = child.stdin.take() { writeln!(stdin, "{text}").map_err(|e| e.to_string())?; } }
+276 +     if let Some(text) = input && let Some(mut stdin) = child.stdin.take() { writeln!(stdin, "{text}").map_err(|e| e.to_string())?; }
+    |
+
+warning: items after a test module
+   --> crates/ui/src/connect.rs:238:14
+    |
+238 | #[cfg(test)] mod tests {
+    |              ^^^^^^^^^
+...
+264 | pub fn clipboard_qr() -> Result<(Vec<u8>, String, String), String> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+272 | fn adb(args: &[&str], input: Option<&str>) -> Result<String, String> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+288 | pub fn grant_clipboard_qr(name: &str, secret: &str, phone_ip: std::net::IpAddr) -> Result<String, String> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+317 | pub fn set_dnd(enabled: bool) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+322 | pub fn dnd_state() -> Option<bool> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#items_after_test_module
+    = note: `#[warn(clippy::items_after_test_module)]` on by default
+    = help: move the items to before the test module was defined
+
+warning: this `if` statement can be collapsed
+   --> crates/ui/src/system.rs:285:9
+    |
+285 | / ...   if bytes[i] == b'%' && i + 2 < bytes.len() {
+286 | | ...       if let Some(n) = std::str::from_utf8(&bytes[i+1..i+3]).ok().and_then(|s| u8::from_str_radix(s, 16).ok()) { out.push(n);...
+287 | | ...   }
+    | |_______^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+285 ~         if bytes[i] == b'%' && i + 2 < bytes.len()
+286 ~             && let Some(n) = std::str::from_utf8(&bytes[i+1..i+3]).ok().and_then(|s| u8::from_str_radix(s, 16).ok()) { out.push(n); i += 3; continue; }
+    |
+
+warning: this `if` statement can be collapsed
+   --> crates/ui/src/system.rs:325:5
+    |
+325 | /     if let Some((path, dev, ino)) = OWN_SOCKET.get() {
+326 | |         if std::fs::symlink_metadata(path).is_ok_and(|m| m.dev() == *dev && m.ino() == *ino) { let _ = std::fs::remove_file(path); }
+327 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+325 ~     if let Some((path, dev, ino)) = OWN_SOCKET.get()
+326 ~         && std::fs::symlink_metadata(path).is_ok_and(|m| m.dev() == *dev && m.ino() == *ino) { let _ = std::fs::remove_file(path); }
+    |
+
+warning: items after a test module
+   --> crates/ui/src/system.rs:309:1
+    |
+309 | mod review_tests {
+    | ^^^^^^^^^^^^^^^^
+...
+320 | fn private_runtime(socket: &Path) -> bool {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+324 | pub fn remove_own_socket() {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#items_after_test_module
+    = help: move the items to before the test module was defined
+
+warning: `echofiles` (bin "echofiles") generated 22 warnings (run `cargo clippy --fix --bin "echofiles" -p echofiles -- ` to apply 18 suggestions)
+warning: `echofiles` (bin "echofiles" test) generated 24 warnings (22 duplicates) (run `cargo clippy --fix --bin "echofiles" -p echofiles --tests -- ` to apply 2 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.57s

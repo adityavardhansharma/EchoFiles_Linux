@@ -1,0 +1,13 @@
+Fixtures: /tmp/ef-cli-review-38l94fp9
+['index']: exit=0
+Indexed 2 entries in /tmp/ef-cli-review-38l94fp9/data (1 folders' contents skipped) in 3 ms
+Indexed 1 entries in /tmp/ef-cli-review-38l94fp9/data/skip (0 folders' contents skipped) in 1 ms
+
+['find', '*', '--count']: exit=0
+0
+
+['find', 'report', '--in', '/tmp/ef-cli-review-38l94fp9/data/skip', '--count']: exit=0
+0
+
+['find', 'report', '--count']: exit=0
+1

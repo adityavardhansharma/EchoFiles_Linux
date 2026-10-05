@@ -11,6 +11,7 @@ name = "ef_core"
 rustix.workspace = true
 rayon.workspace = true
 libc = "0.2"
+tempfile = "3"
 
 [dev-dependencies]
 divan.workspace = true
