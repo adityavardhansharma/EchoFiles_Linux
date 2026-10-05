@@ -1,0 +1,89 @@
+name: EchoConnect release
+
+# Manual only: Actions → EchoConnect release → Run workflow.
+# Runs the shared-core tests, then signs the release APK and attaches EchoConnect.apk
+# to the echoconnect-v<version> GitHub release.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: App version (for example 0.1.0)
+        required: true
+        type: string
+      draft:
+        description: Create a draft release for review
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: echoconnect-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Shared core tests
+        run: cargo test --locked -p echofiles-phone -p echoconnect-core --lib --tests -- --test-threads=1
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION_NAME: ${{ inputs.version }}
+      VERSION_CODE: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: gradle/actions/setup-gradle@v4
+      - run: sdkmanager 'platforms;android-37.0' 'build-tools;36.0.0' 'ndk;30.0.16248370'
+      - run: cargo install cargo-ndk --locked
+      - name: Signed release APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ECHOCONNECT_KEYSTORE_BASE64 }}
+          ECHOCONNECT_KEYSTORE_PASSWORD: ${{ secrets.ECHOCONNECT_KEYSTORE_PASSWORD }}
+          ECHOCONNECT_KEY_ALIAS: ${{ secrets.ECHOCONNECT_KEY_ALIAS }}
+          ECHOCONNECT_KEY_PASSWORD: ${{ secrets.ECHOCONNECT_KEY_PASSWORD }}
+          ECHOCONNECT_KEYSTORE: ${{ runner.temp }}/echoconnect.jks
+        run: |
+          test -n "$KEYSTORE_BASE64" || { echo 'Configure the EchoConnect signing secrets first.'; exit 1; }
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$ECHOCONNECT_KEYSTORE"
+          trap 'rm -f "$ECHOCONNECT_KEYSTORE"' EXIT
+          cd android
+          ./gradlew assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk EchoConnect.apk
+          sha256sum EchoConnect.apk > SHA256SUMS
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: echoconnect-v${{ inputs.version }}
+          DRAFT: ${{ inputs.draft }}
+        working-directory: android
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" EchoConnect.apk SHA256SUMS --clobber
+          else
+            args=()
+            if [[ "$DRAFT" == true ]]; then args+=(--draft); fi
+            gh release create "$TAG" EchoConnect.apk SHA256SUMS --target "$GITHUB_SHA" \
+              --title "EchoConnect $VERSION_NAME" --generate-notes "${args[@]}"
+          fi

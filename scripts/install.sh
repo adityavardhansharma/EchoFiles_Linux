@@ -12,6 +12,7 @@ ICON="$DATA/icons/hicolor/scalable/apps"
 SKILL_SOURCE="$DATA/echofiles/agents/skills/echofiles"
 # Files this script installed, so --uninstall never removes someone else's `ef`.
 MANIFEST="$DATA/echofiles/installed-files"
+AUTOSTART="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/echofiles.desktop"
 
 # Quote a path for a desktop entry's Exec key (Desktop Entry spec: quoted argument, then
 # the general string escaping of `\`).
@@ -38,8 +39,18 @@ if [[ "${1:-}" == "--uninstall" ]]; then
       echo "Left $BIN/ef in place; remove it yourself if it's EchoFiles' ef." >&2
     fi
   fi
+  if [[ -f "$AUTOSTART" ]] && { grep -qx 'X-EchoFiles-Owned=true' "$AUTOSTART" || { grep -qx 'Name=EchoFiles' "$AUTOSTART" && grep -qx 'Icon=echofiles' "$AUTOSTART" && grep -qx 'Comment=Keeps EchoFiles ready and its search index fresh' "$AUTOSTART"; }; }; then
+    rm -f "$AUTOSTART"
+  fi
   echo "Removed EchoFiles. Settings (~/.config/echofiles) and the index (~/.cache/echofiles) were kept."
   exit 0
+fi
+
+if [[ -e "$BIN/ef" || -L "$BIN/ef" ]]; then
+  if [[ ! -f "$MANIFEST" ]] || ! grep -Fqx "$BIN/ef" "$MANIFEST"; then
+    echo "Cannot install: $BIN/ef already exists and is not recorded as EchoFiles-owned. Move it aside first." >&2
+    exit 1
+  fi
 fi
 
 cargo build --release -p echofiles -p echofiles-index --bins

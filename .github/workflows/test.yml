@@ -1,0 +1,15 @@
+name: Rust regression tests
+# Manual only: Actions → Rust regression tests → Run workflow.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - run: pacman -Syu --noconfirm git nodejs python rust pkgconf fontconfig libxkbcommon wayland libx11 libxcursor libxi libxrandr vulkan-icd-loader
+      - uses: actions/checkout@v4
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked
