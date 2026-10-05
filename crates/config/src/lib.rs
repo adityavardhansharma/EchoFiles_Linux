@@ -149,7 +149,7 @@ impl SearchConfig {
     /// Excluded paths, expanded, that lie inside `root` (and aren't `root` itself).
     pub fn exclude_paths_in(&self, root: &Path) -> Vec<PathBuf> {
         let root = expand(&root.to_string_lossy());
-        self.exclude_paths.iter().map(|p| expand(p)).filter(|p| p.starts_with(&root) && p != &root).collect()
+        self.exclude_paths.iter().map(|p| expand(p)).filter(|p| p.starts_with(&root) || root.starts_with(p)).collect()
     }
 }
 
@@ -251,6 +251,11 @@ pub enum PhonePicture {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Phone {
+    pub otp: bool,
+    pub dnd_sync: bool,
+    pub autolock: bool,
+    pub phone_index: bool,
+    pub backup: bool,
     /// Browse the phone's files and photos.
     pub files: bool,
     pub clipboard: bool,
@@ -268,6 +273,7 @@ pub struct Phone {
 impl Default for Phone {
     fn default() -> Self {
         Phone {
+            otp: false, dnd_sync: false, autolock: false, phone_index: false, backup: false,
             files: true,
             clipboard: true,
             messages: false,
@@ -318,7 +324,12 @@ pub fn state_dir() -> PathBuf {
 
 /// `$XDG_RUNTIME_DIR/echofiles.sock` — the running app listens here.
 pub fn socket_path() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("echofiles.sock")
+    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| {
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = config_dir().join("runtime");
+        let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
+        dir
+    }).join("echofiles.sock")
 }
 
 /// The index file for one indexed folder: a stable name derived from its path.
@@ -357,9 +368,7 @@ impl Settings {
             std::fs::create_dir_all(dir)?;
         }
         let text = toml::to_string_pretty(self).map_err(io::Error::other)?;
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(tmp, path)
+        atomic_write(path, text.as_bytes())
     }
 
     pub fn save(&self) -> io::Result<()> {
@@ -429,5 +438,41 @@ mod tests {
         assert_eq!(a, index_file_for(Path::new("/home/me")));
         assert_ne!(a, index_file_for(Path::new("/home/you")));
         assert!(a.file_name().unwrap().to_string_lossy().starts_with("me-"));
+    }
+}
+
+/// Publish a private, complete snapshot; concurrent writers never share a staging inode.
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().ok_or_else(|| io::Error::other("missing parent"))?;
+    std::fs::create_dir_all(dir)?;
+    let mut file = tempfile::NamedTempFile::new_in(dir)?;
+    file.write_all(bytes)?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|e| e.error)?;
+    std::fs::File::open(dir)?.sync_all()
+}
+
+/// FIFO snapshots, enqueued before spawning work so older state cannot land last.
+pub fn queue_state(path: PathBuf, bytes: Vec<u8>) {
+    static WRITER: std::sync::OnceLock<std::sync::mpsc::Sender<(PathBuf, Vec<u8>)>> = std::sync::OnceLock::new();
+    let tx = WRITER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<(PathBuf, Vec<u8>)>();
+        std::thread::spawn(move || for (path, bytes) in rx { if let Err(e) = atomic_write(&path, &bytes) { eprintln!("Couldn't save {}: {e}", path.display()); } });
+        tx
+    });
+    let _ = tx.send((path, bytes));
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+    #[test]
+    fn competing_settings_writers_publish_valid_complete_snapshots() {
+        let root = tempfile::tempdir().unwrap(); let file = root.path().join("settings.toml");
+        std::thread::scope(|scope| for n in 0..8 { let file = &file; scope.spawn(move || {
+            let mut s = Settings::default(); s.sidebar.width = 200 + n;
+            for _ in 0..20 { s.save_to(file).unwrap(); let loaded = Settings::load_from(file).unwrap(); assert!((200..208).contains(&loaded.sidebar.width)); }
+        }); });
     }
 }

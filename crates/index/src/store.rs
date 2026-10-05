@@ -55,8 +55,9 @@ impl Index {
         // Names never contain '/', paths always start with it, so one list holds both.
         let excl = self.opts.exclude_names.iter().chain(&self.opts.exclude_paths).cloned().collect::<Vec<_>>().join(&0u8);
 
-        let tmp = path.with_extension("tmp");
-        let mut f = io::BufWriter::new(std::fs::File::create(&tmp)?);
+        let parent = path.parent().ok_or_else(|| io::Error::other("missing parent"))?;
+        let tmp = tempfile::NamedTempFile::new_in(parent)?;
+        let mut f = io::BufWriter::new(tmp);
         f.write_all(MAGIC)?;
         for x in [n, self.folded.len(), orig.len(), root.len(), excl.len(), self.opts.skip_cache_tagged as usize, 0] {
             f.write_all(&(x as u64).to_le_bytes())?;
@@ -70,8 +71,10 @@ impl Index {
         f.write_all(&self.flags)?;
         f.write_all(&self.folded)?;
         f.write_all(&orig)?;
-        f.into_inner().map_err(|e| e.into_error())?;
-        std::fs::rename(&tmp, path)
+        let tmp = f.into_inner().map_err(|e| e.into_error())?;
+        tmp.as_file().sync_all()?;
+        tmp.persist(path).map_err(|e| e.error)?;
+        std::fs::File::open(parent)?.sync_all()
     }
 
     /// Read a saved index onto the heap (for an index that will be updated with
@@ -127,10 +130,10 @@ impl MappedIndex {
         }
         let rd = |at: usize| u64::from_le_bytes(map[at..at + 8].try_into().unwrap()) as usize;
         let (n, folded_len, orig_len, root_len, excl_len, skip) = (rd(8), rd(16), rd(24), rd(32), rd(40), rd(48));
-        let parent_at = HEADER + pad4(root_len.checked_add(excl_len).ok_or_else(bad)?);
+        let parent_at = root_len.checked_add(excl_len).and_then(|v| v.checked_add(3)).map(|v| v & !3).and_then(|v| v.checked_add(HEADER)).ok_or_else(bad)?;
         let need = n
             .checked_mul(17)
-            .and_then(|v| v.checked_add(4 + parent_at))
+            .and_then(|v| parent_at.checked_add(4).and_then(|p| v.checked_add(p)))
             .and_then(|v| v.checked_add(folded_len))
             .and_then(|v| v.checked_add(orig_len));
         if n == 0 || need != Some(map.len()) {

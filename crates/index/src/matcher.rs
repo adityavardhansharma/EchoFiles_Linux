@@ -37,7 +37,7 @@ fn is_word_byte(b: u8) -> bool {
 impl Matcher {
     /// `None` if the query can't match anything (no terms and no extension, or a NUL).
     pub fn new(q: &Query) -> Option<Matcher> {
-        let terms = terms(q.text);
+        let terms = if q.text.trim() == "*" { vec![Vec::new()] } else { terms(q.text) };
         let ext = q.ext.map(|e| [b".".as_slice(), &fold::fold(e.trim_start_matches('.'))].concat());
         let all: Vec<&Vec<u8>> = terms.iter().chain(ext.as_ref()).collect();
         if all.is_empty() || all.iter().any(|t| t.contains(&0)) {

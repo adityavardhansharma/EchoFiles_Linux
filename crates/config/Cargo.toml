@@ -8,8 +8,6 @@ license.workspace = true
 name = "ef_config"
 
 [dependencies]
+tempfile = "3"
 serde.workspace = true
 toml.workspace = true
-
-[dev-dependencies]
-tempfile = "3"

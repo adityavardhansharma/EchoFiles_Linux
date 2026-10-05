@@ -8,17 +8,18 @@ license.workspace = true
 name = "ef_index"
 
 [dependencies]
+tempfile = "3"
 rustix.workspace = true
 rayon.workspace = true
 memchr = "2.8"
 unicode-normalization = "0.1.25"
 memmap2 = "0.9"
 ef-config.workspace = true
+serde_json = "1"
 
 [dev-dependencies]
 divan.workspace = true
 mimalloc.workspace = true
-tempfile = "3"
 
 [[bin]]
 name = "ef"

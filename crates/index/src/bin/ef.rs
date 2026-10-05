@@ -71,87 +71,36 @@ fn main() -> ExitCode {
                 let path = config::expand(p);
                 std::fs::canonicalize(&path).unwrap_or(path)
             });
-            let mut shown = 0usize;
-            let mut total = 0usize;
             let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+            let q = Query { text, within: ef_index::ROOT,
+                kind: if flag(&args, "--dirs") { KindFilter::Dirs } else if flag(&args, "--files") { KindFilter::Files } else { KindFilter::Any },
+                ext: ext.as_deref(), hidden: flag(&args, "--hidden"), limit: None };
+            let mut hits = Vec::new();
+            let targets = within.clone().map(|p| vec![p]).unwrap_or_else(|| roots.clone());
             let mut any_index = false;
-            let mut searched_index = false;
-            let indexes: Vec<(&PathBuf, MappedIndex)> =
-                roots.iter().filter_map(|root| Some((root, MappedIndex::open(&config::index_file_for(root)).ok()?))).collect();
-            let indexed: Vec<PathBuf> = indexes.iter().map(|(root, _)| root.to_path_buf()).collect();
-            for (root, idx) in &indexes {
-                any_index = true;
-                let scope = match &within {
-                    Some(p) if p.starts_with(root) => match idx.lookup(p) {
-                        Some(id) => id,
-                        None => continue,
-                    },
-                    Some(_) => continue,
-                    None => ef_index::ROOT,
-                };
-                searched_index = true;
-                let q = Query {
-                    text: if text == "*" { "" } else { text },
-                    within: scope,
-                    kind: if flag(&args, "--dirs") { KindFilter::Dirs } else if flag(&args, "--files") { KindFilter::Files } else { KindFilter::Any },
-                    ext: ext.as_deref(),
-                    hidden: flag(&args, "--hidden"),
-                    limit: limit.map(|l| l.saturating_sub(shown)),
-                };
-                // Roots nested inside this one are searched on their own; skip them here so
-                // their files aren't listed twice. `--in` searches a single root.
-                let nested = if within.is_none() { config::nested_roots(&indexed, root) } else { Vec::new() };
-                let hits = if nested.is_empty() {
-                    idx.search(&q)
+            for root in &targets {
+                // Explicit scopes may fall inside excluded index subtrees; a live walk is
+                // complete and honours the user's requested location in that case.
+                let indexed = if within.is_none() && settings.search.index {
+                    MappedIndex::open(&config::index_file_for(root)).ok().filter(|m| m.options() == &Options::from_search(&settings.search, root))
+                } else { None };
+                let found = if let Some(idx) = indexed {
+                    any_index = true;
+                    idx.search(&q).into_iter().map(|id| idx.path(id)).collect()
                 } else {
-                    let mut hits = idx.search(&Query { limit: None, ..q.clone() });
-                    hits.retain(|&h| !nested.iter().any(|n| idx.path(h).starts_with(n)));
-                    if let Some(l) = q.limit {
-                        hits.truncate(l);
+                    let opts = if within.is_some() { Options::everything() } else { Options::from_search(&settings.search, root) };
+                    match ef_index::live::search_with(root, &q, &opts, &AtomicBool::new(false), &|_| {}) {
+                        Ok(paths) => { any_index = true; paths },
+                        Err(e) => { eprintln!("Couldn't search {}: {e}", root.display()); return ExitCode::FAILURE; },
                     }
-                    hits
                 };
-                total += hits.len();
-                if !flag(&args, "--count") {
-                    for &h in &hits {
-                        let _ = writeln!(out, "{}", idx.path(h).display());
-                    }
-                }
-                shown += hits.len();
-                if limit.is_some_and(|l| shown >= l) {
-                    break;
-                }
-                // An explicit --in path should be searched once, even if configured roots overlap.
-                if within.is_some() {
-                    break;
-                }
+                let nested = config::nested_roots(&targets, root);
+                hits.extend(found.into_iter().filter(|p| !nested.iter().any(|n| p.starts_with(n))));
             }
-            if let Some(path) = within.as_ref().filter(|_| !searched_index) {
-                // The folder may be outside every index, excluded, or newer than the index.
-                // The same matcher can search it directly without adding it to Settings.
-                let q = Query {
-                    text: if text == "*" { "" } else { text },
-                    within: ef_index::ROOT,
-                    kind: if flag(&args, "--dirs") { KindFilter::Dirs } else if flag(&args, "--files") { KindFilter::Files } else { KindFilter::Any },
-                    ext: ext.as_deref(),
-                    hidden: flag(&args, "--hidden"),
-                    limit,
-                };
-                let cancel = AtomicBool::new(false);
-                let hits = match ef_index::live::search(path, &q, &cancel, &|_| {}) {
-                    Ok(hits) => hits,
-                    Err(e) => {
-                        eprintln!("Couldn't search {}: {e}", path.display());
-                        return ExitCode::FAILURE;
-                    }
-                };
-                total = hits.len();
-                if !flag(&args, "--count") {
-                    for hit in hits {
-                        let _ = writeln!(out, "{}", hit.display());
-                    }
-                }
-            }
+            if within.is_none() && settings.phone.phone_index { hits.extend(ef_index::phone::search(&q)); }
+            ef_index::rank_paths(&mut hits, &Query { limit, ..q });
+            let total = hits.len();
+            if !flag(&args, "--count") { for path in hits { let _ = writeln!(out, "{}", path.display()); } }
             if flag(&args, "--count") {
                 let _ = writeln!(out, "{total}");
             }

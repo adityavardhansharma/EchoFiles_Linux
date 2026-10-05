@@ -25,6 +25,7 @@ use crate::{Kind, Query, fold, open_dir};
 
 struct Walk<'a> {
     m: &'a Matcher,
+    opts: &'a crate::Options,
     hidden: bool,
     cancel: &'a AtomicBool,
     on_hits: &'a (dyn Fn(&[PathBuf]) + Sync),
@@ -38,11 +39,16 @@ struct Walk<'a> {
 /// the walk runs. Setting `cancel` stops the walk; the call then returns
 /// `ErrorKind::Interrupted`.
 pub fn search(root: &Path, q: &Query, cancel: &AtomicBool, on_hits: &(dyn Fn(&[PathBuf]) + Sync)) -> io::Result<Vec<PathBuf>> {
+    search_with(root, q, &crate::Options::everything(), cancel, on_hits)
+}
+
+pub fn search_with(root: &Path, q: &Query, opts: &crate::Options, cancel: &AtomicBool, on_hits: &(dyn Fn(&[PathBuf]) + Sync)) -> io::Result<Vec<PathBuf>> {
+    if opts.excludes_path(root) { return Ok(Vec::new()); }
     drop(open_dir(root.as_os_str().as_bytes(), true)?);
     let Some(m) = Matcher::new(q) else {
         return Ok(Vec::new());
     };
-    let w = Walk { m: &m, hidden: q.hidden, cancel, on_hits, hits: Mutex::new(Vec::new()) };
+    let w = Walk { m: &m, opts, hidden: q.hidden, cancel, on_hits, hits: Mutex::new(Vec::new()) };
     let path = root.as_os_str().as_bytes().to_vec();
     rayon::scope(|s| walk(path, true, &w, s));
     if cancel.load(Ordering::Relaxed) {
@@ -58,6 +64,9 @@ fn walk<'s>(path: Vec<u8>, root: bool, w: &'s Walk<'s>, scope: &rayon::Scope<'s>
     if w.cancel.load(Ordering::Relaxed) {
         return;
     }
+    let p = Path::new(std::ffi::OsStr::from_bytes(&path));
+    if w.opts.excludes_path(p) { return; }
+    if !root && w.opts.skip_cache_tagged && std::fs::symlink_metadata(p.join("CACHEDIR.TAG")).is_ok() { return; }
     let Ok(fd) = open_dir(&path, root) else { return };
     let mut buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); 64 * 1024];
     let mut raw = RawDir::new(&fd, &mut buf);
@@ -84,13 +93,14 @@ fn walk<'s>(path: Vec<u8>, root: bool, w: &'s Walk<'s>, scope: &rayon::Scope<'s>
             p.extend_from_slice(name);
             p
         };
+        if w.opts.excludes_path(Path::new(std::ffi::OsStr::from_bytes(&full()))) { continue; }
         folded.clear();
         fold::fold_into(name, &mut folded);
         if w.m.accepts(&folded, kind) {
             keys.push(w.m.rank(&folded));
             found.push(PathBuf::from(OsString::from_vec(full())));
         }
-        if kind == Kind::Dir {
+        if kind == Kind::Dir && !w.opts.excludes(name) {
             children.push(full());
         }
     }
