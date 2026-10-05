@@ -1,8 +1,8 @@
 name: EchoConnect release
 
 # Manual only: Actions → EchoConnect release → Run workflow.
-# Runs the shared-core tests, then signs the release APK and attaches EchoConnect.apk
-# to the echoconnect-v<version> GitHub release.
+# Signs the release APK and attaches EchoConnect.apk to the echoconnect-v<version>
+# GitHub release. Tests are not run here; use the "Rust regression tests" workflow.
 on:
   workflow_dispatch:
     inputs:
@@ -24,17 +24,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Shared core tests
-        run: cargo test --locked -p echofiles-phone -p echoconnect-core --lib --tests -- --test-threads=1
-
   release:
-    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: write
