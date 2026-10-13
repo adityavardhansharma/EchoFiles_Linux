@@ -8,8 +8,8 @@ use std::ffi::OsString;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use ef_config as config;
@@ -81,7 +81,11 @@ impl Transfer {
 
     pub fn title(&self) -> String {
         let n = self.sources.len();
-        let what = if n == 1 { format!("“{}”", self.sources[0].file_name().unwrap_or_default().to_string_lossy()) } else { format!("{n} items") };
+        let what = if n == 1 {
+            format!("“{}”", self.sources[0].file_name().unwrap_or_default().to_string_lossy())
+        } else {
+            format!("{n} items")
+        };
         let verb = match (self.kind, self.running()) {
             (Kind::Copy, true) => "Copying",
             (Kind::Move, true) => "Moving",
@@ -140,7 +144,11 @@ pub enum FileMsg {
     Created(Result<PathBuf, String>),
     Undo,
     Undone(Undo, Result<String, String>),
-    Start { kind: Kind, sources: Vec<PathBuf>, dest: PathBuf },
+    Start {
+        kind: Kind,
+        sources: Vec<PathBuf>,
+        dest: PathBuf,
+    },
     ToOther(Kind),
     Planned(u64, Result<Arc<Plan>, String>),
     Resolve(Resolution, bool),
@@ -185,7 +193,10 @@ fn from_uri(s: &str) -> Option<PathBuf> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() && let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
             out.push(v);
             i += 3;
             continue;
@@ -204,7 +215,13 @@ fn write_system_clipboard(paths: &[PathBuf], cut: bool) {
     std::thread::spawn(move || {
         use std::io::Write;
         use std::process::{Command, Stdio};
-        if let Ok(mut child) = Command::new("wl-copy").args(["--type", "x-special/gnome-copied-files"]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        if let Ok(mut child) = Command::new("wl-copy")
+            .args(["--type", "x-special/gnome-copied-files"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
             if let Some(mut stdin) = child.stdin.take() {
                 let _ = stdin.write_all(gnome.as_bytes());
             }
@@ -218,7 +235,9 @@ fn read_system_clipboard() -> Option<(Vec<PathBuf>, bool)> {
     use std::process::Command;
     let types = Command::new("wl-paste").arg("--list-types").output().ok()?;
     let types = String::from_utf8_lossy(&types.stdout).into_owned();
-    let get = |t: &str| Command::new("wl-paste").args(["--no-newline", "--type", t]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    let get = |t: &str| {
+        Command::new("wl-paste").args(["--no-newline", "--type", t]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    };
     if types.lines().any(|l| l == "x-special/gnome-copied-files") {
         let text = get("x-special/gnome-copied-files")?;
         let mut lines = text.lines();
@@ -243,7 +262,8 @@ impl App {
             let mut bits = vec![0u64; l.listing.len().div_ceil(64)];
             if let Some(c) = clip.as_ref().filter(|c| c.cut) {
                 // A set: with everything cut, a Vec lookup per entry was O(n²) on every reload.
-                let names: HashSet<&std::ffi::OsStr> = c.paths.iter().filter(|p| p.parent() == Some(pane.location.as_path())).filter_map(|p| p.file_name()).collect();
+                let names: HashSet<&std::ffi::OsStr> =
+                    c.paths.iter().filter(|p| p.parent() == Some(pane.location.as_path())).filter_map(|p| p.file_name()).collect();
                 if !names.is_empty() {
                     for i in 0..l.listing.len() {
                         if names.contains(l.listing.name(i)) {
@@ -281,7 +301,12 @@ impl App {
     }
 
     fn is_windows_fs(&self, dir: &Path) -> bool {
-        self.tabs.iter().flat_map(|t| &t.panes).find(|p| p.location == dir).and_then(|p| p.fs.as_ref()).is_some_and(|f| ops::windows_fs(f.fs_type))
+        self.tabs
+            .iter()
+            .flat_map(|t| &t.panes)
+            .find(|p| p.location == dir)
+            .and_then(|p| p.fs.as_ref())
+            .is_some_and(|f| ops::windows_fs(f.fs_type))
     }
 
     /// Copy or move `paths` into `dest`: the drag-and-drop rule is move within a drive, copy
@@ -291,11 +316,21 @@ impl App {
             return Task::none();
         }
         let (copy, shift) = (self.modifiers.control(), self.modifiers.shift());
-        background(move || {
-            let same = |a: &Path, b: &Path| std::fs::metadata(a).ok().zip(std::fs::metadata(b).ok()).is_some_and(|(x,y)| x.dev() == y.dev());
-            let kind = if copy { Kind::Copy } else if shift || paths.iter().all(|p| same(p, &dest)) { Kind::Move } else { Kind::Copy };
-            FileMsg::Start { kind, sources: paths, dest }
-        }, Message::File)
+        background(
+            move || {
+                let same =
+                    |a: &Path, b: &Path| std::fs::metadata(a).ok().zip(std::fs::metadata(b).ok()).is_some_and(|(x, y)| x.dev() == y.dev());
+                let kind = if copy {
+                    Kind::Copy
+                } else if shift || paths.iter().all(|p| same(p, &dest)) {
+                    Kind::Move
+                } else {
+                    Kind::Copy
+                };
+                FileMsg::Start { kind, sources: paths, dest }
+            },
+            Message::File,
+        )
     }
 
     fn start_transfer(&mut self, kind: Kind, sources: Vec<PathBuf>, dest: PathBuf) -> Task<Message> {
@@ -330,7 +365,10 @@ impl App {
         let Some(t) = self.transfers.iter().find(|t| t.id == id) else { return Task::none() };
         let Some(plan) = t.plan.clone() else { return Task::none() };
         let (choices, default, fix, progress) = (t.choices.clone(), t.default, t.fix_names, t.progress.clone());
-        background(move || Arc::new(ops::execute(&plan, &choices, default, fix, &progress)), move |o| Message::File(FileMsg::Finished(id, o)))
+        background(
+            move || Arc::new(ops::execute(&plan, &choices, default, fix, &progress)),
+            move |o| Message::File(FileMsg::Finished(id, o)),
+        )
     }
 
     /// Next question for a planned transfer, or run it.
@@ -353,7 +391,27 @@ impl App {
     }
 
     pub(crate) fn file_update(&mut self, msg: FileMsg) -> Task<Message> {
-        if self.pane().special() && matches!(msg, FileMsg::Open | FileMsg::OpenInTab | FileMsg::OpenInOther | FileMsg::Copy | FileMsg::Cut | FileMsg::Paste | FileMsg::Trash | FileMsg::AskDelete | FileMsg::StartRename | FileMsg::NewFolder | FileMsg::NewFile | FileMsg::Properties | FileMsg::SelectAll | FileMsg::Restore) { return Task::none(); }
+        if self.pane().special()
+            && matches!(
+                msg,
+                FileMsg::Open
+                    | FileMsg::OpenInTab
+                    | FileMsg::OpenInOther
+                    | FileMsg::Copy
+                    | FileMsg::Cut
+                    | FileMsg::Paste
+                    | FileMsg::Trash
+                    | FileMsg::AskDelete
+                    | FileMsg::StartRename
+                    | FileMsg::NewFolder
+                    | FileMsg::NewFile
+                    | FileMsg::Properties
+                    | FileMsg::SelectAll
+                    | FileMsg::Restore
+            )
+        {
+            return Task::none();
+        }
         match msg {
             FileMsg::Open => {
                 let targets = self.targets();
@@ -369,30 +427,52 @@ impl App {
             FileMsg::OpenInTab | FileMsg::OpenInOther => {
                 let other = matches!(msg, FileMsg::OpenInOther);
                 let paths = self.targets();
-                background(move || paths.into_iter().filter(|p| p.is_dir()).collect(), move |p| Message::File(FileMsg::OpenDirectories(p, other)))
+                background(
+                    move || paths.into_iter().filter(|p| p.is_dir()).collect(),
+                    move |p| Message::File(FileMsg::OpenDirectories(p, other)),
+                )
             }
             FileMsg::OpenDirectories(dirs, other) => {
-                if !other { return Task::batch(dirs.into_iter().map(|d| self.update(Message::OpenTab(d)))); }
+                if !other {
+                    return Task::batch(dirs.into_iter().map(|d| self.update(Message::OpenTab(d))));
+                }
                 let Some(dir) = dirs.into_iter().next() else { return Task::none() };
-                if !self.dual() { let t = self.update(Message::ToggleDual); return Task::batch([t, self.update(Message::Navigate(dir))]); }
+                if !self.dual() {
+                    let t = self.update(Message::ToggleDual);
+                    return Task::batch([t, self.update(Message::Navigate(dir))]);
+                }
                 let t = self.update(Message::SwitchPane);
                 Task::batch([t, self.update(Message::Navigate(dir))])
             }
             FileMsg::OpenWith => {
                 let Some(path) = self.targets().into_iter().next() else { return Task::none() };
-                background(move || {
-                    let handlr = std::process::Command::new("which").arg("handlr").output().is_ok_and(|o| o.status.success());
-                    let mut cmd = std::process::Command::new(if handlr { "handlr" } else { "xdg-open" });
-                    if handlr { cmd.arg("open"); }
-                    crate::system::spawn_detached(cmd.arg(path)).map_err(|e| e.to_string())
-                }, |r| Message::File(FileMsg::Opened(r)))
+                background(
+                    move || {
+                        let handlr = std::process::Command::new("which").arg("handlr").output().is_ok_and(|o| o.status.success());
+                        let mut cmd = std::process::Command::new(if handlr { "handlr" } else { "xdg-open" });
+                        if handlr {
+                            cmd.arg("open");
+                        }
+                        crate::system::spawn_detached(cmd.arg(path)).map_err(|e| e.to_string())
+                    },
+                    |r| Message::File(FileMsg::Opened(r)),
+                )
             }
             FileMsg::OpenTerminal => {
                 let dir = self.pane().location.clone();
-                background(move || crate::system::spawn_detached(std::process::Command::new("xdg-terminal-exec").current_dir(&dir)).or_else(|_| crate::system::spawn_detached(std::process::Command::new("alacritty").current_dir(&dir))).map_err(|e| e.to_string()), |r| Message::File(FileMsg::Opened(r)))
+                background(
+                    move || {
+                        crate::system::spawn_detached(std::process::Command::new("xdg-terminal-exec").current_dir(&dir))
+                            .or_else(|_| crate::system::spawn_detached(std::process::Command::new("alacritty").current_dir(&dir)))
+                            .map_err(|e| e.to_string())
+                    },
+                    |r| Message::File(FileMsg::Opened(r)),
+                )
             }
             FileMsg::Opened(result) => {
-                if let Err(e) = result { self.toast_error("Couldn't open that".into(), e); }
+                if let Err(e) = result {
+                    self.toast_error("Couldn't open that".into(), e);
+                }
                 Task::none()
             }
             FileMsg::Copy | FileMsg::Cut => {
@@ -423,7 +503,12 @@ impl App {
             FileMsg::SystemClipboard(r, dest) => match r {
                 Some((paths, cut)) => self.start_transfer(if cut { Kind::Move } else { Kind::Copy }, paths, dest),
                 None => {
-                    self.push_toast(Tone::Accent, "Nothing to paste".into(), Some("Copy or cut files first (Ctrl+C / Ctrl+X).".into()), None);
+                    self.push_toast(
+                        Tone::Accent,
+                        "Nothing to paste".into(),
+                        Some("Copy or cut files first (Ctrl+C / Ctrl+X).".into()),
+                        None,
+                    );
                     Task::none()
                 }
             },
@@ -439,7 +524,10 @@ impl App {
                     match self.windows_path(p) {
                         Some(w) => out.push(w),
                         None => {
-                            self.toast_error("No drive letter yet".into(), "EchoFiles learns drive letters from Windows (C:) — mount it once.".into());
+                            self.toast_error(
+                                "No drive letter yet".into(),
+                                "EchoFiles learns drive letters from Windows (C:) — mount it once.".into(),
+                            );
                             return Task::none();
                         }
                     }
@@ -449,7 +537,8 @@ impl App {
             FileMsg::StartRename => {
                 let pane = self.pane();
                 let Some(l) = pane.loaded.clone() else { return Task::none() };
-                let pos = pane.cursor.or_else(|| pane.selected_entries().first().and_then(|&i| pane.order.iter().position(|&x| x as usize == i)));
+                let pos =
+                    pane.cursor.or_else(|| pane.selected_entries().first().and_then(|&i| pane.order.iter().position(|&x| x as usize == i)));
                 let Some(pos) = pos else { return Task::none() };
                 let Some(i) = pane.entry_at(pos) else { return Task::none() };
                 let path = l.listing.path(i);
@@ -464,7 +553,10 @@ impl App {
                 let Some(r) = self.rename.as_mut() else { return Task::none() };
                 r.error = ops::name_problem(&v).map(String::from);
                 r.fixed = None;
-                if r.error.is_none() && windows && let Some((why, fixed)) = ops::windows_name(&v) {
+                if r.error.is_none()
+                    && windows
+                    && let Some((why, fixed)) = ops::windows_name(&v)
+                {
                     r.error = Some(format!("{why} Press Enter to use “{fixed}”."));
                     r.fixed = Some(fixed);
                 }
@@ -487,7 +579,10 @@ impl App {
                     return Task::none();
                 }
                 let from = r.path.clone();
-                background(move || ops::rename(&from, &name).map(|to| (from.clone(), to)).map_err(|e| e.to_string()), |res| Message::File(FileMsg::Renamed(res)))
+                background(
+                    move || ops::rename(&from, &name).map(|to| (from.clone(), to)).map_err(|e| e.to_string()),
+                    |res| Message::File(FileMsg::Renamed(res)),
+                )
             }
             FileMsg::Renamed(Ok((from, to))) => {
                 self.push_undo(Undo::Rename { from: from.clone(), to: to.clone() });
@@ -515,7 +610,11 @@ impl App {
                 // Network servers have no Trash (and a `.Trash-1000` folder left on someone's
                 // share would be rude): say so and offer deleting for good.
                 if paths.iter().any(|p| ef_net::gvfs::is_network_path(p)) {
-                    self.queue_dialog(Dialog::Delete { paths, reason: Some("Files on network servers can't go to the Trash.".into()), opened: Instant::now() });
+                    self.queue_dialog(Dialog::Delete {
+                        paths,
+                        reason: Some("Files on network servers can't go to the Trash.".into()),
+                        opened: Instant::now(),
+                    });
                     return Task::none();
                 }
                 self.select_after_removal();
@@ -533,7 +632,11 @@ impl App {
                     // to delete for good instead, never silently.
                     let paths: Vec<PathBuf> = failed.iter().map(|f| f.0.clone()).collect();
                     let reason = failed[0].1.clone();
-                    self.queue_dialog(Dialog::Delete { paths, reason: Some(format!("It can't go to the Trash: {reason}.")), opened: Instant::now() });
+                    self.queue_dialog(Dialog::Delete {
+                        paths,
+                        reason: Some(format!("It can't go to the Trash: {reason}.")),
+                        opened: Instant::now(),
+                    });
                 }
                 Task::batch(dirs.iter().map(|d| self.refresh(d)).collect::<Vec<_>>())
             }
@@ -561,7 +664,10 @@ impl App {
             FileMsg::NewFolder | FileMsg::NewFile => {
                 let dir = self.pane().location.clone();
                 let folder = matches!(msg, FileMsg::NewFolder);
-                background(move || if folder { ops::new_folder(&dir) } else { ops::new_file(&dir) }.map_err(|e| e.to_string()), |r| Message::File(FileMsg::Created(r)))
+                background(
+                    move || if folder { ops::new_folder(&dir) } else { ops::new_file(&dir) }.map_err(|e| e.to_string()),
+                    |r| Message::File(FileMsg::Created(r)),
+                )
             }
             FileMsg::Created(Ok(path)) => {
                 self.push_undo(Undo::Create(path.clone()));
@@ -576,15 +682,30 @@ impl App {
                 Task::none()
             }
             FileMsg::Undo => {
-                if self.undo_busy || self.transfers.iter().any(|t| t.running()) { return Task::none(); }
+                if self.undo_busy || self.transfers.iter().any(|t| t.running()) {
+                    return Task::none();
+                }
                 match self.undo.pop() {
-                    Some(u) => { let u = u.retryable(); self.undo_busy = true; background(move || { let r = u.apply(); (u, r) }, |(u,r)| Message::File(FileMsg::Undone(u,r))) },
+                    Some(u) => {
+                        let u = u.retryable();
+                        self.undo_busy = true;
+                        background(
+                            move || {
+                                let r = u.apply();
+                                (u, r)
+                            },
+                            |(u, r)| Message::File(FileMsg::Undone(u, r)),
+                        )
+                    }
                     None => Task::none(),
                 }
-            },
+            }
             FileMsg::Undone(u, r) => {
                 self.undo_busy = false;
-                if let Err(e) = r { self.push_undo(u); self.toast_error("Couldn't undo".into(), e); }
+                if let Err(e) = r {
+                    self.push_undo(u);
+                    self.toast_error("Couldn't undo".into(), e);
+                }
                 let dirs: Vec<PathBuf> = self.tabs[self.tab].panes.iter().map(|p| p.location.clone()).collect();
                 Task::batch(dirs.iter().map(|d| self.refresh(d)).collect::<Vec<_>>())
             }
@@ -644,17 +765,37 @@ impl App {
                 t.finished = Some(Instant::now());
                 t.outcome = Some(outcome.clone());
                 let (kind, dest) = (t.kind, t.dest.clone());
-                let keys = if outcome.synced { outcome.done.iter().filter_map(|(src, _)| t.import_keys.get(src).cloned()).collect() } else { Vec::new() };
+                let keys = if outcome.synced {
+                    outcome.done.iter().filter_map(|(src, _)| t.import_keys.get(src).cloned()).collect()
+                } else {
+                    Vec::new()
+                };
                 self.imported_copies(keys);
                 let ok = outcome.errors.is_empty() && !outcome.cancelled;
                 if !outcome.journal.is_empty() {
                     self.push_undo(Undo::Journal(Arc::new(std::sync::Mutex::new(outcome.journal.clone()))));
                 }
                 if outcome.cancelled && outcome.errors.is_empty() {
-                    self.push_toast(Tone::Accent, if kind == Kind::Move { if outcome.errors.is_empty() { "Move cancelled — completed entries restored".into() } else { "Move cancelled — recovery needs attention".into() } } else { "Copy cancelled".into() }, None, None);
+                    self.push_toast(
+                        Tone::Accent,
+                        if kind == Kind::Move {
+                            if outcome.errors.is_empty() {
+                                "Move cancelled — completed entries restored".into()
+                            } else {
+                                "Move cancelled — recovery needs attention".into()
+                            }
+                        } else {
+                            "Copy cancelled".into()
+                        },
+                        None,
+                        None,
+                    );
                 } else if !outcome.errors.is_empty() {
                     let n = outcome.errors.len();
-                    self.toast_error(format!("{} couldn't be {}", plural(n, "item", "items"), if kind == Kind::Copy { "copied" } else { "moved" }), outcome.errors.iter().take(3).cloned().collect::<Vec<_>>().join("\n"));
+                    self.toast_error(
+                        format!("{} couldn't be {}", plural(n, "item", "items"), if kind == Kind::Copy { "copied" } else { "moved" }),
+                        outcome.errors.iter().take(3).cloned().collect::<Vec<_>>().join("\n"),
+                    );
                 }
                 // A finished transfer leaves at once; only problems stay on screen.
                 if ok {
@@ -699,10 +840,13 @@ impl App {
                 let mut task = Task::none();
                 if paths.len() == 1 {
                     let p = paths[0].clone();
-                    task = background(move || Arc::new(crate::preview::gather(&p)), |d| {
-                        let path = PathBuf::from(&d.path);
-                        Message::File(FileMsg::PropsLoaded(path, d))
-                    });
+                    task = background(
+                        move || Arc::new(crate::preview::gather(&p)),
+                        |d| {
+                            let path = PathBuf::from(&d.path);
+                            Message::File(FileMsg::PropsLoaded(path, d))
+                        },
+                    );
                 } else {
                     let size = Arc::new(ops::DirSize::default());
                     let (s2, c2, p2) = (size.clone(), cancel.clone(), paths.clone());
@@ -722,10 +866,18 @@ impl App {
             }
             FileMsg::SetMode(path, mode) => {
                 let dest = path.clone();
-                background(move || { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(|e| e.to_string()) }, move |r| Message::File(FileMsg::Changed(dest.clone(), r)))
+                background(
+                    move || {
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(|e| e.to_string())
+                    },
+                    move |r| Message::File(FileMsg::Changed(dest.clone(), r)),
+                )
             }
             FileMsg::Changed(path, result) => {
-                if let Err(e) = result { self.toast_error("Couldn't change the file".into(), e); }
+                if let Err(e) = result {
+                    self.toast_error("Couldn't change the file".into(), e);
+                }
                 self.preview_want = None;
                 self.refresh(path.parent().unwrap_or(Path::new("/")))
             }
@@ -790,13 +942,18 @@ impl App {
             }
             FileMsg::SetAttr(path, bit, on) => {
                 let dest = path.clone();
-                background(move || {
-                    let mut buf = [0; 4];
-                    rustix::fs::lgetxattr(&path, "system.ntfs_attrib", &mut buf).and_then(|_| {
-                        let a = if on { u32::from_le_bytes(buf) | bit } else { u32::from_le_bytes(buf) & !bit };
-                        rustix::fs::lsetxattr(&path, "system.ntfs_attrib", &a.to_le_bytes(), rustix::fs::XattrFlags::empty())
-                    }).map_err(|e| e.to_string())
-                }, move |r| Message::File(FileMsg::Changed(dest.clone(), r)))
+                background(
+                    move || {
+                        let mut buf = [0; 4];
+                        rustix::fs::lgetxattr(&path, "system.ntfs_attrib", &mut buf)
+                            .and_then(|_| {
+                                let a = if on { u32::from_le_bytes(buf) | bit } else { u32::from_le_bytes(buf) & !bit };
+                                rustix::fs::lsetxattr(&path, "system.ntfs_attrib", &a.to_le_bytes(), rustix::fs::XattrFlags::empty())
+                            })
+                            .map_err(|e| e.to_string())
+                    },
+                    move |r| Message::File(FileMsg::Changed(dest.clone(), r)),
+                )
             }
             FileMsg::SelectAll => {
                 self.pane_mut().select_all();
@@ -823,7 +980,10 @@ impl App {
         let current = pane.cursor.and_then(|c| pane.entry_at(c));
         // The selection bitset answers "is it selected?" directly (a Vec scan per position
         // was O(n²) after Select all).
-        let keep = (start..pane.order.len()).chain((0..start).rev()).map(|p| pane.order[p] as usize).find(|&i| !file_list::is_selected(&pane.selected, i) && Some(i) != current);
+        let keep = (start..pane.order.len())
+            .chain((0..start).rev())
+            .map(|p| pane.order[p] as usize)
+            .find(|&i| !file_list::is_selected(&pane.selected, i) && Some(i) != current);
         if let Some(i) = keep {
             pane.reveal = vec![l.listing.name(i).to_os_string()];
         }
@@ -851,11 +1011,23 @@ fn focus_rename(value: &str, is_dir: bool) -> Task<Message> {
 const UNDO_LIMIT: usize = 50;
 
 static ACTIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-pub(crate) fn busy() -> bool { ACTIVE.load(Ordering::Acquire) != 0 }
+pub(crate) fn busy() -> bool {
+    ACTIVE.load(Ordering::Acquire) != 0
+}
 fn background<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static, to: impl Fn(T) -> Message + Send + 'static) -> Task<Message> {
     struct Guard;
-    impl Drop for Guard { fn drop(&mut self) { ACTIVE.fetch_sub(1, Ordering::AcqRel); } }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
     ACTIVE.fetch_add(1, Ordering::AcqRel);
     let guard = Guard;
-    crate::app::background(move || { let _guard = guard; work() }, to)
+    crate::app::background(
+        move || {
+            let _guard = guard;
+            work()
+        },
+        to,
+    )
 }

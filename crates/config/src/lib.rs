@@ -63,8 +63,25 @@ use serde::{Deserialize, Serialize};
 /// Folder names whose contents search skips by default: package and toolchain stores,
 /// version-control internals and caches — where most files on a typical laptop live.
 pub const DEFAULT_EXCLUDE_NAMES: [&str; 19] = [
-    "node_modules", ".git", ".hg", ".svn", "__pycache__", ".cache", ".npm", ".pnpm-store", ".yarn",
-    ".gradle", ".m2", ".cargo", ".rustup", ".venv", ".tox", ".mypy_cache", ".pytest_cache", ".next", ".nuxt",
+    "node_modules",
+    ".git",
+    ".hg",
+    ".svn",
+    "__pycache__",
+    ".cache",
+    ".npm",
+    ".pnpm-store",
+    ".yarn",
+    ".gradle",
+    ".m2",
+    ".cargo",
+    ".rustup",
+    ".venv",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".next",
+    ".nuxt",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -223,7 +240,17 @@ pub struct Sidebar {
 
 impl Default for Sidebar {
     fn default() -> Self {
-        Sidebar { pinned: Vec::new(), width: 236, hidden: false, windows: true, network: true, windows_open: false, network_open: false, phone: true, phone_open: true }
+        Sidebar {
+            pinned: Vec::new(),
+            width: 236,
+            hidden: false,
+            windows: true,
+            network: true,
+            windows_open: false,
+            network_open: false,
+            phone: true,
+            phone_open: true,
+        }
     }
 }
 
@@ -290,7 +317,11 @@ pub struct Phone {
 impl Default for Phone {
     fn default() -> Self {
         Phone {
-            otp: false, dnd_sync: false, autolock: false, phone_index: false, backup: false,
+            otp: false,
+            dnd_sync: false,
+            autolock: false,
+            phone_index: false,
+            backup: false,
             files: true,
             clipboard: true,
             messages: false,
@@ -341,12 +372,16 @@ pub fn state_dir() -> PathBuf {
 
 /// `$XDG_RUNTIME_DIR/echofiles.sock` — the running app listens here.
 pub fn socket_path() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| {
-        use std::os::unix::fs::DirBuilderExt;
-        let dir = config_dir().join("runtime");
-        let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
-        dir
-    }).join("echofiles.sock")
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| {
+            use std::os::unix::fs::DirBuilderExt;
+            let dir = config_dir().join("runtime");
+            let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
+            dir
+        })
+        .join("echofiles.sock")
 }
 
 /// The index file for one indexed folder: a stable name derived from its path.
@@ -433,10 +468,10 @@ pub fn drives_from(mountinfo: &str, home: &Path) -> Vec<PathBuf> {
     let system_dev = mounts.iter().find(|m| m.1 == Path::new("/")).map(|m| m.0);
     let mut out: Vec<(&str, PathBuf)> = Vec::new();
     for (dev, at, fs, source) in &mounts {
-        let virtual_fs = matches!(*fs, "squashfs" | "iso9660" | "udf" | "overlay" | "tmpfs" | "devtmpfs" | "ramfs") || (fs.starts_with("fuse") && *fs != "fuseblk");
-        let system_place = at == Path::new("/")
-            || SYSTEM.iter().any(|s| at.starts_with(s))
-            || (at.starts_with("/run") && !at.starts_with("/run/media"));
+        let virtual_fs = matches!(*fs, "squashfs" | "iso9660" | "udf" | "overlay" | "tmpfs" | "devtmpfs" | "ramfs")
+            || (fs.starts_with("fuse") && *fs != "fuseblk");
+        let system_place =
+            at == Path::new("/") || SYSTEM.iter().any(|s| at.starts_with(s)) || (at.starts_with("/run") && !at.starts_with("/run/media"));
         if !source.starts_with("/dev/") || virtual_fs || system_place || Some(*dev) == system_dev || at.starts_with(home) {
             continue;
         }
@@ -517,7 +552,7 @@ mod tests {
 25 22 259:8 / /boot rw - vfat /dev/nvme0n1p8 rw
 26 22 0:40 / /media/data106 rw - btrfs /dev/mapper/data106 rw
 27 22 0:40 /sub /media/data106-bind rw - btrfs /dev/mapper/data106 rw
-28 22 8:17 / /run/media/me/USB\040Stick rw - exfat /dev/sdb1 rw
+28 22 8:17 / /run/media/me/USB\\040Stick rw - exfat /dev/sdb1 rw
 29 22 0:50 / /run/user/1000/doc rw - fuse.portal portal rw
 30 22 0:51 / /mnt/nas rw - cifs //nas/share rw
 31 22 0:52 / /tmp rw - tmpfs tmpfs rw
@@ -529,15 +564,44 @@ mod tests {
         // table above can only lose entries; every rule is checked below with "/media",
         // which exists on any test machine.
         for d in drives_from(info, Path::new("/home/me")) {
-            assert!(!d.starts_with("/boot") && !d.starts_with("/home") && !d.starts_with("/tmp") && !d.starts_with("/mnt/nas") && !d.starts_with("/var"), "{d:?}");
+            assert!(
+                !d.starts_with("/boot")
+                    && !d.starts_with("/home")
+                    && !d.starts_with("/tmp")
+                    && !d.starts_with("/mnt/nas")
+                    && !d.starts_with("/var"),
+                "{d:?}"
+            );
         }
         let names = |i: &str| drives_from(i, Path::new("/home/me"));
-        assert!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n23 22 0:25 /@home /media rw - btrfs /dev/mapper/root rw\n").is_empty(), "same device as the system");
-        assert_eq!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n26 22 0:40 / /media rw - btrfs /dev/mapper/data rw\n27 22 0:40 /x /media/deeper rw - btrfs /dev/mapper/data rw\n"), vec![PathBuf::from("/media")], "one path per drive, the shortest");
-        assert!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n30 22 0:51 / /media rw - cifs //nas/share rw\n").is_empty(), "network");
-        assert!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n29 22 0:50 / /media rw - fuse.portal portal rw\n").is_empty(), "virtual");
-        assert_eq!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n33 22 8:49 / /media rw - fuseblk /dev/sdd1 rw\n"), vec![PathBuf::from("/media")], "ntfs-3g");
-        assert!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n25 22 259:8 / /boot rw - vfat /dev/nvme0n1p8 rw\n").is_empty(), "system places");
+        assert!(
+            names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n23 22 0:25 /@home /media rw - btrfs /dev/mapper/root rw\n").is_empty(),
+            "same device as the system"
+        );
+        assert_eq!(
+            names(
+                "22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n26 22 0:40 / /media rw - btrfs /dev/mapper/data rw\n27 22 0:40 /x /media/deeper rw - btrfs /dev/mapper/data rw\n"
+            ),
+            vec![PathBuf::from("/media")],
+            "one path per drive, the shortest"
+        );
+        assert!(
+            names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n30 22 0:51 / /media rw - cifs //nas/share rw\n").is_empty(),
+            "network"
+        );
+        assert!(
+            names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n29 22 0:50 / /media rw - fuse.portal portal rw\n").is_empty(),
+            "virtual"
+        );
+        assert_eq!(
+            names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n33 22 8:49 / /media rw - fuseblk /dev/sdd1 rw\n"),
+            vec![PathBuf::from("/media")],
+            "ntfs-3g"
+        );
+        assert!(
+            names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n25 22 259:8 / /boot rw - vfat /dev/nvme0n1p8 rw\n").is_empty(),
+            "system places"
+        );
     }
 
     #[test]
@@ -569,7 +633,13 @@ pub fn queue_state(path: PathBuf, bytes: Vec<u8>) {
     static WRITER: std::sync::OnceLock<std::sync::mpsc::Sender<(PathBuf, Vec<u8>)>> = std::sync::OnceLock::new();
     let tx = WRITER.get_or_init(|| {
         let (tx, rx) = std::sync::mpsc::channel::<(PathBuf, Vec<u8>)>();
-        std::thread::spawn(move || for (path, bytes) in rx { if let Err(e) = atomic_write(&path, &bytes) { eprintln!("Couldn't save {}: {e}", path.display()); } });
+        std::thread::spawn(move || {
+            for (path, bytes) in rx {
+                if let Err(e) = atomic_write(&path, &bytes) {
+                    eprintln!("Couldn't save {}: {e}", path.display());
+                }
+            }
+        });
         tx
     });
     let _ = tx.send((path, bytes));
@@ -580,10 +650,21 @@ mod review_regressions {
     use super::*;
     #[test]
     fn competing_settings_writers_publish_valid_complete_snapshots() {
-        let root = tempfile::tempdir().unwrap(); let file = root.path().join("settings.toml");
-        std::thread::scope(|scope| for n in 0..8 { let file = &file; scope.spawn(move || {
-            let mut s = Settings::default(); s.sidebar.width = 200 + n;
-            for _ in 0..20 { s.save_to(file).unwrap(); let loaded = Settings::load_from(file).unwrap(); assert!((200..208).contains(&loaded.sidebar.width)); }
-        }); });
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("settings.toml");
+        std::thread::scope(|scope| {
+            for n in 0..8 {
+                let file = &file;
+                scope.spawn(move || {
+                    let mut s = Settings::default();
+                    s.sidebar.width = 200 + n;
+                    for _ in 0..20 {
+                        s.save_to(file).unwrap();
+                        let loaded = Settings::load_from(file).unwrap();
+                        assert!((200..208).contains(&loaded.sidebar.width));
+                    }
+                });
+            }
+        });
     }
 }

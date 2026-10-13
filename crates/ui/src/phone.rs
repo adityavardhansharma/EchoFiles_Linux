@@ -15,13 +15,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ef_config::{self as config, PhoneNotifications};
-use ef_net::{gvfs, Address, Ask, Login, Mount, Protocol, Remember};
+use ef_net::{Address, Ask, Login, Mount, Protocol, Remember, gvfs};
 use ef_phone::{Device, Event, Notification, Service, Sftp, Sms, Trusted};
-use iced::futures::channel::mpsc;
 use iced::Task;
+use iced::futures::channel::mpsc;
 
 use crate::actions::FileMsg;
-use crate::app::{background, App, Message};
+use crate::app::{App, Message, background};
 use crate::overlay::Tone;
 use crate::thumbs::Pixels;
 
@@ -58,6 +58,9 @@ pub enum Source {
     Chats,
     Other,
 }
+
+/// ((new photos, new screenshots, new others), total) for the Photos page, cached.
+type NewCount = ((usize, usize, usize), usize);
 
 #[derive(Debug, Clone)]
 pub struct Photo {
@@ -105,7 +108,7 @@ pub enum Want {
 pub struct PhoneState {
     /// `photos_new().len()` for the views, keyed by (photo list address, length, imported
     /// count) so a frame doesn't rebuild an import key per photo.
-    pub new_count: std::cell::Cell<Option<((usize, usize, usize), usize)>>,
+    pub new_count: std::cell::Cell<Option<NewCount>>,
     /// Photo id → its local path (the reverse of `remote_photos`), for arriving thumbnails.
     pub remote_ids: HashMap<u64, PathBuf>,
     pub active: DeviceState,
@@ -143,7 +146,6 @@ pub struct PhoneState {
     pub mute_draft: String,
     pub ufw: Option<bool>,
 }
-
 
 #[derive(Default)]
 pub struct DeviceState {
@@ -199,8 +201,17 @@ pub struct DeviceState {
     pub screen: Option<(PathBuf, String)>,
 }
 
-impl std::ops::Deref for PhoneState { type Target = DeviceState; fn deref(&self) -> &DeviceState { &self.active } }
-impl std::ops::DerefMut for PhoneState { fn deref_mut(&mut self) -> &mut DeviceState { &mut self.active } }
+impl std::ops::Deref for PhoneState {
+    type Target = DeviceState;
+    fn deref(&self) -> &DeviceState {
+        &self.active
+    }
+}
+impl std::ops::DerefMut for PhoneState {
+    fn deref_mut(&mut self) -> &mut DeviceState {
+        &mut self.active
+    }
+}
 // ------------------------------------------------------------------------------ service plumbing
 
 #[derive(Debug, Clone)]
@@ -299,7 +310,9 @@ pub fn service() -> Option<&'static Service> {
 /// Start talking to phones (once), and watch the clipboard for the shared clipboard.
 pub fn start() {
     static STARTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if service().is_some() || STARTING.swap(true, Ordering::AcqRel) { return; }
+    if service().is_some() || STARTING.swap(true, Ordering::AcqRel) {
+        return;
+    }
     let tx = event_tx();
     std::thread::spawn(move || {
         let t2 = tx.clone();
@@ -307,23 +320,35 @@ pub fn start() {
         match Service::start(move |e| {
             let _ = t2.unbounded_send(PhoneMsg::Event(e));
         }) {
-            Ok(s) => { crate::connect::bluetooth(s.clone()); let _ = SERVICE.set(s); },
-            Err(e) => { let _ = tx.unbounded_send(PhoneMsg::Event(Event::Failed(e.to_string()))); },
+            Ok(s) => {
+                crate::connect::bluetooth(s.clone());
+                let _ = SERVICE.set(s);
+            }
+            Err(e) => {
+                let _ = tx.unbounded_send(PhoneMsg::Event(Event::Failed(e.to_string())));
+            }
         }
         STARTING.store(false, Ordering::Release);
     });
     static WATCHERS: std::sync::Once = std::sync::Once::new();
     WATCHERS.call_once(|| {
-    let tx = event_tx();
-    std::thread::spawn(move || watch_clipboard(tx));
-    std::thread::spawn(watch_images);
-    std::thread::spawn(|| {
-        let mut previous = None;
-        loop {
-            if let Some(state) = crate::connect::dnd_state() { if previous != Some(state) { previous = Some(state); if event_tx().unbounded_send(PhoneMsg::LocalDnd(state)).is_err() { break; } } }
-            std::thread::sleep(Duration::from_secs(2));
-        }
-    });
+        let tx = event_tx();
+        std::thread::spawn(move || watch_clipboard(tx));
+        std::thread::spawn(watch_images);
+        std::thread::spawn(|| {
+            let mut previous = None;
+            loop {
+                if let Some(state) = crate::connect::dnd_state()
+                    && previous != Some(state)
+                {
+                    previous = Some(state);
+                    if event_tx().unbounded_send(PhoneMsg::LocalDnd(state)).is_err() {
+                        break;
+                    }
+                }
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        });
     });
 }
 
@@ -344,8 +369,7 @@ fn watch_clipboard(tx: mpsc::UnboundedSender<PhoneMsg>) {
             Ok(())
         });
     }
-    let Ok(mut child) = cmd.spawn()
-    else {
+    let Ok(mut child) = cmd.spawn() else {
         return;
     };
     let Some(out) = child.stdout.take() else { return };
@@ -364,28 +388,63 @@ fn watch_clipboard(tx: mpsc::UnboundedSender<PhoneMsg>) {
 fn watch_images() {
     use std::os::unix::process::CommandExt;
     let mut command = std::process::Command::new("wl-paste");
-    command.args(["--type", "image/png", "--watch", "sh", "-c", "head -c 16777217 | base64 -w0; echo"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
-    unsafe { command.pre_exec(|| { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM); Ok(()) }); }
-    if let Ok(mut child) = command.spawn() { if let Some(out) = child.stdout.take() { for line in std::io::BufReader::new(out).lines().map_while(Result::ok) { if let Ok(bytes) = crate::codec::base64_decode(line.trim()).ok_or(()) { if !bytes.is_empty() && bytes.len() <= 16*1024*1024 { let _ = event_tx().unbounded_send(PhoneMsg::LocalImage(bytes)); } } } } let _ = child.wait(); }
+    command
+        .args(["--type", "image/png", "--watch", "sh", "-c", "head -c 16777217 | base64 -w0; echo"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    unsafe {
+        command.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
+    if let Ok(mut child) = command.spawn() {
+        if let Some(out) = child.stdout.take() {
+            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                if let Ok(bytes) = crate::codec::base64_decode(line.trim()).ok_or(())
+                    && !bytes.is_empty()
+                    && bytes.len() <= 16 * 1024 * 1024
+                {
+                    let _ = event_tx().unbounded_send(PhoneMsg::LocalImage(bytes));
+                }
+            }
+        }
+        let _ = child.wait();
+    }
 }
 
 fn normal_image(bytes: &[u8]) -> Option<Vec<u8>> {
-    if bytes.len() > 16 * 1024 * 1024 { return None; }
+    if bytes.len() > 16 * 1024 * 1024 {
+        return None;
+    }
     let image = decode_limited(bytes)?;
     let mut output = std::io::Cursor::new(Vec::new());
     image.write_to(&mut output, image::ImageFormat::Png).ok()?;
-    let png = output.into_inner(); (png.len() <= 16 * 1024 * 1024).then_some(png)
+    let png = output.into_inner();
+    (png.len() <= 16 * 1024 * 1024).then_some(png)
 }
 
 fn set_image(bytes: &[u8]) {
     use std::io::Write;
-    if decode_limited(bytes).is_none() { return; }
-    if let Ok(mut child) = std::process::Command::new("wl-copy").args(["--type", "image/png"]).stdin(std::process::Stdio::piped()).spawn() { if let Some(mut input) = child.stdin.take() { let _ = input.write_all(bytes); } let _ = child.wait(); }
+    if decode_limited(bytes).is_none() {
+        return;
+    }
+    if let Ok(mut child) = std::process::Command::new("wl-copy").args(["--type", "image/png"]).stdin(std::process::Stdio::piped()).spawn() {
+        if let Some(mut input) = child.stdin.take() {
+            let _ = input.write_all(bytes);
+        }
+        let _ = child.wait();
+    }
 }
 
 fn set_clipboard(text: &str) {
     use std::io::Write;
-    if let Ok(mut c) = std::process::Command::new("wl-copy").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn() {
+    if let Ok(mut c) = std::process::Command::new("wl-copy")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
         if let Some(mut i) = c.stdin.take() {
             let _ = i.write_all(text.as_bytes());
         }
@@ -422,7 +481,13 @@ pub fn load_state() -> PhoneState {
         .map(|t| t.lines().filter_map(|l| l.split_once('\t')).filter_map(|(id, s)| Some((id.to_string(), s.parse().ok()?))).collect())
         .unwrap_or_default();
     let imported = std::fs::read_to_string(imported_file()).map(|t| t.lines().map(str::to_string).collect()).unwrap_or_default();
-    PhoneState { trusted: ef_phone::trusted(), seen, imported, active: DeviceState { photo_limit: PHOTOS_PAGE, ..Default::default() }, ..Default::default() }
+    PhoneState {
+        trusted: ef_phone::trusted(),
+        seen,
+        imported,
+        active: DeviceState { photo_limit: PHOTOS_PAGE, ..Default::default() },
+        ..Default::default()
+    }
 }
 
 fn save_lines(file: PathBuf, text: String) {
@@ -515,7 +580,11 @@ fn scan_photos(root: &Path) -> Result<Vec<Photo>, String> {
 
 fn thumb_cache(path: &Path, mtime: i64, tag: &str) -> PathBuf {
     let key = crate::codec::md5_hex(format!("{}\0{mtime}\0{tag}", path.display()).as_bytes());
-    std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| config::home().join(".cache")).join("echofiles/phone-thumbs").join(format!("{key}.png"))
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config::home().join(".cache"))
+        .join("echofiles/phone-thumbs")
+        .join(format!("{key}.png"))
 }
 
 /// The thumbnail JPEG inside a JPEG's EXIF block, and the photo's orientation — read from
@@ -663,7 +732,9 @@ fn import_key(id: &str, root: Option<&Path>, p: &Photo) -> String {
     let mut key = String::with_capacity(id.len() + 2 * bytes.len() + 24);
     key.push_str(id);
     key.push(':');
-    for b in bytes { let _ = write!(key, "{b:02x}"); }
+    for b in bytes {
+        let _ = write!(key, "{b:02x}");
+    }
     let _ = write!(key, ":{}:{}", p.size, p.mtime);
     key
 }
@@ -694,14 +765,22 @@ fn portal_pick(title: &str, folder: bool) -> Result<Vec<PathBuf>, String> {
     let token = format!("echofiles{}", raw.iter().map(|b| format!("{b:02x}")).collect::<String>());
     let sender = conn.unique_name().map(|n| n.trim_start_matches(':').replace('.', "_")).unwrap_or_default();
     let path = format!("/org/freedesktop/portal/desktop/request/{sender}/{token}");
-    let request = zbus::blocking::Proxy::new(&conn, "org.freedesktop.portal.Desktop", path.as_str(), "org.freedesktop.portal.Request").map_err(|e| e.to_string())?;
+    let request = zbus::blocking::Proxy::new(&conn, "org.freedesktop.portal.Desktop", path.as_str(), "org.freedesktop.portal.Request")
+        .map_err(|e| e.to_string())?;
     let mut responses = request.receive_signal("Response").map_err(|e| e.to_string())?;
-    let chooser = zbus::blocking::Proxy::new(&conn, "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.FileChooser").map_err(|e| e.to_string())?;
+    let chooser = zbus::blocking::Proxy::new(
+        &conn,
+        "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop",
+        "org.freedesktop.portal.FileChooser",
+    )
+    .map_err(|e| e.to_string())?;
     let mut opts: HashMap<&str, Value<'_>> = HashMap::new();
     opts.insert("handle_token", Value::from(token.as_str()));
     opts.insert("multiple", Value::from(!folder));
     opts.insert("directory", Value::from(folder));
-    let _: zbus::zvariant::OwnedObjectPath = chooser.call("OpenFile", &("", title, opts)).map_err(|e| format!("The file chooser isn't available: {e}"))?;
+    let _: zbus::zvariant::OwnedObjectPath =
+        chooser.call("OpenFile", &("", title, opts)).map_err(|e| format!("The file chooser isn't available: {e}"))?;
     let msg = responses.next().ok_or("The file chooser closed.")?;
     let (code, results): (u32, HashMap<String, OwnedValue>) = msg.body().deserialize().map_err(|e| e.to_string())?;
     if code != 0 {
@@ -738,7 +817,11 @@ fn ufw_active() -> bool {
 
 fn allow_firewall() -> Result<(), String> {
     let out = std::process::Command::new("pkexec")
-        .args(["sh", "-c", "ufw allow 1714:1764/udp comment 'KDE Connect (EchoFiles)' && ufw allow 1714:1764/tcp comment 'KDE Connect (EchoFiles)'"])
+        .args([
+            "sh",
+            "-c",
+            "ufw allow 1714:1764/udp comment 'KDE Connect (EchoFiles)' && ufw allow 1714:1764/tcp comment 'KDE Connect (EchoFiles)'",
+        ])
         .output()
         .map_err(|e| format!("Couldn't ask for your password: {e}"))?;
     if out.status.success() {
@@ -777,7 +860,13 @@ impl App {
     }
 
     pub(crate) fn phone_name(&self, id: &str) -> String {
-        self.phone.devices.get(id).map(|d| d.name.clone()).or_else(|| self.phone.trusted.iter().find(|t| t.id == id).map(|t| t.name.clone())).filter(|n| !n.is_empty()).unwrap_or_else(|| "Phone".into())
+        self.phone
+            .devices
+            .get(id)
+            .map(|d| d.name.clone())
+            .or_else(|| self.phone.trusted.iter().find(|t| t.id == id).map(|t| t.name.clone()))
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "Phone".into())
     }
 
     /// Paired and connected right now.
@@ -826,7 +915,12 @@ impl App {
         match page {
             PhonePage::Photos if self.settings.phone.files => {
                 if self.phone.devices.get(&id).is_some_and(|d| d.echoconnect()) {
-                    if self.phone.photos.is_none() { self.phone.photos_loading = true; if let Some(s) = svc { s.send_packet(&id, "echofiles.photos.request", ef_phone::json!({})); } }
+                    if self.phone.photos.is_none() {
+                        self.phone.photos_loading = true;
+                        if let Some(s) = svc {
+                            s.send_packet(&id, "echofiles.photos.request", ef_phone::json!({}));
+                        }
+                    }
                     return Task::none();
                 }
                 if self.phone.mount.is_none() {
@@ -861,8 +955,12 @@ impl App {
 
     fn scan_phone_photos(&mut self) -> Task<Message> {
         let generation = self.phone.generation;
-        if let (Some(s), Some(id)) = (service(), self.phone_id()) {
-            if self.phone.devices.get(&id).is_some_and(|d| d.echoconnect()) { self.phone.photos_loading = true; s.send_packet(&id, "echofiles.photos.request", ef_phone::json!({})); return Task::none(); }
+        if let (Some(s), Some(id)) = (service(), self.phone_id())
+            && self.phone.devices.get(&id).is_some_and(|d| d.echoconnect())
+        {
+            self.phone.photos_loading = true;
+            s.send_packet(&id, "echofiles.photos.request", ef_phone::json!({}));
+            return Task::none();
         }
         let Some(root) = self.phone_storage().map(Path::to_path_buf) else { return Task::none() };
         self.phone.photos_loading = true;
@@ -900,13 +998,27 @@ impl App {
     fn mount_phone(&mut self, s: Sftp) -> Task<Message> {
         let generation = self.phone.generation;
         self.phone.mounting = true;
-        let address = Address { protocol: Protocol::Sftp, host: s.ip.clone(), port: Some(s.port), user: Some(s.user.clone()), domain: None, share: None, path: String::new() };
+        let address = Address {
+            protocol: Protocol::Sftp,
+            host: s.ip.clone(),
+            port: Some(s.port),
+            user: Some(s.user.clone()),
+            domain: None,
+            share: None,
+            path: String::new(),
+        };
         let (user, password) = (s.user.clone(), s.password.clone());
         let op = gvfs::next_op();
         background(
             move || {
                 gvfs::mount(&address, op, move |ask| match ask {
-                    Ask::Login(l) => l.answer(Some(Login { user: user.clone(), domain: String::new(), password: password.clone(), anonymous: false, remember: Remember::Never })),
+                    Ask::Login(l) => l.answer(Some(Login {
+                        user: user.clone(),
+                        domain: String::new(),
+                        password: password.clone(),
+                        anonymous: false,
+                        remember: Remember::Never,
+                    })),
                     // GVfs owns the SSH host-key prompt; let the user review it. Text
                     // labels and a substring fingerprint are not an authentication API.
                     Ask::Question(q) => crate::network::forward_ask(Ask::Question(q)),
@@ -926,12 +1038,22 @@ impl App {
     pub(crate) fn open_phone_result(&mut self, uri: &Path, directory: bool, reveal: bool) -> Task<Message> {
         let text = uri.to_string_lossy();
         let Some((id, path)) = text.strip_prefix("phone://").and_then(|s| s.split_once('/')) else { return Task::none() };
-        if !self.phone_online(id) { self.toast_error("Phone isn't nearby".into(), "Reconnect the phone to open this cached result.".into()); return Task::none(); }
-        if Path::new(path).is_absolute() || Path::new(path).components().any(|c| matches!(c, std::path::Component::ParentDir)) { return Task::none(); }
-        self.phone.current = Some(id.into()); self.activate_phone(id);
+        if !self.phone_online(id) {
+            self.toast_error("Phone isn't nearby".into(), "Reconnect the phone to open this cached result.".into());
+            return Task::none();
+        }
+        if Path::new(path).is_absolute() || Path::new(path).components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            return Task::none();
+        }
+        self.phone.current = Some(id.into());
+        self.activate_phone(id);
         if directory || reveal {
             let p = Path::new(path);
-            self.phone.browse_after_mount = Some(if reveal { (p.parent().unwrap_or(Path::new("")).into(), p.file_name().map(|n| n.to_os_string())) } else { (p.into(), None) });
+            self.phone.browse_after_mount = Some(if reveal {
+                (p.parent().unwrap_or(Path::new("")).into(), p.file_name().map(|n| n.to_os_string()))
+            } else {
+                (p.into(), None)
+            });
             return self.phone_files(Want::Files);
         }
         if let Some(s) = service() {
@@ -953,7 +1075,9 @@ impl App {
             Want::Files => {
                 let (path, reveal) = self.phone.browse_after_mount.take().unwrap_or((PathBuf::new(), None));
                 tasks.push(self.go(storage.join(path), true));
-                if let Some(name) = reveal { self.pane_mut().reveal = vec![name]; }
+                if let Some(name) = reveal {
+                    self.pane_mut().reveal = vec![name];
+                }
             }
             Want::FilesInTab => tasks.push(self.update(Message::OpenTab(storage.to_path_buf()))),
             Want::Photos | Want::Nothing => {}
@@ -1004,8 +1128,12 @@ impl App {
             self.phone.photo_jobs += 1;
             if let Some(photo_id) = self.phone.remote_photos.get(&p).copied() {
                 if let (Some(s), Some(id)) = (service(), self.phone_id()) {
-                    if s.send_packet(&id, "echofiles.photos.thumb.request", ef_phone::json!({"id":photo_id})) { self.phone.thumb_wait.insert(photo_id, (p.clone(), Instant::now())); }
-                    else { self.phone.photo_jobs = self.phone.photo_jobs.saturating_sub(1); self.phone.photo_thumbs.insert(p.clone(), None); }
+                    if s.send_packet(&id, "echofiles.photos.thumb.request", ef_phone::json!({"id":photo_id})) {
+                        self.phone.thumb_wait.insert(photo_id, (p.clone(), Instant::now()));
+                    } else {
+                        self.phone.photo_jobs = self.phone.photo_jobs.saturating_sub(1);
+                        self.phone.photo_thumbs.insert(p.clone(), None);
+                    }
                 }
                 continue;
             }
@@ -1019,7 +1147,17 @@ impl App {
     pub(crate) fn want_photo_thumbs(&mut self) -> Task<Message> {
         let Some(Ok(list)) = &self.phone.photos else { return Task::none() };
         let filter = self.phone.photo_filter;
-        let items: Vec<(PathBuf, i64)> = list.iter().filter(|p| filter.is_none_or(|f| p.source == f)).take(self.phone.photo_limit).filter(|p| !self.phone.photo_thumbs.contains_key(&p.path) && !self.phone.thumb_wait.values().any(|(path, _)| path == &p.path) && !self.phone.remote_thumb.values().any(|path| path == &p.path)).map(|p| (p.path.clone(), p.mtime)).collect();
+        let items: Vec<(PathBuf, i64)> = list
+            .iter()
+            .filter(|p| filter.is_none_or(|f| p.source == f))
+            .take(self.phone.photo_limit)
+            .filter(|p| {
+                !self.phone.photo_thumbs.contains_key(&p.path)
+                    && !self.phone.thumb_wait.values().any(|(path, _)| path == &p.path)
+                    && !self.phone.remote_thumb.values().any(|path| path == &p.path)
+            })
+            .map(|p| (p.path.clone(), p.mtime))
+            .collect();
         self.phone.photo_queue = items.into();
         self.pump_photo_thumbs()
     }
@@ -1028,7 +1166,11 @@ impl App {
     pub(crate) fn photos_new_count(&self) -> usize {
         let Some(Ok(list)) = &self.phone.photos else { return 0 };
         let stamp = (list.as_ptr() as usize, list.len(), self.phone.imported.len());
-        if let Some((s, n)) = self.phone.new_count.get() && s == stamp { return n; }
+        if let Some((s, n)) = self.phone.new_count.get()
+            && s == stamp
+        {
+            return n;
+        }
         let n = self.photos_new().len();
         self.phone.new_count.set(Some((stamp, n)));
         n
@@ -1036,17 +1178,26 @@ impl App {
 
     pub(crate) fn photos_new(&self) -> Vec<&Photo> {
         match &self.phone.photos {
-            Some(Ok(list)) => list.iter().filter(|p| p.source == Source::Camera && !self.phone.imported.contains(&import_key(&self.phone_id().unwrap_or_default(), self.phone_storage(), p))).collect(),
+            Some(Ok(list)) => list
+                .iter()
+                .filter(|p| {
+                    p.source == Source::Camera
+                        && !self.phone.imported.contains(&import_key(&self.phone_id().unwrap_or_default(), self.phone_storage(), p))
+                })
+                .collect(),
             _ => Vec::new(),
         }
     }
 
     fn request_remote_photo(&mut self, photo: u64, destination: PathBuf, action: &str) {
         if let (Some(s), Some(id)) = (service(), self.phone_id()) {
-            let request = format!("photo-{photo}-{}", SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos());
+            let request =
+                format!("photo-{photo}-{}", SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos());
             self.phone.captures.insert(request.clone(), destination);
             self.phone.photo_requests.insert(request.clone(), action.into());
-            if !s.send_packet(&id, "echofiles.photos.read", ef_phone::json!({"id":photo,"requestId":request})) { self.phone.extra_status = "Phone isn't nearby. Reconnect to download photos.".into(); }
+            if !s.send_packet(&id, "echofiles.photos.read", ef_phone::json!({"id":photo,"requestId":request})) {
+                self.phone.extra_status = "Phone isn't nearby. Reconnect to download photos.".into();
+            }
         }
     }
 
@@ -1071,11 +1222,22 @@ impl App {
         if let PhoneMsg::Scoped(generation, inner) = msg {
             let selected = self.phone.active_id.clone();
             let selected_current = self.phone.current.clone();
-            let id = if self.phone.generation == generation { Some(selected.clone()) } else { self.phone.states.iter().find(|(_, s)| s.generation == generation).map(|(id, _)| id.clone()) };
+            let id = if self.phone.generation == generation {
+                Some(selected.clone())
+            } else {
+                self.phone.states.iter().find(|(_, s)| s.generation == generation).map(|(id, _)| id.clone())
+            };
             if let Some(id) = id {
                 if id != selected && matches!(&*inner, PhoneMsg::Mounted(_)) {
-                    if let Some(state) = self.phone.states.get_mut(&id) { state.mounting = false; state.want = None; }
-                    if let PhoneMsg::Mounted(Ok((m, _))) = *inner { std::thread::spawn(move || { let _ = gvfs::unmount(&m, true); }); }
+                    if let Some(state) = self.phone.states.get_mut(&id) {
+                        state.mounting = false;
+                        state.want = None;
+                    }
+                    if let PhoneMsg::Mounted(Ok((m, _))) = *inner {
+                        std::thread::spawn(move || {
+                            let _ = gvfs::unmount(&m, true);
+                        });
+                    }
                     return Task::none();
                 }
                 self.activate_phone(&id);
@@ -1085,24 +1247,39 @@ impl App {
                 self.phone.current = selected_current;
                 return task;
             }
-            if let PhoneMsg::Mounted(Ok((m, _))) = *inner { std::thread::spawn(move || { let _ = gvfs::unmount(&m, true); }); }
+            if let PhoneMsg::Mounted(Ok((m, _))) = *inner {
+                std::thread::spawn(move || {
+                    let _ = gvfs::unmount(&m, true);
+                });
+            }
             return Task::none();
         }
         match msg {
             PhoneMsg::Scoped(..) => unreachable!(),
             PhoneMsg::RemoteImage(bytes) => {
-                if self.settings.phone.clipboard { self.phone.last_image = bytes.clone(); std::thread::spawn(move || set_image(&bytes)); }
+                if self.settings.phone.clipboard {
+                    self.phone.last_image = bytes.clone();
+                    std::thread::spawn(move || set_image(&bytes));
+                }
                 Task::none()
             }
             PhoneMsg::LocalDnd(enabled) => {
                 if self.phone.dnd != enabled {
                     self.phone.dnd = enabled;
-                    if self.settings.phone.dnd_sync { if let (Some(s), Some(id)) = (service(), self.phone_id()) { s.send_packet(&id, "echofiles.dnd", ef_phone::json!({"enabled":enabled})); } }
+                    if self.settings.phone.dnd_sync
+                        && let (Some(s), Some(id)) = (service(), self.phone_id())
+                    {
+                        s.send_packet(&id, "echofiles.dnd", ef_phone::json!({"enabled":enabled}));
+                    }
                 }
                 Task::none()
             }
             PhoneMsg::ExtraField(field, value) => {
-                match field { 0 => self.phone.extra_address = value, 1 => self.phone.extra_code = value, _ => self.phone.extra_connect = value }
+                match field {
+                    0 => self.phone.extra_address = value,
+                    1 => self.phone.extra_code = value,
+                    _ => self.phone.extra_connect = value,
+                }
                 Task::none()
             }
             PhoneMsg::ExtraDone(result) => {
@@ -1112,11 +1289,15 @@ impl App {
                 Task::none()
             }
             PhoneMsg::Attachment(body) => {
-                if let (Some(s), Some(id)) = (service(), self.phone_id()) { s.send_packet(&id, "kdeconnect.sms.request_attachment", body); }
+                if let (Some(s), Some(id)) = (service(), self.phone_id()) {
+                    s.send_packet(&id, "kdeconnect.sms.request_attachment", body);
+                }
                 Task::none()
             }
             PhoneMsg::NotificationAction(key, action) => {
-                if let (Some(s), Some(id)) = (service(), self.phone_id()) { s.send_packet(&id, "kdeconnect.notification.action", ef_phone::json!({"key":key,"action":action})); }
+                if let (Some(s), Some(id)) = (service(), self.phone_id()) {
+                    s.send_packet(&id, "kdeconnect.notification.action", ef_phone::json!({"key":key,"action":action}));
+                }
                 Task::none()
             }
             PhoneMsg::Extra(action) => {
@@ -1127,7 +1308,10 @@ impl App {
                             Ok((svg, name, secret)) => {
                                 self.phone.clipboard_qr = Some(iced::widget::svg::Handle::from_memory(svg));
                                 self.phone.extra_status = "On the phone: Wireless debugging → Pair device with QR code. Scan this code; it expires in two minutes.".into();
-                                return background(move || crate::connect::grant_clipboard_qr(&name, &secret, ip), |r| Message::Phone(PhoneMsg::ExtraDone(r)));
+                                return background(
+                                    move || crate::connect::grant_clipboard_qr(&name, &secret, ip),
+                                    |r| Message::Phone(PhoneMsg::ExtraDone(r)),
+                                );
                             }
                             Err(e) => self.phone.extra_status = e,
                         }
@@ -1135,45 +1319,100 @@ impl App {
                     return Task::none();
                 }
                 if action == "clipboard-setup" {
-                    let (address, code, connect) = (self.phone.extra_address.clone(), self.phone.extra_code.clone(), self.phone.extra_connect.clone());
+                    let (address, code, connect) =
+                        (self.phone.extra_address.clone(), self.phone.extra_code.clone(), self.phone.extra_connect.clone());
                     self.phone.extra_status = "Pairing wireless debugging…".into();
-                    return background(move || crate::connect::grant_clipboard(&address, &code, &connect).map(|_| "Permission granted. On the phone, allow Display over other apps and turn Developer options off.".into()), |r| Message::Phone(PhoneMsg::ExtraDone(r)));
+                    return background(
+                        move || {
+                            crate::connect::grant_clipboard(&address, &code, &connect).map(|_| {
+                                "Permission granted. On the phone, allow Display over other apps and turn Developer options off.".into()
+                            })
+                        },
+                        |r| Message::Phone(PhoneMsg::ExtraDone(r)),
+                    );
                 }
                 if matches!(action.as_str(), "answer" | "hangup" | "phone") {
                     let name = self.phone_id().map(|id| self.phone_name(&id)).unwrap_or_default();
                     let number = self.phone.call.as_ref().and_then(|c| c["phoneNumber"].as_str()).unwrap_or("").to_string();
                     let device = self.phone_id();
-                    return background(move || {
-                        if action == "phone" { crate::connect::release_headset()?; }
-                        else if action == "answer" {
-                            let address = crate::connect::connect_headset(&name)?;
-                            std::thread::sleep(Duration::from_secs(2));
-                            if let Err(e) = crate::connect::call(&action, &number).and_then(|_| crate::connect::route_call_audio(&address)) { let _ = crate::connect::release_headset(); return Err(e); }
-                        } else { crate::connect::call(&action, &number)?; crate::connect::release_headset()?; }
-                        if let (Some(s), Some(id)) = (service(), device) { s.send_packet(&id, "echofiles.call", ef_phone::json!({"onLaptop":action == "answer"})); }
-                        Ok(if action == "answer" { "Call audio connected to laptop" } else { "Phone audio released" }.into())
-                    }, |r| Message::Phone(PhoneMsg::ExtraDone(r)));
+                    return background(
+                        move || {
+                            if action == "phone" {
+                                crate::connect::release_headset()?;
+                            } else if action == "answer" {
+                                let address = crate::connect::connect_headset(&name)?;
+                                std::thread::sleep(Duration::from_secs(2));
+                                if let Err(e) =
+                                    crate::connect::call(&action, &number).and_then(|_| crate::connect::route_call_audio(&address))
+                                {
+                                    let _ = crate::connect::release_headset();
+                                    return Err(e);
+                                }
+                            } else {
+                                crate::connect::call(&action, &number)?;
+                                crate::connect::release_headset()?;
+                            }
+                            if let (Some(s), Some(id)) = (service(), device) {
+                                s.send_packet(&id, "echofiles.call", ef_phone::json!({"onLaptop":action == "answer"}));
+                            }
+                            Ok(if action == "answer" { "Call audio connected to laptop" } else { "Phone audio released" }.into())
+                        },
+                        |r| Message::Phone(PhoneMsg::ExtraDone(r)),
+                    );
                 }
-                if action == "dnd-sync" { self.settings.phone.dnd_sync = !self.settings.phone.dnd_sync; self.send_phone_settings(); return self.persist_settings(); }
-                if action == "otp" { self.settings.phone.otp = !self.settings.phone.otp; return self.persist_settings(); }
-                if action == "autolock" { self.settings.phone.autolock = !self.settings.phone.autolock; self.send_phone_settings(); return self.persist_settings(); }
-                if action == "backup" { self.settings.phone.backup = !self.settings.phone.backup; self.send_phone_settings(); return self.persist_settings(); }
-                if action == "index" { self.settings.phone.phone_index = !self.settings.phone.phone_index; }
+                if action == "dnd-sync" {
+                    self.settings.phone.dnd_sync = !self.settings.phone.dnd_sync;
+                    self.send_phone_settings();
+                    return self.persist_settings();
+                }
+                if action == "otp" {
+                    self.settings.phone.otp = !self.settings.phone.otp;
+                    return self.persist_settings();
+                }
+                if action == "autolock" {
+                    self.settings.phone.autolock = !self.settings.phone.autolock;
+                    self.send_phone_settings();
+                    return self.persist_settings();
+                }
+                if action == "backup" {
+                    self.settings.phone.backup = !self.settings.phone.backup;
+                    self.send_phone_settings();
+                    return self.persist_settings();
+                }
+                if action == "index" {
+                    self.settings.phone.phone_index = !self.settings.phone.phone_index;
+                }
                 if let (Some(s), Some(id)) = (service(), self.phone_id()) {
-                    if action == "media-refresh" { s.send_packet(&id, "kdeconnect.mpris.request", ef_phone::json!({"requestPlayerList":true})); }
-                    if let Some((command, player)) = action.strip_prefix("media:").and_then(|v| v.split_once(':')) { s.send_packet(&id, "kdeconnect.mpris.request", ef_phone::json!({"player":player,"action":command,"requestNowPlaying":true})); }
+                    if action == "media-refresh" {
+                        s.send_packet(&id, "kdeconnect.mpris.request", ef_phone::json!({"requestPlayerList":true}));
+                    }
+                    if let Some((command, player)) = action.strip_prefix("media:").and_then(|v| v.split_once(':')) {
+                        s.send_packet(
+                            &id,
+                            "kdeconnect.mpris.request",
+                            ef_phone::json!({"player":player,"action":command,"requestNowPlaying":true}),
+                        );
+                    }
                     match action.as_str() {
                         "photo" | "scan" => {
-                            let request = format!("{}", SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_millis());
+                            let request =
+                                format!("{}", SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_millis());
                             let destination = self.pane().location.clone();
                             self.phone.captures.insert(request.clone(), destination);
                             s.send_packet(&id, "echofiles.capture.request", ef_phone::json!({"requestId":request,"scan":action == "scan"}));
                             self.phone.extra_status = "Tap the camera notification on your phone.".into();
                         }
                         "index" if self.settings.phone.phone_index => self.start_phone_index(&id),
-                        "index" => { self.phone.index_scan = None; let _ = std::fs::remove_file(config::state_dir().join("phone-index").join(format!("{id}.jsonl"))); }
-                        "dnd" => { s.send_packet(&id, "echofiles.dnd", ef_phone::json!({"enabled":true})); }
-                        "dnd-off" => { s.send_packet(&id, "echofiles.dnd", ef_phone::json!({"enabled":false})); }
+                        "index" => {
+                            self.phone.index_scan = None;
+                            let _ = std::fs::remove_file(config::state_dir().join("phone-index").join(format!("{id}.jsonl")));
+                        }
+                        "dnd" => {
+                            s.send_packet(&id, "echofiles.dnd", ef_phone::json!({"enabled":true}));
+                        }
+                        "dnd-off" => {
+                            s.send_packet(&id, "echofiles.dnd", ef_phone::json!({"enabled":false}));
+                        }
                         _ => {}
                     }
                 }
@@ -1181,12 +1420,28 @@ impl App {
             }
             PhoneMsg::Event(e) => self.phone_event(e),
             PhoneMsg::LocalImage(bytes) => {
-                if !self.settings.phone.clipboard || bytes == self.phone.last_image { return Task::none(); }
+                if !self.settings.phone.clipboard || bytes == self.phone.last_image {
+                    return Task::none();
+                }
                 self.phone.last_image = bytes.clone();
-                if let Some(s) = service() { for d in self.phone.devices.values().filter(|d| d.paired && d.echoconnect()) {
-                    if bytes.len() <= 48*1024 { s.send_packet(&d.id, "echofiles.clipboard.image.inline", ef_phone::json!({"data":crate::codec::base64_encode(&bytes),"mime":"image/png"})); }
-                    else { s.send_payload(&d.id, "echofiles.clipboard.image", ef_phone::json!({"filename":"clipboard.png","mime":"image/png"}), ef_phone::Source::Bytes(bytes.clone())); }
-                } }
+                if let Some(s) = service() {
+                    for d in self.phone.devices.values().filter(|d| d.paired && d.echoconnect()) {
+                        if bytes.len() <= 48 * 1024 {
+                            s.send_packet(
+                                &d.id,
+                                "echofiles.clipboard.image.inline",
+                                ef_phone::json!({"data":crate::codec::base64_encode(&bytes),"mime":"image/png"}),
+                            );
+                        } else {
+                            s.send_payload(
+                                &d.id,
+                                "echofiles.clipboard.image",
+                                ef_phone::json!({"filename":"clipboard.png","mime":"image/png"}),
+                                ef_phone::Source::Bytes(bytes.clone()),
+                            );
+                        }
+                    }
+                }
                 Task::none()
             }
             PhoneMsg::LocalClip(text) => {
@@ -1215,11 +1470,20 @@ impl App {
                 self.open_phone_page(PhonePage::Hub)
             }
             PhoneMsg::Dialog(open) => {
-                if open && service().is_none() { start(); }
+                if open && service().is_none() {
+                    start();
+                }
                 if open {
                     self.menu = None;
                     self.command = None;
-                    self.phone.dialog = Some(PairDialog { ip: String::new(), opened: Instant::now(), since: Instant::now(), firewall: None, firewall_busy: false, paired: None });
+                    self.phone.dialog = Some(PairDialog {
+                        ip: String::new(),
+                        opened: Instant::now(),
+                        since: Instant::now(),
+                        firewall: None,
+                        firewall_busy: false,
+                        paired: None,
+                    });
                     if let Some(s) = service() {
                         s.announce();
                     }
@@ -1269,13 +1533,17 @@ impl App {
             PhoneMsg::IpSubmit => {
                 let Some(d) = &self.phone.dialog else { return Task::none() };
                 let raw = d.ip.trim();
-                let addr: Option<SocketAddr> = raw.parse::<SocketAddr>().ok().or_else(|| raw.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, ef_phone::UDP_PORT)));
+                let addr: Option<SocketAddr> =
+                    raw.parse::<SocketAddr>().ok().or_else(|| raw.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, ef_phone::UDP_PORT)));
                 match (addr, service()) {
                     (Some(a), Some(s)) => {
                         s.connect_to(a);
                         s.announce_to(SocketAddr::new(a.ip(), ef_phone::UDP_PORT));
                     }
-                    (None, _) => self.toast_error("That isn't an IP address".into(), "Type the phone's address, like 192.168.1.20. KDE Connect shows it under its own device name.".into()),
+                    (None, _) => self.toast_error(
+                        "That isn't an IP address".into(),
+                        "Type the phone's address, like 192.168.1.20. KDE Connect shows it under its own device name.".into(),
+                    ),
                     _ => {}
                 }
                 Task::none()
@@ -1346,7 +1614,10 @@ impl App {
                 let wanted = self.phone.want.take().is_some_and(|w| w != Want::Nothing);
                 self.phone.sftp_error = Some(e.clone());
                 if wanted {
-                    self.toast_error("Couldn't open the phone's files".into(), format!("{e} Check that Filesystem expose is on in KDE Connect."));
+                    self.toast_error(
+                        "Couldn't open the phone's files".into(),
+                        format!("{e} Check that Filesystem expose is on in KDE Connect."),
+                    );
                 }
                 Task::none()
             }
@@ -1354,7 +1625,11 @@ impl App {
                 let generation = self.phone.generation;
                 self.phone.photos_loading = false;
                 let newest = match &r {
-                    Ok(list) => list.iter().find(|p| p.source == Source::Camera && !p.video).or_else(|| list.iter().find(|p| !p.video)).map(|p| (p.path.clone(), p.mtime)),
+                    Ok(list) => list
+                        .iter()
+                        .find(|p| p.source == Source::Camera && !p.video)
+                        .or_else(|| list.iter().find(|p| !p.video))
+                        .map(|p| (p.path.clone(), p.mtime)),
                     Err(_) => None,
                 };
                 self.phone.photos = Some(r);
@@ -1386,8 +1661,13 @@ impl App {
                 Task::none()
             }
             PhoneMsg::PhotoOpen(p) => {
-                if let Some(id) = self.phone.remote_photos.get(&p).copied() { self.request_remote_photo(id, config::state_dir().join("phone-photos"), "photo-open"); Task::none() } else { self.open_path(p) }
-            },
+                if let Some(id) = self.phone.remote_photos.get(&p).copied() {
+                    self.request_remote_photo(id, config::state_dir().join("phone-photos"), "photo-open");
+                    Task::none()
+                } else {
+                    self.open_path(p)
+                }
+            }
             PhoneMsg::PhotosClear => {
                 self.phone.photo_sel.clear();
                 Task::none()
@@ -1399,7 +1679,11 @@ impl App {
             }
             PhoneMsg::PhotoQueue => self.pump_photo_thumbs(),
             PhoneMsg::PhotosMore => {
-                if self.phone.photo_more { if let (Some(s), Some(id), Some((before, before_id))) = (service(), self.phone_id(), self.phone.photo_before) { s.send_packet(&id, "echofiles.photos.request", ef_phone::json!({"before":before,"beforeId":before_id})); } }
+                if self.phone.photo_more
+                    && let (Some(s), Some(id), Some((before, before_id))) = (service(), self.phone_id(), self.phone.photo_before)
+                {
+                    s.send_packet(&id, "echofiles.photos.request", ef_phone::json!({"before":before,"beforeId":before_id}));
+                }
                 self.phone.photo_limit += PHOTOS_PAGE;
                 self.want_photo_thumbs()
             }
@@ -1408,7 +1692,9 @@ impl App {
                 let remote: Vec<u64> = paths.iter().filter_map(|p| self.phone.remote_photos.get(p).copied()).collect();
                 if !remote.is_empty() {
                     self.phone.copy_photos = Some((remote.len(), Vec::new()));
-                    for id in remote { self.request_remote_photo(id, config::state_dir().join("phone-photos"), "photo-copy"); }
+                    for id in remote {
+                        self.request_remote_photo(id, config::state_dir().join("phone-photos"), "photo-copy");
+                    }
                     self.phone.extra_status = "Downloading photos before copying…".into();
                     return Task::none();
                 }
@@ -1421,12 +1707,20 @@ impl App {
             }
             PhoneMsg::PhotosSaveTo => {
                 let generation = self.phone.generation;
-                background(|| portal_pick("Save photos to", true).map(|v| v.into_iter().next()), move |r| scoped(generation, PhoneMsg::SaveFolder(r)))
-            },
+                background(
+                    || portal_pick("Save photos to", true).map(|v| v.into_iter().next()),
+                    move |r| scoped(generation, PhoneMsg::SaveFolder(r)),
+                )
+            }
             PhoneMsg::SaveFolder(Ok(Some(dest))) => {
                 let sources: Vec<PathBuf> = self.phone.photo_sel.drain().collect();
                 let remote: Vec<u64> = sources.iter().filter_map(|p| self.phone.remote_photos.get(p).copied()).collect();
-                if !remote.is_empty() { for id in remote { self.request_remote_photo(id, dest.clone(), "photo-save"); } return Task::none(); }
+                if !remote.is_empty() {
+                    for id in remote {
+                        self.request_remote_photo(id, dest.clone(), "photo-save");
+                    }
+                    return Task::none();
+                }
                 if sources.is_empty() {
                     return Task::none();
                 }
@@ -1443,9 +1737,18 @@ impl App {
                     return Task::none();
                 }
                 let base = config::home().join("Pictures/Phone");
-                let remote: Vec<(u64, String, String)> = new.iter().filter_map(|p| self.phone.remote_photos.get(&p.path).map(|id| (*id, month_of(p.mtime), import_key(&self.phone_id().unwrap_or_default(), self.phone_storage(), p)))).collect();
+                let remote: Vec<(u64, String, String)> =
+                    new.iter()
+                        .filter_map(|p| {
+                            self.phone.remote_photos.get(&p.path).map(|id| {
+                                (*id, month_of(p.mtime), import_key(&self.phone_id().unwrap_or_default(), self.phone_storage(), p))
+                            })
+                        })
+                        .collect();
                 if !remote.is_empty() {
-                    for (id, month, key) in remote { self.request_remote_photo(id, base.join(month), &format!("photo-import:{key}")); }
+                    for (id, month, key) in remote {
+                        self.request_remote_photo(id, base.join(month), &format!("photo-import:{key}"));
+                    }
                     return Task::none();
                 }
                 let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
@@ -1458,12 +1761,20 @@ impl App {
                 for (month, sources) in groups {
                     let dest = base.join(month);
                     let generation = self.phone.generation;
-                    tasks.push(background(move || std::fs::create_dir_all(&dest).map(|_| (sources, dest)).map_err(|e| e.to_string()), move |r| scoped(generation, PhoneMsg::ImportReady(r))));
+                    tasks.push(background(
+                        move || std::fs::create_dir_all(&dest).map(|_| (sources, dest)).map_err(|e| e.to_string()),
+                        move |r| scoped(generation, PhoneMsg::ImportReady(r)),
+                    ));
                 }
                 Task::batch(tasks)
             }
-            PhoneMsg::ImportReady(Ok((sources, dest))) => self.file_update(FileMsg::Start { kind: ef_core::ops::Kind::Copy, sources, dest }),
-            PhoneMsg::ImportReady(Err(e)) => { self.toast_error("Couldn't prepare the photo import".into(), e); Task::none() }
+            PhoneMsg::ImportReady(Ok((sources, dest))) => {
+                self.file_update(FileMsg::Start { kind: ef_core::ops::Kind::Copy, sources, dest })
+            }
+            PhoneMsg::ImportReady(Err(e)) => {
+                self.toast_error("Couldn't prepare the photo import".into(), e);
+                Task::none()
+            }
             PhoneMsg::Thread(t) => {
                 self.phone.open_thread = Some(t);
                 if let (Some(id), Some(s)) = (self.phone_id(), service()) {
@@ -1481,11 +1792,21 @@ impl App {
                 if text.is_empty() {
                     return Task::none();
                 }
-                let addresses: Vec<String> = self.phone.threads.get(&t).map(|m| m.address.split(", ").map(str::to_string).collect()).unwrap_or_default();
+                let addresses: Vec<String> =
+                    self.phone.threads.get(&t).map(|m| m.address.split(", ").map(str::to_string).collect()).unwrap_or_default();
                 if let Some(s) = service()
                     && s.send_sms(&id, &addresses, &text)
                 {
-                    let sent = Sms { thread: t, uid: -(now_s()), address: addresses.join(", "), body: text, date: now_s() * 1000, outgoing: true, read: true, attachments: Vec::new() };
+                    let sent = Sms {
+                        thread: t,
+                        uid: -(now_s()),
+                        address: addresses.join(", "),
+                        body: text,
+                        date: now_s() * 1000,
+                        outgoing: true,
+                        read: true,
+                        attachments: Vec::new(),
+                    };
                     self.phone.thread_msgs.entry(t).or_default().push(sent.clone());
                     self.phone.threads.insert(t, sent);
                     self.phone.compose.clear();
@@ -1552,16 +1873,32 @@ impl App {
             PhoneMsg::OpenFile(p) => self.open_path(p),
             PhoneMsg::OpenSaveFolder => {
                 let dir = config::expand(&self.settings.phone.save_to);
-                background(move || std::fs::create_dir_all(&dir).map(|_| dir).map_err(|e| e.to_string()), |r| Message::Phone(PhoneMsg::SaveDirReady(r)))
+                background(
+                    move || std::fs::create_dir_all(&dir).map(|_| dir).map_err(|e| e.to_string()),
+                    |r| Message::Phone(PhoneMsg::SaveDirReady(r)),
+                )
             }
             PhoneMsg::SaveDirReady(Ok(dir)) => self.go(dir, true),
-            PhoneMsg::SaveDirReady(Err(e)) => { self.toast_error("Couldn't open the receive folder".into(), e); Task::none() }
+            PhoneMsg::SaveDirReady(Err(e)) => {
+                self.toast_error("Couldn't open the receive folder".into(), e);
+                Task::none()
+            }
             PhoneMsg::SetFiles(on) => {
                 self.settings.phone.files = on;
-                if !on { for state in self.phone.states.values_mut() {
-                    state.generation = crate::pane::next_id(); state.want = None; state.mounting = false; state.photos = None; state.photos_loading = false;
-                    if let Some((m, _)) = state.mount.take() { std::thread::spawn(move || { let _ = gvfs::unmount(&m, true); }); }
-                } }
+                if !on {
+                    for state in self.phone.states.values_mut() {
+                        state.generation = crate::pane::next_id();
+                        state.want = None;
+                        state.mounting = false;
+                        state.photos = None;
+                        state.photos_loading = false;
+                        if let Some((m, _)) = state.mount.take() {
+                            std::thread::spawn(move || {
+                                let _ = gvfs::unmount(&m, true);
+                            });
+                        }
+                    }
+                }
                 self.send_phone_settings();
                 let t = if on { Task::none() } else { self.drop_phone_mount() };
                 Task::batch([t, self.persist_settings()])
@@ -1639,21 +1976,51 @@ impl App {
         let selected = self.phone_id();
         let selected_current = self.phone.current.clone();
         let device = match &e {
-            Event::Notification { id, .. } | Event::NotificationGone { id, .. } | Event::Sms { id, .. } | Event::Sftp { id, .. } | Event::Other { id, .. } | Event::Incoming { id, .. } | Event::TransferStarted { id, .. } | Event::TransferDone { id, .. } => Some(id.clone()),
+            Event::Notification { id, .. }
+            | Event::NotificationGone { id, .. }
+            | Event::Sms { id, .. }
+            | Event::Sftp { id, .. }
+            | Event::Other { id, .. }
+            | Event::Incoming { id, .. }
+            | Event::TransferStarted { id, .. }
+            | Event::TransferDone { id, .. } => Some(id.clone()),
             _ => selected.clone(),
         };
-        let routed = matches!(&e, Event::Notification { .. } | Event::NotificationGone { .. } | Event::Sms { .. } | Event::Sftp { .. } | Event::Other { .. } | Event::Incoming { .. } | Event::TransferStarted { .. } | Event::TransferDone { .. });
-        if let Some(id) = &device { self.activate_phone(id); if routed { self.phone.current = Some(id.clone()); } }
+        let routed = matches!(
+            &e,
+            Event::Notification { .. }
+                | Event::NotificationGone { .. }
+                | Event::Sms { .. }
+                | Event::Sftp { .. }
+                | Event::Other { .. }
+                | Event::Incoming { .. }
+                | Event::TransferStarted { .. }
+                | Event::TransferDone { .. }
+        );
+        if let Some(id) = &device {
+            self.activate_phone(id);
+            if routed {
+                self.phone.current = Some(id.clone());
+            }
+        }
         let task = self.phone_event_inner(e);
-        if routed { self.phone.current = selected_current; if let Some(id) = selected { self.activate_phone(&id); } }
+        if routed {
+            self.phone.current = selected_current;
+            if let Some(id) = selected {
+                self.activate_phone(&id);
+            }
+        }
         task
     }
 
-    fn activate_phone(&mut self, id: &str) { self.phone.activate(id); }
-
+    fn activate_phone(&mut self, id: &str) {
+        self.phone.activate(id);
+    }
 
     pub(crate) fn imported_copies(&mut self, keys: Vec<String>) {
-        if keys.is_empty() { return; }
+        if keys.is_empty() {
+            return;
+        }
         self.phone.imported.extend(keys);
         save_lines(imported_file(), self.phone.imported.iter().map(|k| format!("{k}\n")).collect());
     }
@@ -1678,7 +2045,9 @@ impl App {
                 self.phone.devices.insert(id.clone(), d);
                 if paired {
                     self.phone_seen(&id);
-                    if self.settings.phone.clipboard && !self.phone.clip_sensitive && !self.phone.clip_last.is_empty()
+                    if self.settings.phone.clipboard
+                        && !self.phone.clip_sensitive
+                        && !self.phone.clip_last.is_empty()
                         && let Some(s) = service()
                     {
                         s.send_clipboard(&id, &self.phone.clip_last, true, false);
@@ -1690,8 +2059,22 @@ impl App {
                 Task::none()
             }
             Event::Gone(id) => {
-                if let Some(state) = self.phone.states.get_mut(&id) { state.generation = crate::pane::next_id(); state.photos = None; state.photos_loading = false; state.mounting = false; state.want = None; if let Some((m, _)) = state.mount.take() { std::thread::spawn(move || { let _ = gvfs::unmount(&m, true); }); } }
-                if self.phone.active_id == id { self.phone.away_since = Some(Instant::now()); self.phone.ringing = None; }
+                if let Some(state) = self.phone.states.get_mut(&id) {
+                    state.generation = crate::pane::next_id();
+                    state.photos = None;
+                    state.photos_loading = false;
+                    state.mounting = false;
+                    state.want = None;
+                    if let Some((m, _)) = state.mount.take() {
+                        std::thread::spawn(move || {
+                            let _ = gvfs::unmount(&m, true);
+                        });
+                    }
+                }
+                if self.phone.active_id == id {
+                    self.phone.away_since = Some(Instant::now());
+                    self.phone.ringing = None;
+                }
                 if self.phone.devices.get(&id).is_some_and(|d| d.paired) {
                     self.phone_seen(&id);
                 }
@@ -1708,7 +2091,14 @@ impl App {
             Event::PairRequested { id, code } => {
                 self.phone.code = Some((id, code, true));
                 if self.phone.dialog.is_none() {
-                    self.phone.dialog = Some(PairDialog { ip: String::new(), opened: Instant::now(), since: Instant::now(), firewall: None, firewall_busy: false, paired: None });
+                    self.phone.dialog = Some(PairDialog {
+                        ip: String::new(),
+                        opened: Instant::now(),
+                        since: Instant::now(),
+                        firewall: None,
+                        firewall_busy: false,
+                        paired: None,
+                    });
                 }
                 self.show_window()
             }
@@ -1733,13 +2123,24 @@ impl App {
                 if self.phone.code.as_ref().is_some_and(|c| c.0 == id) {
                     self.phone.code = None;
                 }
-                self.toast_error(format!("{} didn't pair", self.phone_name(&id)), "It was declined on the phone. Try again, and tap Accept there.".into());
+                self.toast_error(
+                    format!("{} didn't pair", self.phone_name(&id)),
+                    "It was declined on the phone. Try again, and tap Accept there.".into(),
+                );
                 Task::none()
             }
             Event::Unpaired(id) => {
-                if let Some(state) = self.phone.states.remove(&id) { if let Some((m, _)) = state.mount { std::thread::spawn(move || { let _ = gvfs::unmount(&m, true); }); } }
+                if let Some(state) = self.phone.states.remove(&id)
+                    && let Some((m, _)) = state.mount
+                {
+                    std::thread::spawn(move || {
+                        let _ = gvfs::unmount(&m, true);
+                    });
+                }
                 let index = config::state_dir().join("phone-index").join(format!("{id}.jsonl"));
-                std::thread::spawn(move || { let _ = std::fs::remove_file(index); });
+                std::thread::spawn(move || {
+                    let _ = std::fs::remove_file(index);
+                });
                 let name = self.phone_name(&id);
                 self.phone.trusted = ef_phone::trusted();
                 if let Some(d) = self.phone.devices.get_mut(&id) {
@@ -1769,7 +2170,12 @@ impl App {
                 self.phone.battery.insert(id.clone(), (level, charging));
                 if self.settings.phone.battery_warning && level <= 15 && !charging {
                     if self.phone.low_warned.insert(id.clone()) {
-                        self.push_toast(Tone::Accent, format!("{} is at {level}%", self.phone_name(&id)), Some("Plug it in soon.".into()), None);
+                        self.push_toast(
+                            Tone::Accent,
+                            format!("{} is at {level}%", self.phone_name(&id)),
+                            Some("Plug it in soon.".into()),
+                            None,
+                        );
                     }
                 } else if level > 20 || charging {
                     self.phone.low_warned.remove(&id);
@@ -1777,19 +2183,31 @@ impl App {
                 Task::none()
             }
             Event::Clipboard { text, sensitive, .. } => {
-                if sensitive { self.phone.clip.retain(|(_, old, _)| old != &text); if self.phone.clip_last == text { self.phone.clip_sensitive = true; } }
+                if sensitive {
+                    self.phone.clip.retain(|(_, old, _)| old != &text);
+                    if self.phone.clip_last == text {
+                        self.phone.clip_sensitive = true;
+                    }
+                }
                 if !self.settings.phone.clipboard || text == self.phone.clip_last {
                     return Task::none();
                 }
                 self.phone.clip_sensitive = sensitive;
                 self.phone.clip_last = text.clone();
-                if !sensitive { self.phone.clip.push_front((true, text.clone(), SystemTime::now())); }
+                if !sensitive {
+                    self.phone.clip.push_front((true, text.clone(), SystemTime::now()));
+                }
                 self.phone.clip.truncate(20);
                 std::thread::spawn(move || set_clipboard(&text));
                 Task::none()
             }
             Event::Notification { id, notification: n } => {
-                if self.settings.phone.otp { if let Some(code) = crate::connect::otp(&format!("{} {}", n.title, n.text)) { std::thread::spawn(move || set_clipboard(&code)); self.push_toast(Tone::Accent, "One-time code copied".into(), None, None); } }
+                if self.settings.phone.otp
+                    && let Some(code) = crate::connect::otp(&format!("{} {}", n.title, n.text))
+                {
+                    std::thread::spawn(move || set_clipboard(&code));
+                    self.push_toast(Tone::Accent, "One-time code copied".into(), None, None);
+                }
 
                 let mode = self.settings.phone.notifications;
                 if mode == PhoneNotifications::Off || self.settings.phone.muted_apps.iter().any(|a| a.eq_ignore_ascii_case(&n.app)) {
@@ -1809,7 +2227,19 @@ impl App {
                 Task::none()
             }
             Event::Sms { messages, .. } => {
-                if self.settings.phone.otp { for message in &messages { if !message.read && !message.outgoing && now_s()*1000 - message.date < 120000 { if let Some(code) = crate::connect::otp(&message.body) { std::thread::spawn(move || set_clipboard(&code)); self.push_toast(Tone::Accent, "One-time code copied".into(), None, None); break; } } } }
+                if self.settings.phone.otp {
+                    for message in &messages {
+                        if !message.read
+                            && !message.outgoing
+                            && now_s() * 1000 - message.date < 120000
+                            && let Some(code) = crate::connect::otp(&message.body)
+                        {
+                            std::thread::spawn(move || set_clipboard(&code));
+                            self.push_toast(Tone::Accent, "One-time code copied".into(), None, None);
+                            break;
+                        }
+                    }
+                }
 
                 if !self.settings.phone.messages {
                     return Task::none();
@@ -1828,12 +2258,18 @@ impl App {
                     let list = self.phone.thread_msgs.entry(t).or_default();
                     // Our own optimistic copy (negative uid) gives way to the phone's.
                     let confirmed: HashSet<&str> = batch.iter().filter(|m| m.outgoing).map(|m| m.body.as_str()).collect();
-                    if !confirmed.is_empty() { list.retain(|x| !(x.uid < 0 && confirmed.contains(x.body.as_str()))); }
+                    if !confirmed.is_empty() {
+                        list.retain(|x| !(x.uid < 0 && confirmed.contains(x.body.as_str())));
+                    }
                     let mut uids: HashSet<i64> = list.iter().filter(|x| x.uid > 0).map(|x| x.uid).collect();
                     let mut same: HashSet<(i64, String, bool)> = list.iter().map(|x| (x.date, x.body.clone(), x.outgoing)).collect();
                     for m in batch {
-                        if (m.uid > 0 && uids.contains(&m.uid)) || same.contains(&(m.date, m.body.clone(), m.outgoing)) { continue; }
-                        if m.uid > 0 { uids.insert(m.uid); }
+                        if (m.uid > 0 && uids.contains(&m.uid)) || same.contains(&(m.date, m.body.clone(), m.outgoing)) {
+                            continue;
+                        }
+                        if m.uid > 0 {
+                            uids.insert(m.uid);
+                        }
                         same.insert((m.date, m.body.clone(), m.outgoing));
                         list.push(m);
                     }
@@ -1842,28 +2278,38 @@ impl App {
                 Task::none()
             }
             Event::Sftp { id, result } => {
-                if !self.settings.phone.files || self.phone.active_id != id || !self.phone.mounting || self.phone.want.is_none() { return Task::none(); }
+                if !self.settings.phone.files || self.phone.active_id != id || !self.phone.mounting || self.phone.want.is_none() {
+                    return Task::none();
+                }
                 match result {
-                Ok(s) => {
-                    self.phone.sftp = Some(s.clone());
-                    self.mount_phone(s)
-                }
-                Err(e) => {
-                    self.phone.mounting = false;
-                    let wanted = self.phone.want.take().is_some_and(|w| w != Want::Nothing);
-                    self.phone.sftp_error = Some(e.clone());
-                    if wanted {
-                        self.toast_error("The phone didn't share its files".into(), format!("{e} In KDE Connect, turn on Filesystem expose and allow All files access."));
+                    Ok(s) => {
+                        self.phone.sftp = Some(s.clone());
+                        self.mount_phone(s)
                     }
-                    Task::none()
-                }
+                    Err(e) => {
+                        self.phone.mounting = false;
+                        let wanted = self.phone.want.take().is_some_and(|w| w != Want::Nothing);
+                        self.phone.sftp_error = Some(e.clone());
+                        if wanted {
+                            self.toast_error(
+                                "The phone didn't share its files".into(),
+                                format!("{e} In KDE Connect, turn on Filesystem expose and allow All files access."),
+                            );
+                        }
+                        Task::none()
+                    }
                 }
             }
             Event::Text { id, text } => {
                 self.phone.clip_last = text.clone();
                 let t2 = text.clone();
                 std::thread::spawn(move || set_clipboard(&t2));
-                self.push_toast(Tone::Accent, format!("Text from {}", self.phone_name(&id)), Some(format!("Copied to the clipboard: {}", text.chars().take(120).collect::<String>())), None);
+                self.push_toast(
+                    Tone::Accent,
+                    format!("Text from {}", self.phone_name(&id)),
+                    Some(format!("Copied to the clipboard: {}", text.chars().take(120).collect::<String>())),
+                    None,
+                );
                 Task::none()
             }
             Event::Url { id, url } => {
@@ -1874,12 +2320,19 @@ impl App {
                 Task::none()
             }
             Event::Incoming { id, transfer, name, size, kind, body } => {
-                if !self.settings.phone.files && kind != "echofiles.clipboard.image" { if let Some(s) = service() { s.reject_file(transfer); } return Task::none(); }
+                if !self.settings.phone.files && kind != "echofiles.clipboard.image" {
+                    if let Some(s) = service() {
+                        s.reject_file(transfer);
+                    }
+                    return Task::none();
+                }
                 if kind == "echofiles.photos.thumb" {
                     if let Some(path) = self.phone.remote_ids.get(&body["id"].as_u64().unwrap_or(0)).cloned() {
                         self.phone.thumb_wait.remove(&body["id"].as_u64().unwrap_or(0));
                         self.phone.remote_thumb.insert(transfer, path);
-                        if let Some(s) = service() { s.accept_file(transfer, config::state_dir().join("phone-thumbnails")); }
+                        if let Some(s) = service() {
+                            s.accept_file(transfer, config::state_dir().join("phone-thumbnails"));
+                        }
                     }
                     return Task::none();
                 }
@@ -1889,25 +2342,42 @@ impl App {
                         let action = self.phone.photo_requests.remove(request).unwrap_or_else(|| "photo-save".into());
                         self.phone.payloads.insert(transfer, action);
                         s.accept_file(transfer, dest);
-                    } else if let Some(s) = service() { s.reject_file(transfer); }
+                    } else if let Some(s) = service() {
+                        s.reject_file(transfer);
+                    }
                     return Task::none();
                 }
                 if kind == "echofiles.capture" {
                     let destination = self.phone.captures.remove(body["requestId"].as_str().unwrap_or(""));
-                    if let Some(s) = service() { if let Some(dir) = destination { s.accept_file(transfer, dir); } else { s.reject_file(transfer); } }
+                    if let Some(s) = service() {
+                        if let Some(dir) = destination {
+                            s.accept_file(transfer, dir);
+                        } else {
+                            s.reject_file(transfer);
+                        }
+                    }
                     return Task::none();
                 }
                 if kind == "echofiles.backup" {
                     if let Some(s) = service() {
-                        if self.settings.phone.backup { self.phone.backup_requests.insert(transfer, body["requestId"].as_str().unwrap_or("").into()); self.phone.payloads.insert(transfer, kind); s.accept_file(transfer, config::expand("~/Pictures/Phone/Backup")); }
-                        else { s.reject_file(transfer); }
+                        if self.settings.phone.backup {
+                            self.phone.backup_requests.insert(transfer, body["requestId"].as_str().unwrap_or("").into());
+                            self.phone.payloads.insert(transfer, kind);
+                            s.accept_file(transfer, config::expand("~/Pictures/Phone/Backup"));
+                        } else {
+                            s.reject_file(transfer);
+                        }
                     }
                     return Task::none();
                 }
                 if kind == "echofiles.clipboard.image" {
                     if let Some(s) = service() {
-                        if self.settings.phone.clipboard && size <= 16*1024*1024 { self.phone.payloads.insert(transfer, kind); s.accept_file(transfer, config::state_dir().join("phone-clipboard")); }
-                        else { s.reject_file(transfer); }
+                        if self.settings.phone.clipboard && size <= 16 * 1024 * 1024 {
+                            self.phone.payloads.insert(transfer, kind);
+                            s.accept_file(transfer, config::state_dir().join("phone-clipboard"));
+                        } else {
+                            s.reject_file(transfer);
+                        }
                     }
                     return Task::none();
                 }
@@ -1920,7 +2390,12 @@ impl App {
                     ef_core::fmt::size(size, &mut sz);
                     let phone = self.phone_name(&id);
                     self.phone.offers.push((transfer, id, name.clone(), size));
-                    self.push_toast(Tone::Accent, format!("{phone} wants to send “{name}”"), Some(format!("{sz} · saves to {}", self.settings.phone.save_to)), Some(("Accept".into(), Message::Phone(PhoneMsg::AcceptOffer(transfer)))));
+                    self.push_toast(
+                        Tone::Accent,
+                        format!("{phone} wants to send “{name}”"),
+                        Some(format!("{sz} · saves to {}", self.settings.phone.save_to)),
+                        Some(("Accept".into(), Message::Phone(PhoneMsg::AcceptOffer(transfer)))),
+                    );
                 }
                 Task::none()
             }
@@ -1929,7 +2404,9 @@ impl App {
                     s.send_packet(&id, "echofiles.theme", crate::connect::theme(&self.palette));
                     s.send_packet(&id, "kdeconnect.contacts.request_all_uids_timestamps", ef_phone::json!({}));
                     s.send_packet(&id, "kdeconnect.mpris.request", ef_phone::json!({"requestPlayerList":true}));
-                    if self.settings.phone.phone_index { self.start_phone_index(&id); }
+                    if self.settings.phone.phone_index {
+                        self.start_phone_index(&id);
+                    }
                 }
                 self.phone.away_since = None;
                 Task::none()
@@ -1937,87 +2414,195 @@ impl App {
             Event::Other { id, kind, body } => {
                 match kind.as_str() {
                     "echofiles.clipboard.image.inline" if self.settings.phone.clipboard => {
-                                            let data = body["data"].as_str().unwrap_or("");
-                        if data.len() <= 65536 { if let Ok(bytes) = crate::codec::base64_decode(data).ok_or(()) { std::thread::spawn(move || { if let Some(png) = normal_image(&bytes) { let _ = event_tx().unbounded_send(PhoneMsg::RemoteImage(png)); } }); } }
+                        let data = body["data"].as_str().unwrap_or("");
+                        if data.len() <= 65536
+                            && let Ok(bytes) = crate::codec::base64_decode(data).ok_or(())
+                        {
+                            std::thread::spawn(move || {
+                                if let Some(png) = normal_image(&bytes) {
+                                    let _ = event_tx().unbounded_send(PhoneMsg::RemoteImage(png));
+                                }
+                            });
+                        }
                     }
                     "echofiles.dnd" if self.settings.phone.dnd_sync => {
                         let enabled = body["enabled"].as_bool().unwrap_or(false);
-                        if self.phone.dnd != enabled { self.phone.dnd = enabled; std::thread::spawn(move || { crate::connect::set_dnd(enabled); }); }
+                        if self.phone.dnd != enabled {
+                            self.phone.dnd = enabled;
+                            std::thread::spawn(move || {
+                                crate::connect::set_dnd(enabled);
+                            });
+                        }
                     }
                     "echofiles.lock" => crate::connect::lock(),
-                    "echofiles.call" if body["action"].as_str() == Some("phone") => { return self.phone_update(PhoneMsg::Extra("phone".into())); }
-                    "kdeconnect.telephony" => { self.phone.call = if body["isCancel"].as_bool() == Some(true) { std::thread::spawn(|| { let _ = crate::connect::release_headset(); }); None } else { Some(body) }; }
+                    "echofiles.call" if body["action"].as_str() == Some("phone") => {
+                        return self.phone_update(PhoneMsg::Extra("phone".into()));
+                    }
+                    "kdeconnect.telephony" => {
+                        self.phone.call = if body["isCancel"].as_bool() == Some(true) {
+                            std::thread::spawn(|| {
+                                let _ = crate::connect::release_headset();
+                            });
+                            None
+                        } else {
+                            Some(body)
+                        };
+                    }
                     "kdeconnect.mpris" => {
                         if let Some(players) = body["playerList"].as_array() {
                             self.phone.players.retain(|p, _| players.iter().any(|v| v.as_str() == Some(p)));
-                            for p in players.iter().filter_map(|v| v.as_str()) { if let Some(s) = service() { s.send_packet(&id, "kdeconnect.mpris.request", ef_phone::json!({"player":p,"requestNowPlaying":true})); } }
-                        } else if let Some(player) = body["player"].as_str() { self.phone.players.insert(player.into(), body); }
+                            for p in players.iter().filter_map(|v| v.as_str()) {
+                                if let Some(s) = service() {
+                                    s.send_packet(&id, "kdeconnect.mpris.request", ef_phone::json!({"player":p,"requestNowPlaying":true}));
+                                }
+                            }
+                        } else if let Some(player) = body["player"].as_str() {
+                            self.phone.players.insert(player.into(), body);
+                        }
                     }
                     "kdeconnect.connectivity_report" => {
-                        self.phone.signal = body["signalStrengths"].as_object().map(|signals| signals.values().map(|v| format!("{} · {}/4", v["networkType"].as_str().unwrap_or("Mobile"), v["signalStrength"].as_i64().unwrap_or(0))).collect::<Vec<_>>().join(" · ")).unwrap_or_default();
+                        self.phone.signal = body["signalStrengths"]
+                            .as_object()
+                            .map(|signals| {
+                                signals
+                                    .values()
+                                    .map(|v| {
+                                        format!(
+                                            "{} · {}/4",
+                                            v["networkType"].as_str().unwrap_or("Mobile"),
+                                            v["signalStrength"].as_i64().unwrap_or(0)
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(" · ")
+                            })
+                            .unwrap_or_default();
                     }
                     "echofiles.settings" => {
                         // The phone may only switch features off. Turning one on (sharing the
                         // clipboard, accepting backups, locking this session) is a decision
                         // made here, in Settings, never by a remote device.
                         let off = |k: &str| body[k].as_bool() == Some(false);
-                        if off("backup") { self.settings.phone.backup = false; }
-                        if off("dnd") { self.settings.phone.dnd_sync = false; }
-                        if off("notifications") { self.settings.phone.notifications = PhoneNotifications::Off; self.phone.notifications.clear(); }
-                        if off("autolock") { self.settings.phone.autolock = false; }
-                        if off("clipboard") { self.settings.phone.clipboard = false; }
-                        if off("files") { self.settings.phone.files = false; }
-                        if off("sms") { self.settings.phone.messages = false; }
+                        if off("backup") {
+                            self.settings.phone.backup = false;
+                        }
+                        if off("dnd") {
+                            self.settings.phone.dnd_sync = false;
+                        }
+                        if off("notifications") {
+                            self.settings.phone.notifications = PhoneNotifications::Off;
+                            self.phone.notifications.clear();
+                        }
+                        if off("autolock") {
+                            self.settings.phone.autolock = false;
+                        }
+                        if off("clipboard") {
+                            self.settings.phone.clipboard = false;
+                        }
+                        if off("files") {
+                            self.settings.phone.files = false;
+                        }
+                        if off("sms") {
+                            self.settings.phone.messages = false;
+                        }
                         return self.persist_settings();
                     }
                     "kdeconnect.contacts.response_uids_timestamps" => {
-                        if let (Some(s), Some(o)) = (service(), body.as_object()) { for chunk in o.keys().collect::<Vec<_>>().chunks(100) { s.send_packet(&id, "kdeconnect.contacts.request_vcards_by_uid", ef_phone::json!({"uids":chunk})); } }
+                        if let (Some(s), Some(o)) = (service(), body.as_object()) {
+                            for chunk in o.keys().collect::<Vec<_>>().chunks(100) {
+                                s.send_packet(&id, "kdeconnect.contacts.request_vcards_by_uid", ef_phone::json!({"uids":chunk}));
+                            }
+                        }
                     }
                     "kdeconnect.contacts.response_vcards" => {
-                        if let Some(o) = body.as_object() { for (_, card) in o { if let Some(card) = card.as_str() {
-                            let name = card.lines().find_map(|l| l.strip_prefix("FN:")).unwrap_or("").trim();
-                            for line in card.lines().filter(|l| l.starts_with("TEL")) { if let Some((_, number)) = line.split_once(':') { self.phone.contacts.insert(number.trim().into(), name.into()); } }
-                        } } }
+                        if let Some(o) = body.as_object() {
+                            for (_, card) in o {
+                                if let Some(card) = card.as_str() {
+                                    let name = card.lines().find_map(|l| l.strip_prefix("FN:")).unwrap_or("").trim();
+                                    for line in card.lines().filter(|l| l.starts_with("TEL")) {
+                                        if let Some((_, number)) = line.split_once(':') {
+                                            self.phone.contacts.insert(number.trim().into(), name.into());
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     "echofiles.photos.error" => {
                         self.phone.extra_status = body["message"].as_str().unwrap_or("Photo request failed").into();
                         self.phone.photos_loading = false;
-                        if let Some((path, _)) = body["id"].as_u64().and_then(|id| self.phone.thumb_wait.remove(&id)) { self.phone.photo_jobs = self.phone.photo_jobs.saturating_sub(1); self.phone.photo_thumbs.insert(path, None); return self.pump_photo_thumbs(); }
+                        if let Some((path, _)) = body["id"].as_u64().and_then(|id| self.phone.thumb_wait.remove(&id)) {
+                            self.phone.photo_jobs = self.phone.photo_jobs.saturating_sub(1);
+                            self.phone.photo_thumbs.insert(path, None);
+                            return self.pump_photo_thumbs();
+                        }
                     }
                     "echofiles.photos" => {
-                        let mut photos = match self.phone.photos.take() { Some(Ok(p)) => p, _ => Vec::new() };
+                        let mut photos = match self.phone.photos.take() {
+                            Some(Ok(p)) => p,
+                            _ => Vec::new(),
+                        };
                         self.phone.photos_loading = false;
                         self.phone.photo_more = body["more"].as_bool().unwrap_or(false);
-                        if let Some(entries) = body["photos"].as_array() { for entry in entries {
-                            let Some(photo_id) = entry["id"].as_u64() else { continue };
-                            let name = Path::new(entry["name"].as_str().unwrap_or("photo")).file_name().unwrap_or_default();
-                            let path = config::state_dir().join("phone-photos").join(photo_id.to_string()).join(name);
-                            let folder = entry["folder"].as_str().unwrap_or("");
-                            let source = if folder.contains("Screenshots") { Source::Screenshots } else if folder.starts_with("DCIM") { Source::Camera } else if folder.contains("WhatsApp") { Source::Chats } else { Source::Other };
-                            let date = entry["date"].as_i64().unwrap_or(0);
-                            self.phone.photo_before = Some((date, photo_id));
-                            self.phone.remote_ids.insert(photo_id, path.clone());
-                            if self.phone.remote_photos.insert(path.clone(), photo_id).is_none() {
-                                photos.push(Photo { path: path.clone(), mtime: date, size: entry["size"].as_u64().unwrap_or(0), source, video: entry["video"].as_bool().unwrap_or(false) });
+                        if let Some(entries) = body["photos"].as_array() {
+                            for entry in entries {
+                                let Some(photo_id) = entry["id"].as_u64() else { continue };
+                                let name = Path::new(entry["name"].as_str().unwrap_or("photo")).file_name().unwrap_or_default();
+                                let path = config::state_dir().join("phone-photos").join(photo_id.to_string()).join(name);
+                                let folder = entry["folder"].as_str().unwrap_or("");
+                                let source = if folder.contains("Screenshots") {
+                                    Source::Screenshots
+                                } else if folder.starts_with("DCIM") {
+                                    Source::Camera
+                                } else if folder.contains("WhatsApp") {
+                                    Source::Chats
+                                } else {
+                                    Source::Other
+                                };
+                                let date = entry["date"].as_i64().unwrap_or(0);
+                                self.phone.photo_before = Some((date, photo_id));
+                                self.phone.remote_ids.insert(photo_id, path.clone());
+                                if self.phone.remote_photos.insert(path.clone(), photo_id).is_none() {
+                                    photos.push(Photo {
+                                        path: path.clone(),
+                                        mtime: date,
+                                        size: entry["size"].as_u64().unwrap_or(0),
+                                        source,
+                                        video: entry["video"].as_bool().unwrap_or(false),
+                                    });
+                                }
                             }
-                        } }
-                        photos.sort_by_key(|p| std::cmp::Reverse(p.mtime)); self.phone.photos = Some(Ok(photos));
+                        }
+                        photos.sort_by_key(|p| std::cmp::Reverse(p.mtime));
+                        self.phone.photos = Some(Ok(photos));
                         return self.want_photo_thumbs();
                     }
                     "echofiles.files.list" if self.settings.phone.phone_index => {
                         if let Some(mut scan) = self.phone.index_scan.take() {
-                            if scan.device != id || body["requestId"].as_str() != Some(&scan.request) { self.phone.index_scan = Some(scan); return Task::none(); }
-                            if let Err(error) = scan.accept(&body) { self.phone.extra_status = format!("Phone index: {error}"); }
-                            else if let Some(next) = scan.next() {
-                                if let Some(s) = service() { s.send_packet(&id, "echofiles.files.list", next); }
-                                self.phone.index_at = Some(Instant::now()); self.phone.index_scan = Some(scan);
-                            } else { self.phone.extra_status = match scan.save() { Ok(n) => format!("{n} phone names available offline"), Err(e) => format!("Could not save phone index: {e}") }; }
+                            if scan.device != id || body["requestId"].as_str() != Some(&scan.request) {
+                                self.phone.index_scan = Some(scan);
+                                return Task::none();
+                            }
+                            if let Err(error) = scan.accept(&body) {
+                                self.phone.extra_status = format!("Phone index: {error}");
+                            } else if let Some(next) = scan.next() {
+                                if let Some(s) = service() {
+                                    s.send_packet(&id, "echofiles.files.list", next);
+                                }
+                                self.phone.index_at = Some(Instant::now());
+                                self.phone.index_scan = Some(scan);
+                            } else {
+                                self.phone.extra_status = match scan.save() {
+                                    Ok(n) => format!("{n} phone names available offline"),
+                                    Err(e) => format!("Could not save phone index: {e}"),
+                                };
+                            }
                         }
                     }
                     _ => {}
                 }
                 Task::none()
-            },
+            }
             Event::TransferStarted { transfer, name, size, upload, done, .. } => {
                 self.phone.moved.insert(0, Moved { transfer, name, size, upload, done, result: None, at: SystemTime::now() });
                 self.phone.moved.truncate(30);
@@ -2025,10 +2610,13 @@ impl App {
             }
             Event::TransferDone { id, transfer, upload, result } => {
                 if let Some(request) = self.phone.backup_requests.remove(&transfer) {
-                    let received = result.clone(); let device = id.clone();
+                    let received = result.clone();
+                    let device = id.clone();
                     std::thread::spawn(move || {
                         let saved = received.and_then(|path| crate::connect::deduplicate_backup(&path).map_err(|e| e.to_string()));
-                        if let Some(s) = service() { s.send_packet(&device, "echofiles.backup.ack", ef_phone::json!({"requestId":request,"saved":saved.is_ok()})); }
+                        if let Some(s) = service() {
+                            s.send_packet(&device, "echofiles.backup.ack", ef_phone::json!({"requestId":request,"saved":saved.is_ok()}));
+                        }
                     });
                 }
                 if let Some(remote) = self.phone.remote_thumb.remove(&transfer) {
@@ -2037,18 +2625,34 @@ impl App {
                     return self.pump_photo_thumbs();
                 }
                 if let Some(kind) = self.phone.payloads.remove(&transfer) {
-                    if result.is_err() && kind == "photo-copy" { self.phone.copy_photos = None; }
+                    if result.is_err() && kind == "photo-copy" {
+                        self.phone.copy_photos = None;
+                    }
                     if let Ok(path) = &result {
-                        if kind == "photo-open" { return self.open_path(path.clone()); }
-                        if let Some(key) = kind.strip_prefix("photo-import:") { self.phone.imported.insert(key.into()); save_lines(imported_file(), self.phone.imported.iter().map(|k| format!("{k}\n")).collect()); }
-                        if kind == "photo-copy" {
-                            if let Some((remaining, paths)) = &mut self.phone.copy_photos { paths.push(path.clone()); *remaining = remaining.saturating_sub(1); if *remaining == 0 { self.clip = Some(crate::actions::Clip { paths: paths.clone(), cut: false }); self.phone.copy_photos = None; } }
+                        if kind == "photo-open" {
+                            return self.open_path(path.clone());
+                        }
+                        if let Some(key) = kind.strip_prefix("photo-import:") {
+                            self.phone.imported.insert(key.into());
+                            save_lines(imported_file(), self.phone.imported.iter().map(|k| format!("{k}\n")).collect());
+                        }
+                        if kind == "photo-copy"
+                            && let Some((remaining, paths)) = &mut self.phone.copy_photos
+                        {
+                            paths.push(path.clone());
+                            *remaining = remaining.saturating_sub(1);
+                            if *remaining == 0 {
+                                self.clip = Some(crate::actions::Clip { paths: paths.clone(), cut: false });
+                                self.phone.copy_photos = None;
+                            }
                         }
 
                         let path = path.clone();
                         std::thread::spawn(move || {
                             if kind == "echofiles.clipboard.image" {
-                                if let Some(png) = std::fs::read(&path).ok().and_then(|bytes| normal_image(&bytes)) { let _ = event_tx().unbounded_send(PhoneMsg::RemoteImage(png)); }
+                                if let Some(png) = std::fs::read(&path).ok().and_then(|bytes| normal_image(&bytes)) {
+                                    let _ = event_tx().unbounded_send(PhoneMsg::RemoteImage(png));
+                                }
                                 let _ = std::fs::remove_file(path);
                             }
                         });
@@ -2066,7 +2670,12 @@ impl App {
                     (Err(e), false) => self.toast_error(format!("Couldn't receive from {}", self.phone_name(&id)), e.clone()),
                     (Ok(p), false) => {
                         let name = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                        self.push_toast(Tone::Accent, format!("Received “{name}”"), Some(format!("From {} · in {}", self.phone_name(&id), self.settings.phone.save_to)), Some(("Show".into(), Message::Phone(PhoneMsg::OpenSaveFolder))));
+                        self.push_toast(
+                            Tone::Accent,
+                            format!("Received “{name}”"),
+                            Some(format!("From {} · in {}", self.phone_name(&id), self.settings.phone.save_to)),
+                            Some(("Show".into(), Message::Phone(PhoneMsg::OpenSaveFolder))),
+                        );
                         let dir = p.parent().map(Path::to_path_buf);
                         if let Some(d) = dir {
                             return self.refresh(&d);
@@ -2081,8 +2690,11 @@ impl App {
 
     fn start_phone_index(&mut self, id: &str) {
         let mut scan = crate::connect::PhoneIndexScan::new(id.into());
-        if let (Some(s), Some(body)) = (service(), scan.next()) { s.send_packet(id, "echofiles.files.list", body); }
-        self.phone.index_scan = Some(scan); self.phone.index_at = Some(Instant::now());
+        if let (Some(s), Some(body)) = (service(), scan.next()) {
+            s.send_packet(id, "echofiles.files.list", body);
+        }
+        self.phone.index_scan = Some(scan);
+        self.phone.index_at = Some(Instant::now());
         self.phone.extra_status = "Refreshing phone file names…".into();
     }
 
@@ -2095,20 +2707,39 @@ impl App {
 
     /// Expire the ringing state; refresh discovery while the Connect dialog is open.
     pub(crate) fn phone_tick(&mut self) {
-        let stale: Vec<_> = self.phone.thumb_wait.iter().filter(|(_, (_, at))| at.elapsed() > Duration::from_secs(30)).map(|(id, _)| *id).collect();
-        for id in &stale { if let Some((path, _)) = self.phone.thumb_wait.remove(id) { self.phone.photo_jobs = self.phone.photo_jobs.saturating_sub(1); self.phone.photo_thumbs.insert(path, None); } }
-        if !stale.is_empty() { let _ = event_tx().unbounded_send(PhoneMsg::PhotoQueue); }
-        if self.phone.index_scan.is_some() && self.phone.index_at.is_some_and(|t| t.elapsed() > Duration::from_secs(30)) {
-            self.phone.index_scan = None; self.phone.extra_status = "Phone index refresh interrupted; previous snapshot kept. Toggle Index phone files to retry.".into();
+        let stale: Vec<_> =
+            self.phone.thumb_wait.iter().filter(|(_, (_, at))| at.elapsed() > Duration::from_secs(30)).map(|(id, _)| *id).collect();
+        for id in &stale {
+            if let Some((path, _)) = self.phone.thumb_wait.remove(id) {
+                self.phone.photo_jobs = self.phone.photo_jobs.saturating_sub(1);
+                self.phone.photo_thumbs.insert(path, None);
+            }
         }
-        if self.settings.phone.autolock && self.phone.away_since.is_some_and(|t| t.elapsed() > Duration::from_secs(30)) && !self.phone.devices.values().any(|d| d.paired) { crate::connect::lock(); self.phone.away_since = None; }
+        if !stale.is_empty() {
+            let _ = event_tx().unbounded_send(PhoneMsg::PhotoQueue);
+        }
+        if self.phone.index_scan.is_some() && self.phone.index_at.is_some_and(|t| t.elapsed() > Duration::from_secs(30)) {
+            self.phone.index_scan = None;
+            self.phone.extra_status = "Phone index refresh interrupted; previous snapshot kept. Toggle Index phone files to retry.".into();
+        }
+        if self.settings.phone.autolock
+            && self.phone.away_since.is_some_and(|t| t.elapsed() > Duration::from_secs(30))
+            && !self.phone.devices.values().any(|d| d.paired)
+        {
+            crate::connect::lock();
+            self.phone.away_since = None;
+        }
         if let Some(s) = service() {
-            if self.phone.qr.is_none() { self.phone.qr = crate::connect::pairing_svg(s).map(iced::widget::svg::Handle::from_memory); }
+            if self.phone.qr.is_none() {
+                self.phone.qr = crate::connect::pairing_svg(s).map(iced::widget::svg::Handle::from_memory);
+            }
             let theme = crate::connect::theme(&self.palette);
             let fingerprint = theme.to_string();
             if self.phone.last_theme != fingerprint {
                 self.phone.last_theme = fingerprint;
-                for d in self.phone.devices.values().filter(|d| d.paired && d.echoconnect()) { s.send_packet(&d.id, "echofiles.theme", theme.clone()); }
+                for d in self.phone.devices.values().filter(|d| d.paired && d.echoconnect()) {
+                    s.send_packet(&d.id, "echofiles.theme", theme.clone());
+                }
             }
         }
         if self.phone.ringing.is_some_and(|t| t.elapsed() > Duration::from_secs(30)) {
@@ -2180,7 +2811,9 @@ mod tests {
     }
 }
 
-fn scoped(generation: u64, msg: PhoneMsg) -> Message { Message::Phone(PhoneMsg::Scoped(generation, Box::new(msg))) }
+fn scoped(generation: u64, msg: PhoneMsg) -> Message {
+    Message::Phone(PhoneMsg::Scoped(generation, Box::new(msg)))
+}
 
 fn read_image_limited(path: &Path) -> Option<Vec<u8>> {
     use std::io::Read;
@@ -2189,35 +2822,57 @@ fn read_image_limited(path: &Path) -> Option<Vec<u8>> {
     (data.len() <= 64 << 20).then_some(data)
 }
 fn decode_limited(bytes: &[u8]) -> Option<image::DynamicImage> {
-    if bytes.len() > 64 << 20 { return None; }
+    if bytes.len() > 64 << 20 {
+        return None;
+    }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
-    let mut limits = image::Limits::default(); limits.max_alloc = Some(256 << 20); limits.max_image_width = Some(32768); limits.max_image_height = Some(32768);
-    reader.limits(limits); reader.decode().ok()
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(256 << 20);
+    limits.max_image_width = Some(32768);
+    limits.max_image_height = Some(32768);
+    reader.limits(limits);
+    reader.decode().ok()
 }
 
 impl PhoneState {
     fn activate(&mut self, id: &str) {
-        if self.active_id == id { return; }
+        if self.active_id == id {
+            return;
+        }
         let mut state = self.states.remove(id).unwrap_or_default();
-        if state.generation == 0 { state.generation = crate::pane::next_id(); state.photo_limit = PHOTOS_PAGE; }
+        if state.generation == 0 {
+            state.generation = crate::pane::next_id();
+            state.photo_limit = PHOTOS_PAGE;
+        }
         std::mem::swap(&mut state, &mut self.active);
         let old = std::mem::replace(&mut self.active_id, id.to_string());
-        if !old.is_empty() { self.states.insert(old, state); }
+        if !old.is_empty() {
+            self.states.insert(old, state);
+        }
     }
-
 }
 
 fn trim_phone_cache(dir: &Path) {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let Ok(_guard) = LOCK.try_lock() else { return };
     let Ok(entries) = std::fs::read_dir(dir) else { return };
-    let mut entries: Vec<_> = entries.filter_map(Result::ok).filter_map(|e| { let m = e.metadata().ok()?; m.is_file().then(|| (m.modified().ok(), m.len(), e.path())) }).collect();
+    let mut entries: Vec<_> = entries
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            m.is_file().then(|| (m.modified().ok(), m.len(), e.path()))
+        })
+        .collect();
     entries.sort_by_key(|e| e.0);
     let mut total: u64 = entries.iter().map(|e| e.1).sum();
     let excess = entries.len().saturating_sub(1500);
     for (n, (_, size, path)) in entries.into_iter().enumerate() {
-        if n >= excess && total <= 256 << 20 { break; }
-        if std::fs::remove_file(path).is_ok() { total = total.saturating_sub(size); }
+        if n >= excess && total <= 256 << 20 {
+            break;
+        }
+        if std::fs::remove_file(path).is_ok() {
+            total = total.saturating_sub(size);
+        }
     }
 }
 
@@ -2226,10 +2881,21 @@ mod review_tests {
     use super::*;
     #[test]
     fn devices_keep_independent_messages_and_sessions() {
-        let mut phones = PhoneState::default(); phones.activate("a"); let generation = phones.generation;
-        phones.compose = "reply to A".into(); phones.open_thread = Some(7); phones.photo_limit = 23;
-        phones.activate("b"); assert!(phones.compose.is_empty()); assert!(phones.open_thread.is_none()); assert_ne!(phones.generation, generation);
-        phones.compose = "reply to B".into(); phones.activate("a"); assert_eq!(phones.compose, "reply to A"); assert_eq!(phones.open_thread, Some(7)); assert_eq!(phones.photo_limit, 23);
+        let mut phones = PhoneState::default();
+        phones.activate("a");
+        let generation = phones.generation;
+        phones.compose = "reply to A".into();
+        phones.open_thread = Some(7);
+        phones.photo_limit = 23;
+        phones.activate("b");
+        assert!(phones.compose.is_empty());
+        assert!(phones.open_thread.is_none());
+        assert_ne!(phones.generation, generation);
+        phones.compose = "reply to B".into();
+        phones.activate("a");
+        assert_eq!(phones.compose, "reply to A");
+        assert_eq!(phones.open_thread, Some(7));
+        assert_eq!(phones.photo_limit, 23);
     }
     #[test]
     fn import_keys_include_device_and_relative_directory() {

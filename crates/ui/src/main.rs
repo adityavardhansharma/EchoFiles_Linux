@@ -12,17 +12,17 @@
 mod actions;
 mod app;
 mod codec;
+mod connect;
 mod drives;
 mod file_list;
 mod gpu;
 mod indexer;
 mod jpeg;
-mod network;
 mod kinds;
+mod network;
 mod overlay;
 mod pane;
 mod phone;
-mod connect;
 mod phone_view;
 mod preview;
 mod search;
@@ -55,8 +55,6 @@ fn main() -> iced::Result {
     // SAFETY: still single-threaded; nothing else reads the environment yet.
     unsafe { gpu::configure() };
 
-
-
     // One EchoFiles: a second launch hands its request to the running one and exits.
     let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
     if args.iter().any(|a| a == "--sync-agent-skill") {
@@ -74,14 +72,23 @@ fn main() -> iced::Result {
         let request = if args.iter().any(|a| a == "--settings") {
             system::Request::Settings
         } else {
-            std::env::args_os().skip(1).find(|a| !a.as_encoded_bytes().starts_with(b"--")).map(|a| system::request_for_os(&a)).unwrap_or(system::Request::Open(None))
+            std::env::args_os()
+                .skip(1)
+                .find(|a| !a.as_encoded_bytes().starts_with(b"--"))
+                .map(|a| system::request_for_os(&a))
+                .unwrap_or(system::Request::Open(None))
         };
         if system::forward_to_running(&request) {
             return Ok(());
         }
         owns_socket = system::listen();
         if !owns_socket {
-            for _ in 0..20 { if system::forward_to_running(&request) { return Ok(()); } std::thread::sleep(std::time::Duration::from_millis(50)); }
+            for _ in 0..20 {
+                if system::forward_to_running(&request) {
+                    return Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
             eprintln!("Couldn't acquire the EchoFiles instance socket");
             return Ok(());
         }

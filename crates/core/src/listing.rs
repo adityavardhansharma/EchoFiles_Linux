@@ -7,8 +7,8 @@
 use std::ffi::{CStr, OsStr};
 use std::io;
 use std::mem::MaybeUninit;
-use std::os::unix::ffi::OsStrExt;
 use std::os::fd::{AsFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
@@ -63,8 +63,19 @@ pub mod win {
 
 /// Files Windows keeps at a volume's top level that Explorer never shows.
 const WINDOWS_JUNK: [&str; 13] = [
-    "$recycle.bin", "system volume information", "pagefile.sys", "hiberfil.sys", "swapfile.sys", "dumpstack.log.tmp", "dumpstack.log",
-    "thumbs.db", "desktop.ini", "$winreagent", "config.msi", "$sysreset", "recovery",
+    "$recycle.bin",
+    "system volume information",
+    "pagefile.sys",
+    "hiberfil.sys",
+    "swapfile.sys",
+    "dumpstack.log.tmp",
+    "dumpstack.log",
+    "thumbs.db",
+    "desktop.ini",
+    "$winreagent",
+    "config.msi",
+    "$sysreset",
+    "recovery",
 ];
 
 /// A directory's entries as parallel columns; ~40 bytes per entry, no per-entry heap allocation.
@@ -219,7 +230,14 @@ pub fn fill_metadata(listing: &mut Listing, fd: &OwnedFd) {
     let links: Vec<usize> = (0..n).filter(|&i| listing.kind[i] == Kind::Symlink).collect();
     let targets: Vec<(usize, Option<u32>)> = links
         .par_iter()
-        .map(|&i| (i, rustix::fs::statx(fd.as_fd(), listing.name_cstr(i), AtFlags::STATX_DONT_SYNC, StatxFlags::TYPE).ok().map(|st| st.stx_mode as u32)))
+        .map(|&i| {
+            (
+                i,
+                rustix::fs::statx(fd.as_fd(), listing.name_cstr(i), AtFlags::STATX_DONT_SYNC, StatxFlags::TYPE)
+                    .ok()
+                    .map(|st| st.stx_mode as u32),
+            )
+        })
         .collect();
     for (i, mode) in targets {
         match mode {

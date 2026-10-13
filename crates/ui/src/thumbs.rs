@@ -11,7 +11,10 @@ use std::io::BufWriter;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{OnceLock, Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 pub type Job = (PathBuf, i64, Arc<AtomicBool>);
 
 use iced::advanced::image::Handle;
@@ -58,7 +61,9 @@ impl Thumbs {
         // What's on screen now matters more than what was on screen before.
         self.queue.clear();
         for (path, cancel) in &self.cancels {
-            if !items.iter().any(|(p, m)| p == path && self.map.get(path).is_some_and(|(old, _)| old == m)) { cancel.store(true, Ordering::Relaxed); }
+            if !items.iter().any(|(p, m)| p == path && self.map.get(path).is_some_and(|(old, _)| old == m)) {
+                cancel.store(true, Ordering::Relaxed);
+            }
         }
         for (p, m) in items {
             // A changed file (new mtime) gets a new thumbnail.
@@ -87,9 +92,14 @@ impl Thumbs {
     /// A job finished; returns the next jobs to start.
     pub fn done(&mut self, path: PathBuf, mtime: i64, token: &Arc<AtomicBool>, px: Option<Pixels>) -> Vec<Job> {
         self.running = self.running.saturating_sub(1);
-        if !self.cancels.get(&path).is_some_and(|c| Arc::ptr_eq(c, token)) { return self.start(); }
+        if !self.cancels.get(&path).is_some_and(|c| Arc::ptr_eq(c, token)) {
+            return self.start();
+        }
         self.cancels.remove(&path);
-        if token.load(Ordering::Relaxed) { self.map.remove(&path); return self.start(); }
+        if token.load(Ordering::Relaxed) {
+            self.map.remove(&path);
+            return self.start();
+        }
         let slot = match px {
             Some(px) => Slot::Ready(Handle::from_rgba(px.width, px.height, (*px.rgba).clone())),
             None => Slot::Failed,
@@ -213,12 +223,20 @@ fn thumbnailer_for(mime: &str) -> Option<&'static str> {
 /// Read a cached PNG if it's for this version of the file.
 fn read_cached(file: &Path, mtime: i64) -> Option<Pixels> {
     let f = std::fs::File::open(file).ok()?;
-    if f.metadata().ok()?.len() > 8 << 20 { return None; }
+    if f.metadata().ok()?.len() > 8 << 20 {
+        return None;
+    }
     let mut dec = png::Decoder::new(std::io::BufReader::new(f));
     dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = dec.read_info().ok()?;
-    if reader.info().width > SIZE || reader.info().height > SIZE { return None; }
-    let fresh = reader.info().uncompressed_latin1_text.iter().any(|t| t.keyword == "Thumb::MTime" && t.text.trim().parse::<i64>().ok() == Some(mtime));
+    if reader.info().width > SIZE || reader.info().height > SIZE {
+        return None;
+    }
+    let fresh = reader
+        .info()
+        .uncompressed_latin1_text
+        .iter()
+        .any(|t| t.keyword == "Thumb::MTime" && t.text.trim().parse::<i64>().ok() == Some(mtime));
     if !fresh {
         return None;
     }
@@ -317,25 +335,35 @@ fn run_thumbnailer(p: &Path, uri: &str, cancel: &AtomicBool) -> Option<Pixels> {
     let exec = thumbnailer_for(mime(&ext(p))?)?;
     let work = tempfile::Builder::new().prefix("ef-thumb-").tempdir().ok()?;
     let out = work.path().join("result.png");
-    let args: Vec<String> = parse_exec(exec)?.into_iter()
-        .map(|a| expand_codes(&a, p, uri, &out)).collect();
+    let args: Vec<String> = parse_exec(exec)?.into_iter().map(|a| expand_codes(&a, p, uri, &out)).collect();
     let mut cmd = sandboxed(&args, p, work.path())?;
-    let mut child = cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().ok()?;
+    let mut child =
+        cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().ok()?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return status.success().then(|| decode(&out)).flatten(),
-            Err(_) => { let _ = child.kill(); let _ = child.wait(); return None; },
-            Ok(None) => {},
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => {}
         }
-        if cancel.load(Ordering::Relaxed) || std::time::Instant::now() >= deadline { let _ = child.kill(); let _ = child.wait(); return None; }
+        if cancel.load(Ordering::Relaxed) || std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
 
 /// Produce a thumbnail for `p` (blocking; run on a worker thread).
 pub fn load_cancellable(p: &Path, mtime: i64, cancel: &AtomicBool) -> Option<Pixels> {
-    if cancel.load(Ordering::Relaxed) { return None; }
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
     let u = uri(p);
     let name = format!("{}.png", crate::codec::md5_hex(u.as_bytes()));
     let base = cache_dir();
@@ -350,7 +378,9 @@ pub fn load_cancellable(p: &Path, mtime: i64, cancel: &AtomicBool) -> Option<Pix
         return None;
     }
     let px = if DECODE.contains(&ext(p).as_str()) { decode(p) } else { run_thumbnailer(p, &u, cancel) };
-    if cancel.load(Ordering::Relaxed) { return None; }
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
     match &px {
         Some(px) => write_cached(&base.join("normal").join(&name), px, &u, mtime),
         None => {
@@ -368,16 +398,39 @@ fn parse_exec(line: &str) -> Option<Vec<String>> {
     let mut escaped = false;
     let mut started = false;
     for c in line.chars() {
-        if escaped { word.push(c); escaped = false; started = true; continue; }
+        if escaped {
+            word.push(c);
+            escaped = false;
+            started = true;
+            continue;
+        }
         match c {
-            '\\' => { escaped = true; started = true; },
-            '\"' => { quoted = !quoted; started = true; },
-            c if c.is_whitespace() && !quoted => { if started { args.push(std::mem::take(&mut word)); started = false; } },
-            c => { word.push(c); started = true; },
+            '\\' => {
+                escaped = true;
+                started = true;
+            }
+            '\"' => {
+                quoted = !quoted;
+                started = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if started {
+                    args.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            c => {
+                word.push(c);
+                started = true;
+            }
         }
     }
-    if quoted || escaped { return None; }
-    if started { args.push(word); }
+    if quoted || escaped {
+        return None;
+    }
+    if started {
+        args.push(word);
+    }
     Some(args)
 }
 
@@ -385,11 +438,21 @@ fn expand_codes(arg: &str, path: &Path, uri: &str, out: &Path) -> String {
     let mut result = String::new();
     let mut chars = arg.chars();
     while let Some(c) = chars.next() {
-        if c != '%' { result.push(c); continue; }
+        if c != '%' {
+            result.push(c);
+            continue;
+        }
         match chars.next() {
-            Some('s') => result.push_str(&SIZE.to_string()), Some('u') => result.push_str(uri),
-            Some('i') => result.push_str(&path.to_string_lossy()), Some('o') => result.push_str(&out.to_string_lossy()),
-            Some('%') => result.push('%'), Some(c) => { result.push('%'); result.push(c); }, None => result.push('%'),
+            Some('s') => result.push_str(&SIZE.to_string()),
+            Some('u') => result.push_str(uri),
+            Some('i') => result.push_str(&path.to_string_lossy()),
+            Some('o') => result.push_str(&out.to_string_lossy()),
+            Some('%') => result.push('%'),
+            Some(c) => {
+                result.push('%');
+                result.push(c);
+            }
+            None => result.push('%'),
         }
     }
     result
@@ -400,7 +463,10 @@ mod review_tests {
     use super::*;
     #[test]
     fn quoted_helpers_and_field_codes() {
-        assert_eq!(parse_exec("\"/opt/My Helper/bin\" --name \"a b\" %i %o").unwrap(), vec!["/opt/My Helper/bin", "--name", "a b", "%i", "%o"]);
+        assert_eq!(
+            parse_exec("\"/opt/My Helper/bin\" --name \"a b\" %i %o").unwrap(),
+            vec!["/opt/My Helper/bin", "--name", "a b", "%i", "%o"]
+        );
         assert!(parse_exec("\"unterminated").is_none());
         assert_eq!(expand_codes("%i", Path::new("/tmp/literal%o"), "unused", Path::new("output")), "/tmp/literal%o");
         assert_eq!(expand_codes("%%", Path::new(""), "", Path::new("")), "%");

@@ -6,24 +6,35 @@ use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::time::SystemTime;
 
-use crate::config::{self, Settings};
 #[allow(unused_imports)]
 use super::find::Indexes as _Indexes;
+use crate::config::{self, Settings};
 use crate::filter::{FType, Hit};
 use crate::find::{Search, Source};
 use crate::pattern::Syntax;
 use crate::units;
 
-use super::args::{FindArgs, Flavor};
 use super::Ctx;
+use super::args::{FindArgs, Flavor};
 use super::find::{Indexes, Ran, build_search, run};
 use super::output::{self, json_str};
 
 /// Phone files (cached while the phone is away) for searches of "everywhere".
 pub fn add_phone_hits(a: &FindArgs, ran: &mut Ran) {
-    let plain = matches!(a.syntax, None | Some(Syntax::Words)) && a.sizes.is_empty() && a.newer.is_none() && a.older.is_none() && a.owner.is_none() && !a.full_path;
+    let plain = matches!(a.syntax, None | Some(Syntax::Words))
+        && a.sizes.is_empty()
+        && a.newer.is_none()
+        && a.older.is_none()
+        && a.owner.is_none()
+        && !a.full_path;
     let Some(text) = a.pattern.as_deref().filter(|_| plain) else { return };
-    let kind = if a.types.dir && !a.types.file { crate::KindFilter::Dirs } else if a.types.file || a.types.not_dir { crate::KindFilter::Files } else { crate::KindFilter::Any };
+    let kind = if a.types.dir && !a.types.file {
+        crate::KindFilter::Dirs
+    } else if a.types.file || a.types.not_dir {
+        crate::KindFilter::Files
+    } else {
+        crate::KindFilter::Any
+    };
     let ext = a.exts.first().map(String::as_str);
     let q = crate::Query { text, within: crate::ROOT, kind, ext, hidden: a.hidden, limit: None };
     let ranker = crate::Ranker::new(text);
@@ -115,7 +126,9 @@ pub fn why_nothing(a: &FindArgs, ctx: &Ctx, _s: &Search) -> Vec<String> {
         let s = build_search(&b).ok()?;
         run(&b, ctx, &s).ok().map(|r| r.total)
     };
-    let mut tries: Vec<(String, Box<dyn Fn(&mut FindArgs)>)> = Vec::new();
+    // (what was relaxed, how to relax it)
+    type Try = (String, Box<dyn Fn(&mut FindArgs)>);
+    let mut tries: Vec<Try> = Vec::new();
     if !a.hidden {
         tries.push(("include hidden files (-H)".into(), Box::new(|b: &mut FindArgs| b.hidden = true)));
     }
@@ -123,10 +136,13 @@ pub fn why_nothing(a: &FindArgs, ctx: &Ctx, _s: &Search) -> Vec<String> {
         tries.push(("include files hidden by .gitignore/.ignore (-I)".into(), Box::new(|b: &mut FindArgs| b.no_ignore = true)));
     }
     if !a.hidden || !a.no_ignore {
-        tries.push(("include both (-u)".into(), Box::new(|b: &mut FindArgs| {
-            b.hidden = true;
-            b.no_ignore = true;
-        })));
+        tries.push((
+            "include both (-u)".into(),
+            Box::new(|b: &mut FindArgs| {
+                b.hidden = true;
+                b.no_ignore = true;
+            }),
+        ));
     }
     if !a.exts.is_empty() {
         tries.push(("drop the extension filter".into(), Box::new(|b: &mut FindArgs| b.exts.clear())));
@@ -135,18 +151,24 @@ pub fn why_nothing(a: &FindArgs, ctx: &Ctx, _s: &Search) -> Vec<String> {
         tries.push(("drop the type filter".into(), Box::new(|b: &mut FindArgs| b.types = Default::default())));
     }
     if !a.sizes.is_empty() || a.newer.is_some() || a.older.is_some() || a.owner.is_some() {
-        tries.push(("drop the size/date/owner filters".into(), Box::new(|b: &mut FindArgs| {
-            b.sizes.clear();
-            b.newer = None;
-            b.older = None;
-            b.owner = None;
-        })));
+        tries.push((
+            "drop the size/date/owner filters".into(),
+            Box::new(|b: &mut FindArgs| {
+                b.sizes.clear();
+                b.newer = None;
+                b.older = None;
+                b.owner = None;
+            }),
+        ));
     }
     if a.max_depth.is_some() || a.min_depth.is_some() {
-        tries.push(("drop the depth limits".into(), Box::new(|b: &mut FindArgs| {
-            b.max_depth = None;
-            b.min_depth = None;
-        })));
+        tries.push((
+            "drop the depth limits".into(),
+            Box::new(|b: &mut FindArgs| {
+                b.max_depth = None;
+                b.min_depth = None;
+            }),
+        ));
     }
     if matches!(a.syntax, Some(Syntax::Regex | Syntax::Glob | Syntax::Fixed)) {
         tries.push(("search the words instead (no --regex/--glob/-F)".into(), Box::new(|b: &mut FindArgs| b.syntax = Some(Syntax::Words))));
@@ -156,11 +178,14 @@ pub fn why_nothing(a: &FindArgs, ctx: &Ctx, _s: &Search) -> Vec<String> {
         tries.push(("read the pattern as a regex (--regex)".into(), Box::new(|b: &mut FindArgs| b.syntax = Some(Syntax::Regex))));
     }
     if !a.paths.is_empty() || a.here || a.project {
-        tries.push(("search everywhere that's indexed (no path)".into(), Box::new(|b: &mut FindArgs| {
-            b.paths.clear();
-            b.here = false;
-            b.project = false;
-        })));
+        tries.push((
+            "search everywhere that's indexed (no path)".into(),
+            Box::new(|b: &mut FindArgs| {
+                b.paths.clear();
+                b.here = false;
+                b.project = false;
+            }),
+        ));
     }
     for (what, f) in &tries {
         if let Some(n) = count(f.as_ref())
@@ -177,7 +202,13 @@ pub fn why_nothing(a: &FindArgs, ctx: &Ctx, _s: &Search) -> Vec<String> {
         let mut names: Vec<(String, usize)> = Vec::new();
         let mut covered = false;
         for (root, m) in &idx {
-            let within = if a.paths.is_empty() && !a.here && !a.project { Some(0) } else { a.paths.iter().find_map(|t| std::fs::canonicalize(ctx.abs(t)).ok().filter(|c| c.starts_with(root)).and_then(|c| m.lookup(&c))) };
+            let within = if a.paths.is_empty() && !a.here && !a.project {
+                Some(0)
+            } else {
+                a.paths
+                    .iter()
+                    .find_map(|t| std::fs::canonicalize(ctx.abs(t)).ok().filter(|c| c.starts_with(root)).and_then(|c| m.lookup(&c)))
+            };
             if let Some(w) = within {
                 covered = true;
                 names.extend(crate::suggest::similar(m, w, p, 5));
@@ -268,7 +299,13 @@ pub fn write_json(a: &FindArgs, ran: &Ran, ctx: &Ctx, out: &mut Vec<u8>) {
     let _ = write!(out, "],\"shown\":{shown}");
     if shown < ran.total {
         let (dirs, exts) = ran.breakdown.clone().unwrap_or_else(|| output::summary(hits, &ran.views));
-        let j = |v: &[(String, usize)]| v.iter().take(10).map(|(k, n)| format!("{{\"{}\":{n}}}", k.replace('\\', "\\\\").replace('"', "\\\""))).collect::<Vec<_>>().join(",");
+        let j = |v: &[(String, usize)]| {
+            v.iter()
+                .take(10)
+                .map(|(k, n)| format!("{{\"{}\":{n}}}", k.replace('\\', "\\\\").replace('"', "\\\"")))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
         let _ = write!(out, ",\"by_folder\":[{}],\"by_type\":[{}]", j(&dirs), j(&exts));
     }
     if !ran.outcome.errors.is_empty() {

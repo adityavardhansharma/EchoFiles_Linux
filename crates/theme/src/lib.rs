@@ -77,10 +77,7 @@ fn ensure(color: Rgb, grounds: &[Rgb], target: f64, toward: Rgb) -> Rgb {
 }
 
 fn best_on(fill: Rgb, candidates: &[Rgb]) -> Rgb {
-    *candidates
-        .iter()
-        .max_by(|a, b| a.contrast(fill).total_cmp(&b.contrast(fill)))
-        .expect("candidates")
+    *candidates.iter().max_by(|a, b| a.contrast(fill).total_cmp(&b.contrast(fill))).expect("candidates")
 }
 
 /// Every colour token of the EchoFiles design system (names match `design/tokens.json`).
@@ -222,11 +219,7 @@ pub fn derive(name: &str, colors_toml: &str) -> Result<Palette, Error> {
     let bg = need("background")?;
     let sunken = get("dark_background").unwrap_or_else(|| bg.mix(Rgb::BLACK, 0.2));
     let deep = get("darker_background").unwrap_or_else(|| bg.mix(Rgb::BLACK, 0.35));
-    let raised = if dark {
-        get("lighter_background").unwrap_or_else(|| bg.mix(Rgb::WHITE, 0.06))
-    } else {
-        bg.mix(Rgb::WHITE, 0.6)
-    };
+    let raised = if dark { get("lighter_background").unwrap_or_else(|| bg.mix(Rgb::WHITE, 0.06)) } else { bg.mix(Rgb::WHITE, 0.6) };
     let fg = need("foreground")?;
     let extreme = if dark { Rgb::WHITE } else { Rgb::BLACK };
     let accent = need("accent")?;
@@ -245,12 +238,7 @@ pub fn derive(name: &str, colors_toml: &str) -> Result<Palette, Error> {
     let semantic = |key: &'static str| -> Result<Semantic, Error> {
         let c = need(key)?;
         let soft = bg.mix(c, 0.14);
-        Ok(Semantic {
-            base: c,
-            soft,
-            ink: ensure(c, &[bg, raised, soft], 4.5, extreme),
-            on: best_on(c, &[deep, Rgb::WHITE, Rgb::BLACK]),
-        })
+        Ok(Semantic { base: c, soft, ink: ensure(c, &[bg, raised, soft], 4.5, extreme), on: best_on(c, &[deep, Rgb::WHITE, Rgb::BLACK]) })
     };
     let world = |key: &'static str| -> Result<Rgb, Error> { Ok(ensure(need(key)?, &[sunken, bg, raised], 3.0, extreme)) };
 

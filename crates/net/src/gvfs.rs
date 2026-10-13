@@ -137,7 +137,13 @@ struct MountOp {
 #[zbus::interface(name = "org.gtk.vfs.MountOperation")]
 impl MountOp {
     /// → (handled, aborted, password, username, domain, anonymous, password_save)
-    async fn ask_password(&self, message_string: String, default_user: String, default_domain: String, flags_as_int: u32) -> (bool, bool, String, String, String, bool, u32) {
+    async fn ask_password(
+        &self,
+        message_string: String,
+        default_user: String,
+        default_domain: String,
+        flags_as_int: u32,
+    ) -> (bool, bool, String, String, String, bool, u32) {
         let retry = {
             let mut n = self.asked.lock().unwrap();
             *n += 1;
@@ -356,7 +362,9 @@ pub fn mounts() -> Result<Vec<Mount>, Error> {
     let reply = conn.call_method(Some(DAEMON), TRACKER_PATH, Some(TRACKER), "ListMounts2", &(true,)).map_err(failed)?;
     let raw: Vec<RawMount> = reply.body().deserialize().map_err(|e| Error::Failed(e.to_string()))?;
     // Connected places without a folder: the FUSE bridge isn't up. Start it and ask again.
-    let headless = raw.iter().any(|m| m.9.iter().all(|&b| b == 0) && spec_item(&m.10, "type").is_some_and(|t| NETWORK_TYPES.contains(&t.as_str()) && t != "smb-server"));
+    let headless = raw.iter().any(|m| {
+        m.9.iter().all(|&b| b == 0) && spec_item(&m.10, "type").is_some_and(|t| NETWORK_TYPES.contains(&t.as_str()) && t != "smb-server")
+    });
     if headless && !is_mount_point(&fuse_root()) && ensure_fuse().is_ok() {
         let reply = conn.call_method(Some(DAEMON), TRACKER_PATH, Some(TRACKER), "ListMounts2", &(true,)).map_err(failed)?;
         let raw: Vec<RawMount> = reply.body().deserialize().map_err(|e| Error::Failed(e.to_string()))?;
@@ -425,13 +433,19 @@ pub fn ensure_fuse() -> Result<PathBuf, Error> {
     if is_mount_point(&root) {
         return Ok(root);
     }
-    let helper = ["/usr/lib/gvfsd-fuse", "/usr/libexec/gvfsd-fuse", "/usr/lib/gvfs/gvfsd-fuse"].into_iter().map(Path::new).find(|p| p.exists());
+    let helper =
+        ["/usr/lib/gvfsd-fuse", "/usr/libexec/gvfsd-fuse", "/usr/lib/gvfs/gvfsd-fuse"].into_iter().map(Path::new).find(|p| p.exists());
     let Some(helper) = helper else {
         return Err(Error::Unavailable("GVfs' FUSE helper (gvfsd-fuse) isn't installed. Install the gvfs package.".into()));
     };
     let _ = std::fs::create_dir_all(&root);
     // It daemonizes itself and stays for the session, like the one GVfs starts.
-    let status = std::process::Command::new(helper).arg(&root).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+    let status = std::process::Command::new(helper)
+        .arg(&root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
     if let Err(e) = status {
         return Err(Error::Unavailable(format!("couldn't start gvfsd-fuse: {e}")));
     }
@@ -447,7 +461,10 @@ pub fn ensure_fuse() -> Result<PathBuf, Error> {
 
 /// `$XDG_RUNTIME_DIR/gvfs` — where network places appear as folders.
 pub fn fuse_root() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { getuid() }))).join("gvfs")
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { getuid() })))
+        .join("gvfs")
 }
 
 /// Inside a network place (so: slow, no Trash, no thumbnails).
@@ -556,7 +573,8 @@ pub fn unmount(m: &Mount, force: bool) -> Result<(), Error> {
     let me = conn.unique_name().map(|n| n.to_string()).unwrap_or_default();
     let object = zbus::zvariant::ObjectPath::try_from(path.as_str()).map_err(|e| Error::Failed(e.to_string()))?;
     let flags: u32 = if force { 1 } else { 0 };
-    conn.call_method(Some(m.dbus_id.as_str()), m.object.as_str(), Some("org.gtk.vfs.Mount"), "Unmount", &(me.as_str(), object, flags)).map_err(failed)?;
+    conn.call_method(Some(m.dbus_id.as_str()), m.object.as_str(), Some("org.gtk.vfs.Mount"), "Unmount", &(me.as_str(), object, flags))
+        .map_err(failed)?;
     Ok(())
 }
 
@@ -565,7 +583,9 @@ pub fn unmount(m: &Mount, force: bool) -> Result<(), Error> {
 pub fn watch(on_change: impl Fn() + Send + 'static) {
     let _ = std::thread::Builder::new().name("ef-net-watch".into()).spawn(move || {
         let Ok(conn) = Connection::session() else { return };
-        let Ok(rule) = zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal).interface(TRACKER).map(|b| b.build()) else { return };
+        let Ok(rule) = zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal).interface(TRACKER).map(|b| b.build()) else {
+            return;
+        };
         let Ok(iter) = zbus::blocking::MessageIterator::for_match_rule(rule, &conn, Some(64)) else { return };
         for msg in iter.flatten() {
             let member = msg.header().member().map(|m| m.to_string());
@@ -587,15 +607,26 @@ pub fn explain(e: &Error, a: &Address) -> String {
     let where_ = a.host_port();
     if l.contains("connection refused") {
         format!("Nothing answered on {where_}. Check the address and port, and that the server is running.")
-    } else if l.contains("hostname not known") || l.contains("name or service not known") || l.contains("could not resolve") || l.contains("failed to resolve") || l.contains("no address associated") {
+    } else if l.contains("hostname not known")
+        || l.contains("name or service not known")
+        || l.contains("could not resolve")
+        || l.contains("failed to resolve")
+        || l.contains("no address associated")
+    {
         format!("Couldn't find a server called “{}”. Check the spelling, or use its IP address.", a.host)
     } else if l.contains("timed out") || l.contains("timeout") {
         format!("{where_} didn't answer in time. It may be off, asleep or behind a firewall.")
     } else if l.contains("no route") || l.contains("network is unreachable") {
         format!("Can't reach {where_} from this network.")
-    } else if l.contains("permission denied") || l.contains("access denied") || l.contains("login") && l.contains("incorrect") || l.contains("authentication") {
+    } else if l.contains("permission denied")
+        || l.contains("access denied")
+        || l.contains("login") && l.contains("incorrect")
+        || l.contains("authentication")
+    {
         "The server didn't accept that user name and password.".into()
-    } else if l.contains("share") && (l.contains("not found") || l.contains("doesn") || l.contains("bad network name")) || l.contains("no such file") {
+    } else if l.contains("share") && (l.contains("not found") || l.contains("doesn") || l.contains("bad network name"))
+        || l.contains("no such file")
+    {
         match &a.share {
             Some(s) => format!("{} has no share called “{s}”. Leave the share out to see the ones it has.", a.host),
             None => format!("{where_} doesn't have that folder."),

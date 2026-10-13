@@ -447,7 +447,13 @@ pub fn parse(flavor: Flavor, argv: &[String]) -> Result<FindArgs, String> {
         };
         let batch = a.exec.as_ref().is_some_and(|x| x.batch);
         let runs = a.exec.is_some() || a.list_details;
-        let run_name = if a.list_details { "--list-details" } else if batch { "--exec-batch <cmd>..." } else { "--exec <cmd>..." };
+        let run_name = if a.list_details {
+            "--list-details"
+        } else if batch {
+            "--exec-batch <cmd>..."
+        } else {
+            "--exec <cmd>..."
+        };
         clash(glob == Some(true) && fixed, "--glob", "--fixed-strings")?;
         clash(exact && glob == Some(true), "--exact", "--glob")?;
         clash(exact && fixed, "--exact", "--fixed-strings")?;
@@ -466,7 +472,10 @@ pub fn parse(flavor: Flavor, argv: &[String]) -> Result<FindArgs, String> {
         }
     }
     if a.prune && (!a.sizes.is_empty() || exact_depth.is_some()) {
-        return Err(format!("the argument '--prune' cannot be used with '{}'", if a.sizes.is_empty() { "--exact-depth" } else { "--size" }));
+        return Err(format!(
+            "the argument '--prune' cannot be used with '{}'",
+            if a.sizes.is_empty() { "--exact-depth" } else { "--size" }
+        ));
     }
     a.syntax = a.syntax.or(if glob == Some(true) {
         Some(Syntax::Glob)

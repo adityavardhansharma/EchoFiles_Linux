@@ -4,8 +4,8 @@
 
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::os::fd::AsRawFd;
 use std::io::{self, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
@@ -63,7 +63,9 @@ fn trash_for(path: &Path, home: &Path) -> io::Result<(PathBuf, PathBuf, File)> {
     let dev = fs::symlink_metadata(path)?.dev();
     let home = home.to_path_buf();
     if dev_of(&home) == Some(dev) {
-        if let Some(parent) = home.parent() { fs::create_dir_all(parent)?; }
+        if let Some(parent) = home.parent() {
+            fs::create_dir_all(parent)?;
+        }
         let fd = secure_dir(&home)?;
         return Ok((home, path.to_path_buf(), fd));
     }
@@ -76,7 +78,9 @@ fn trash_for(path: &Path, home: &Path) -> io::Result<(PathBuf, PathBuf, File)> {
         if m.is_dir() && m.mode() & 0o1000 != 0 {
             let dir = shared.join(uid().to_string());
             let pinned = PathBuf::from(format!("/proc/self/fd/{}", shared_fd.as_raw_fd())).join(uid().to_string());
-            if let Ok(fd) = secure_dir(&pinned) { return Ok((dir, rel, fd)); }
+            if let Ok(fd) = secure_dir(&pinned) {
+                return Ok((dir, rel, fd));
+            }
         }
     }
     let dir = top.join(format!(".Trash-{}", uid()));
@@ -102,7 +106,10 @@ fn decode(s: &str) -> PathBuf {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() && let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
             out.push(v);
             i += 3;
             continue;
@@ -188,22 +195,37 @@ fn trash_many_in(paths: &[PathBuf], home: &Path) -> Vec<io::Result<Trashed>> {
             let dev = fs::symlink_metadata(&path)?.dev();
             let bin = bins.entry(dev).or_insert_with(|| bin_for(&path, home).map_err(|e| (e.kind(), e.to_string())));
             let bin = bin.as_ref().map_err(|(k, m)| io::Error::new(*k, m.clone()))?;
-            let base = path.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "can't trash a filesystem root"))?.as_bytes().to_vec();
+            let base = path
+                .file_name()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "can't trash a filesystem root"))?
+                .as_bytes()
+                .to_vec();
             let recorded = bin.top.as_ref().and_then(|t| path.strip_prefix(t).ok()).unwrap_or(&path);
             let body = format!("[Trash Info]\nPath={}\nDeletionDate={}\n", encode(recorded), date);
             let (files, info) = (Bin::pinned(&bin.files_fd), Bin::pinned(&bin.info_fd));
-            let info_of = |n: usize| { let mut i = OsString::from_vec(numbered(&base, n)); i.push(".trashinfo"); i };
-            let taken = |n: u32| fs::symlink_metadata(files.join(OsString::from_vec(numbered(&base, n as usize)))).is_ok() || fs::symlink_metadata(info.join(info_of(n as usize))).is_ok();
+            let info_of = |n: usize| {
+                let mut i = OsString::from_vec(numbered(&base, n));
+                i.push(".trashinfo");
+                i
+            };
+            let taken = |n: u32| {
+                fs::symlink_metadata(files.join(OsString::from_vec(numbered(&base, n as usize)))).is_ok()
+                    || fs::symlink_metadata(info.join(info_of(n as usize))).is_ok()
+            };
             let mut from = *next.get(&(dev, base.clone())).unwrap_or(&1);
             loop {
                 let n = crate::ops::free_number(from as u32, taken) as usize;
-                if n >= 1_000_000 { return Err(io::Error::other("too many items with this name in the trash")); }
+                if n >= 1_000_000 {
+                    return Err(io::Error::other("too many items with this name in the trash"));
+                }
                 let name = OsString::from_vec(numbered(&base, n));
                 // The info file is created exclusively first: it reserves the name (spec).
                 match OpenOptions::new().write(true).create_new(true).mode(0o600).open(info.join(info_of(n))) {
                     Ok(mut f) => {
                         f.write_all(body.as_bytes())?;
-                        if small { f.sync_all()?; }
+                        if small {
+                            f.sync_all()?;
+                        }
                         let info_name = info_of(n);
                         next.insert((dev, base.clone()), n + 1);
                         return Ok((dev, path, name, info_name));
@@ -219,16 +241,19 @@ fn trash_many_in(paths: &[PathBuf], home: &Path) -> Vec<io::Result<Trashed>> {
         let _ = if small { bin.info_fd.sync_all() } else { rustix::fs::syncfs(&bin.info_fd).map_err(io::Error::from) };
     }
     // Phase 3: move the items.
-    reserved.into_iter().map(|r| {
-        let (dev, path, name, info_name) = r?;
-        let Some(Ok(bin)) = bins.get(&dev) else { return Err(io::Error::other("trash unavailable")) };
-        let info_path = Bin::pinned(&bin.info_fd).join(&info_name);
-        if let Err(e) = crate::ops::rename_noreplace(&path, &Bin::pinned(&bin.files_fd).join(&name)) {
-            let _ = fs::remove_file(&info_path);
-            return Err(e);
-        }
-        Ok(Trashed { original: path, file: bin.files.join(name), info: bin.info.join(PathBuf::from(info_name)) })
-    }).collect()
+    reserved
+        .into_iter()
+        .map(|r| {
+            let (dev, path, name, info_name) = r?;
+            let Some(Ok(bin)) = bins.get(&dev) else { return Err(io::Error::other("trash unavailable")) };
+            let info_path = Bin::pinned(&bin.info_fd).join(&info_name);
+            if let Err(e) = crate::ops::rename_noreplace(&path, &Bin::pinned(&bin.files_fd).join(&name)) {
+                let _ = fs::remove_file(&info_path);
+                return Err(e);
+            }
+            Ok(Trashed { original: path, file: bin.files.join(name), info: bin.info.join(PathBuf::from(info_name)) })
+        })
+        .collect()
 }
 
 /// Put a trashed item back. Returns where it landed (a new name if the original is taken).
@@ -275,10 +300,13 @@ pub fn entry_for(file: &Path) -> Option<Entry> {
 
 /// Is `dir` the `files` folder of a trash?
 pub fn is_trash_files(dir: &Path) -> bool {
-    if dir.file_name().is_none_or(|n| n != "files") { return false; }
+    if dir.file_name().is_none_or(|n| n != "files") {
+        return false;
+    }
     let Some(root) = dir.parent() else { return false };
     let top = topdir(root);
-    let correct = root == home_trash() || root == top.join(format!(".Trash-{}", uid())) || root == top.join(".Trash").join(uid().to_string());
+    let correct =
+        root == home_trash() || root == top.join(format!(".Trash-{}", uid())) || root == top.join(".Trash").join(uid().to_string());
     correct && valid_dir(root) && valid_dir(dir) && valid_dir(&root.join("info"))
 }
 
@@ -288,11 +316,15 @@ fn valid_dir(path: &Path) -> bool {
 
 fn secure_dir(path: &Path) -> io::Result<File> {
     match fs::DirBuilder::new().mode(0o700).create(path) {
-        Ok(()) => {}, Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}, Err(e) => return Err(e),
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
     }
     let file = OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW).open(path)?;
     let m = file.metadata()?;
-    if !m.is_dir() || m.uid() != uid() || m.mode() & 0o077 != 0 { return Err(io::Error::new(io::ErrorKind::PermissionDenied, "unsafe Trash directory ownership or permissions")); }
+    if !m.is_dir() || m.uid() != uid() || m.mode() & 0o077 != 0 {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "unsafe Trash directory ownership or permissions"));
+    }
     Ok(file)
 }
 
@@ -334,7 +366,7 @@ mod tests {
         // XDG_DATA_HOME instead would race with tests running on other threads.)
         let f = base.join("a.txt");
         fs::write(&f, b"x").unwrap();
-        let t = trash_many_in(&[f.clone()], &base.join("data/Trash")).pop().unwrap().unwrap();
+        let t = trash_many_in(std::slice::from_ref(&f), &base.join("data/Trash")).pop().unwrap().unwrap();
         assert!(!f.exists() && t.file.exists() && t.info.exists());
         let e = entry_for(&t.file).unwrap();
         assert_eq!(e.trashed.original, f);

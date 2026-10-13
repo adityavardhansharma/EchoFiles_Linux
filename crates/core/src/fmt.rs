@@ -27,7 +27,7 @@ pub fn size(bytes: u64, out: &mut String) {
 pub fn count(n: usize, out: &mut String) {
     let s = n.to_string();
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -69,10 +69,7 @@ pub struct DateFormatter {
 
 impl DateFormatter {
     pub fn new() -> Self {
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+        let now_secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
         Self { now: local(now_secs), now_secs }
     }
 

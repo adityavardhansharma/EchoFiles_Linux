@@ -98,9 +98,15 @@ fn pair_and_talk() {
 
     // Cancel an offered upload before the receiver accepts it. No bytes may be saved.
     let cancelled = a.send_files(&b_id, vec![src.clone()])[0];
-    let offer = wait(&rb, "cancellable offer", |e| match e { Event::Incoming { transfer, .. } => Some(*transfer), _ => None });
+    let offer = wait(&rb, "cancellable offer", |e| match e {
+        Event::Incoming { transfer, .. } => Some(*transfer),
+        _ => None,
+    });
     a.cancel_transfer(cancelled);
-    let outcome = wait(&ra, "cancelled upload", |e| match e { Event::TransferDone { transfer, result, .. } if *transfer == cancelled => Some(result.clone()), _ => None });
+    let outcome = wait(&ra, "cancelled upload", |e| match e {
+        Event::TransferDone { transfer, result, .. } if *transfer == cancelled => Some(result.clone()),
+        _ => None,
+    });
     assert_eq!(outcome.unwrap_err(), "Cancelled");
     b.reject_file(offer);
     assert_eq!(std::fs::read_dir(&inbox).unwrap().count(), 1);

@@ -26,11 +26,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rustls::pki_types::ServerName;
 use rustls::{ClientConnection, ServerConnection, StreamOwned};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::identity::{self, Identity, Trusted};
 use crate::tls::Tls;
-use crate::{Device, Event, Notification, Sftp, Sms, Via, PORT_MAX, PORT_MIN, UDP_PORT};
+use crate::{Device, Event, Notification, PORT_MAX, PORT_MIN, Sftp, Sms, UDP_PORT, Via};
 
 const PROTOCOL: u32 = 8;
 const PAYLOAD_PORTS: std::ops::RangeInclusive<u16> = 1739..=PORT_MAX;
@@ -129,8 +129,17 @@ impl Role {
 
 /// Packets allowed over Bluetooth: small, and the reason Bluetooth is there.
 fn bluetooth_ok(kind: &str) -> bool {
-    matches!(kind, "kdeconnect.identity" | "kdeconnect.pair" | "kdeconnect.ping" | "kdeconnect.clipboard" | "kdeconnect.clipboard.connect" | "kdeconnect.telephony" | "kdeconnect.telephony.request_mute")
-        || kind.starts_with("echofiles.call") || kind == "echofiles.clipboard.image.inline"
+    matches!(
+        kind,
+        "kdeconnect.identity"
+            | "kdeconnect.pair"
+            | "kdeconnect.ping"
+            | "kdeconnect.clipboard"
+            | "kdeconnect.clipboard.connect"
+            | "kdeconnect.telephony"
+            | "kdeconnect.telephony.request_mute"
+    ) || kind.starts_with("echofiles.call")
+        || kind == "echofiles.clipboard.image.inline"
 }
 
 type Tracer = Box<dyn Fn(&str) + Send + Sync>;
@@ -212,7 +221,9 @@ fn read_plain_line(sock: &mut impl Read) -> io::Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut one = [0u8; 1];
     loop {
-        if Instant::now() > deadline { return Err(io::Error::new(io::ErrorKind::TimedOut, "identity deadline")); }
+        if Instant::now() > deadline {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "identity deadline"));
+        }
         if sock.read(&mut one)? == 0 {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }
@@ -381,7 +392,11 @@ impl Inner {
         let links = self.links.lock().unwrap();
         let Some(ls) = links.get(id) else { return false };
         let allowed = |l: &&Link| l.device.paired || kind == "kdeconnect.pair";
-        let link = ls.iter().filter(allowed).find(|l| l.via == Via::Lan).or_else(|| ls.iter().filter(allowed).find(|l| l.via == Via::Bluetooth && bluetooth_ok(kind)));
+        let link = ls
+            .iter()
+            .filter(allowed)
+            .find(|l| l.via == Via::Lan)
+            .or_else(|| ls.iter().filter(allowed).find(|l| l.via == Via::Bluetooth && bluetooth_ok(kind)));
         let ok = link.is_some_and(|l| l.tx.try_send(bytes).is_ok());
         if ok {
             trace(&format!("→ {} {kind}", short(id)));
@@ -394,8 +409,14 @@ impl Inner {
     }
 
     fn authorized(&self, id: &str, cert: &[u8], generation: u64) -> bool {
-        if self.stopped.load(Ordering::Acquire) { return false; }
-        self.links.lock().unwrap().get(id).is_some_and(|ls| ls.iter().any(|l| l.device.paired && l.cert == cert && l.generation == generation))
+        if self.stopped.load(Ordering::Acquire) {
+            return false;
+        }
+        self.links
+            .lock()
+            .unwrap()
+            .get(id)
+            .is_some_and(|ls| ls.iter().any(|l| l.device.paired && l.cert == cert && l.generation == generation))
     }
 
     fn paired(&self, id: &str) -> bool {
@@ -467,7 +488,8 @@ impl Service {
         });
         let mut startup = Startup { inner: inner.clone(), complete: false };
         // TCP: 1716 first (what phones try), then the rest of the range.
-        let listener = std::iter::once(UDP_PORT).chain(PORT_MIN..=PORT_MAX).find_map(|p| TcpListener::bind((Ipv4Addr::UNSPECIFIED, p)).ok());
+        let listener =
+            std::iter::once(UDP_PORT).chain(PORT_MIN..=PORT_MAX).find_map(|p| TcpListener::bind((Ipv4Addr::UNSPECIFIED, p)).ok());
         let Some(listener) = listener else {
             let why = "Ports 1714–1764 are all in use. If KDE Connect is running on this computer, quit it — EchoFiles talks to your phone itself.".to_string();
             (inner.emit)(Event::Failed(why.clone()));
@@ -485,7 +507,9 @@ impl Service {
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 };
-                if acc.stopped.load(Ordering::Acquire) { break; }
+                if acc.stopped.load(Ordering::Acquire) {
+                    break;
+                }
                 let Some(permit) = Permit::take(&acc.connections, 32) else { continue };
                 let i = acc.clone();
                 std::thread::spawn(move || {
@@ -516,19 +540,23 @@ impl Service {
         // Say we're here again every 15 s while a paired device isn't connected (a phone
         // that came back to the Wi-Fi, or a laptop that woke up).
         let again = svc.clone();
-        std::thread::Builder::new().name("phone-announce".into()).spawn(move || loop {
-            {
-                let (lock, wake) = &again.inner.idle;
-                let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-                let _ = wake.wait_timeout_while(guard, Duration::from_secs(15), |_| !again.inner.stopped.load(Ordering::Acquire));
-            }
-            if again.inner.stopped.load(Ordering::Acquire) { return; }
-            let trusted = identity::trusted(&again.inner.dir);
-            let links = again.inner.links.lock().unwrap();
-            let missing = trusted.iter().any(|t| !links.get(&t.id).is_some_and(|ls| ls.iter().any(|l| l.via == Via::Lan)));
-            drop(links);
-            if missing {
-                again.announce();
+        std::thread::Builder::new().name("phone-announce".into()).spawn(move || {
+            loop {
+                {
+                    let (lock, wake) = &again.inner.idle;
+                    let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = wake.wait_timeout_while(guard, Duration::from_secs(15), |_| !again.inner.stopped.load(Ordering::Acquire));
+                }
+                if again.inner.stopped.load(Ordering::Acquire) {
+                    return;
+                }
+                let trusted = identity::trusted(&again.inner.dir);
+                let links = again.inner.links.lock().unwrap();
+                let missing = trusted.iter().any(|t| !links.get(&t.id).is_some_and(|ls| ls.iter().any(|l| l.via == Via::Lan)));
+                drop(links);
+                if missing {
+                    again.announce();
+                }
             }
         })?;
         startup.complete = true;
@@ -560,7 +588,9 @@ impl Service {
 
     /// Say we're here to one address (for networks that drop broadcasts).
     pub fn announce_to(&self, to: SocketAddr) {
-        if self.inner.stopped.load(Ordering::Acquire) { return; }
+        if self.inner.stopped.load(Ordering::Acquire) {
+            return;
+        }
         let bytes = self.inner.identity_line();
         if let Some(sock) = self.inner.udp.lock().unwrap().as_ref() {
             let _ = sock.send_to(&bytes, to);
@@ -589,7 +619,9 @@ impl Service {
     /// Run a link over a Bluetooth socket (RFCOMM). The side that opened the connection is
     /// the `initiator`, like the side that heard the UDP announcement over Wi-Fi.
     pub fn adopt(&self, fd: OwnedFd, initiator: bool) {
-        if self.inner.stopped.load(Ordering::Acquire) { return; }
+        if self.inner.stopped.load(Ordering::Acquire) {
+            return;
+        }
         let Some(permit) = Permit::take(&self.inner.connections, 32) else { return };
         let inner = self.inner.clone();
         std::thread::spawn(move || {
@@ -607,12 +639,18 @@ impl Service {
 
     /// A short-lived fingerprint from a QR code scanned by the owner.
     pub fn expect_qr(&self, id: &str, fingerprint: &str) {
-        if id.len() <= 64 && self.inner.qr.lock().unwrap().len() < 128 && fingerprint.len() == 64 && fingerprint.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if id.len() <= 64
+            && self.inner.qr.lock().unwrap().len() < 128
+            && fingerprint.len() == 64
+            && fingerprint.bytes().all(|b| b.is_ascii_hexdigit())
+        {
             self.inner.qr.lock().unwrap().insert(id.into(), (fingerprint.to_ascii_lowercase(), Instant::now()));
         }
     }
 
-    pub fn fingerprint(&self) -> String { fingerprint(&self.inner.me.cert) }
+    pub fn fingerprint(&self) -> String {
+        fingerprint(&self.inner.me.cert)
+    }
 
     /// Ask the phone to pair; its owner confirms the code there.
     pub fn pair(&self, id: &str) {
@@ -621,7 +659,11 @@ impl Service {
         let code = identity::verification_key(&self.inner.me.cert, &cert, ts);
         let generation = self.inner.links.lock().unwrap().get(id).and_then(|ls| ls.first()).map(|l| l.generation);
         let Some(generation) = generation else { return };
-        self.inner.pairing.lock().unwrap().insert(id.to_string(), PendingPair { cert, generation, created: Instant::now(), asked: true, timestamp: ts });
+        self.inner
+            .pairing
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), PendingPair { cert, generation, created: Instant::now(), asked: true, timestamp: ts });
         self.inner.send(id, "kdeconnect.pair", json!({ "pair": true, "timestamp": ts }));
         (self.inner.emit)(Event::PairCode { id: id.to_string(), code });
     }
@@ -631,18 +673,24 @@ impl Service {
         let pending = {
             let mut pairs = self.inner.pairing.lock().unwrap();
             let matches = pairs.get(id).is_some_and(|p| identity::verification_key(&self.inner.me.cert, &p.cert, p.timestamp) == code);
-            if !matches { return; }
+            if !matches {
+                return;
+            }
             pairs.remove(id)
         };
-        if let Some(pending) = pending { if complete_pair(&self.inner, id, &pending) { self.inner.send(id, "kdeconnect.pair", json!({ "pair": true })); } }
+        if let Some(pending) = pending
+            && complete_pair(&self.inner, id, &pending)
+        {
+            self.inner.send(id, "kdeconnect.pair", json!({ "pair": true }));
+        }
     }
 
     pub fn accept_pair(&self, id: &str) {
         let pending = self.inner.pairing.lock().unwrap().remove(id);
-        if let Some(pending) = pending {
-            if complete_pair(&self.inner, id, &pending) {
-                self.inner.send(id, "kdeconnect.pair", json!({ "pair": true }));
-            }
+        if let Some(pending) = pending
+            && complete_pair(&self.inner, id, &pending)
+        {
+            self.inner.send(id, "kdeconnect.pair", json!({ "pair": true }));
         }
     }
 
@@ -712,7 +760,11 @@ impl Service {
     pub fn send_sms(&self, id: &str, addresses: &[String], text: &str) -> bool {
         let addrs: Vec<Value> = addresses.iter().map(|a| json!({ "address": a })).collect();
         let phone = addresses.first().cloned().unwrap_or_default();
-        self.paired_send(id, "kdeconnect.sms.request", json!({ "version": 2, "sendSms": true, "addresses": addrs, "phoneNumber": phone, "messageBody": text }))
+        self.paired_send(
+            id,
+            "kdeconnect.sms.request",
+            json!({ "version": 2, "sendSms": true, "addresses": addrs, "phoneNumber": phone, "messageBody": text }),
+        )
     }
 
     /// Start the phone's SFTP server; the answer arrives as [`Event::Sftp`].
@@ -732,15 +784,22 @@ impl Service {
     pub fn accept_file(&self, transfer: u64, dir: PathBuf) {
         let Some(permit) = Permit::take(&self.inner.transfer_slots, 8) else { return };
         let Some(o) = self.inner.offers.lock().unwrap().remove(&transfer) else { return };
-        if o.created.elapsed() > Duration::from_secs(300) || !self.inner.authorized(&o.device, &o.cert, o.generation) { return; }
+        if o.created.elapsed() > Duration::from_secs(300) || !self.inner.authorized(&o.device, &o.cert, o.generation) {
+            return;
+        }
         self.inner.transfers.lock().unwrap().insert(transfer, Arc::new(AtomicBool::new(false)));
         let inner = self.inner.clone();
-        std::thread::spawn(move || { let _permit = permit; download(&inner, transfer, o, &dir); });
+        std::thread::spawn(move || {
+            let _permit = permit;
+            download(&inner, transfer, o, &dir);
+        });
     }
 
     /// Cancellation is checked between chunks and while waiting for the receiver.
     pub fn cancel_transfer(&self, transfer: u64) {
-        if let Some(flag) = self.inner.transfers.lock().unwrap().get(&transfer) { flag.store(true, Ordering::Relaxed); }
+        if let Some(flag) = self.inner.transfers.lock().unwrap().get(&transfer) {
+            flag.store(true, Ordering::Relaxed);
+        }
         self.reject_file(transfer);
     }
 
@@ -757,7 +816,9 @@ impl Service {
         let Some(auth) = self.inner.authorization(id) else { return Vec::new() };
         let files: Vec<_> = files.into_iter().take(1024).collect();
         let ids: Vec<u64> = files.iter().map(|_| self.inner.new_id()).collect();
-        for id in &ids { self.inner.transfers.lock().unwrap().insert(*id, Arc::new(AtomicBool::new(false))); }
+        for id in &ids {
+            self.inner.transfers.lock().unwrap().insert(*id, Arc::new(AtomicBool::new(false)));
+        }
         let inner = self.inner.clone();
         let device = id.to_string();
         let work: Vec<(u64, PathBuf)> = ids.iter().copied().zip(files).collect();
@@ -802,7 +863,11 @@ impl Service {
 
 fn share_body(path: &Path, count: usize, total: u64) -> Value {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let modified = std::fs::metadata(path).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as i64);
+    let modified = std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis() as i64);
     json!({ "filename": name, "lastModified": modified, "numberOfFiles": count, "totalPayloadSize": total })
 }
 
@@ -890,12 +955,29 @@ fn device_from(body: &Value, ip: IpAddr, cert: &[u8], trusted: &[Trusted]) -> De
         k if k.is_empty() => "phone".to_string(),
         k => k,
     };
-    Device { id, name: s(body, "deviceName"), kind, ip, paired, accepts: list("incomingCapabilities"), sends: list("outgoingCapabilities"), lan: false, bluetooth: false }
+    Device {
+        id,
+        name: s(body, "deviceName"),
+        kind,
+        ip,
+        paired,
+        accepts: list("incomingCapabilities"),
+        sends: list("outgoingCapabilities"),
+        lan: false,
+        bluetooth: false,
+    }
 }
 
 // ------------------------------------------------------------------------------ links
 
-fn run_link<S: Sock>(inner: &Arc<Inner>, mut stream: Tls2<S>, ip: IpAddr, cert: Vec<u8>, plain_identity: Option<Value>, via: Via) -> io::Result<()> {
+fn run_link<S: Sock>(
+    inner: &Arc<Inner>,
+    mut stream: Tls2<S>,
+    ip: IpAddr,
+    cert: Vec<u8>,
+    plain_identity: Option<Value>,
+    via: Via,
+) -> io::Result<()> {
     // Protocol 8: identities again, inside TLS.
     stream.write_all(&inner.identity_line())?;
     stream.flush()?;
@@ -915,11 +997,21 @@ fn run_link<S: Sock>(inner: &Arc<Inner>, mut stream: Tls2<S>, ip: IpAddr, cert: 
     let mut pending_plain = plain_identity;
 
     let register = |d: &Device, tx: &SyncSender<Vec<u8>>| -> bool {
-        if d.id.is_empty() || d.id.len() > 64 || !d.id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') { return false; }
-        if identity::trusted(&inner.dir).iter().any(|t| t.id == d.id && t.cert != cert) { return false; }
+        if d.id.is_empty() || d.id.len() > 64 || !d.id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+            return false;
+        }
+        if identity::trusted(&inner.dir).iter().any(|t| t.id == d.id && t.cert != cert) {
+            return false;
+        }
         let mut links = inner.links.lock().unwrap();
         let ls = links.entry(d.id.clone()).or_default();
-        if ls.iter().any(|l| l.cert != cert) { if d.paired { ls.clear(); } else { return false; } }
+        if ls.iter().any(|l| l.cert != cert) {
+            if d.paired {
+                ls.clear();
+            } else {
+                return false;
+            }
+        }
         let fresh = !ls.iter().any(|l| l.device.paired);
         // A newer link replaces an older one on the same transport (its thread ends when
         // its sender drops).
@@ -942,8 +1034,12 @@ fn run_link<S: Sock>(inner: &Arc<Inner>, mut stream: Tls2<S>, ip: IpAddr, cert: 
     };
 
     let result = loop {
-        if inner.stopped.load(Ordering::Acquire) { break Ok(()); }
-        if started.elapsed() > Duration::from_secs(120) && device.as_ref().is_none_or(|d| !inner.authorized(&d.id, &cert, generation)) { break Err(io::Error::other("unpaired connection expired")); }
+        if inner.stopped.load(Ordering::Acquire) {
+            break Ok(());
+        }
+        if started.elapsed() > Duration::from_secs(120) && device.as_ref().is_none_or(|d| !inner.authorized(&d.id, &cert, generation)) {
+            break Err(io::Error::other("unpaired connection expired"));
+        }
         if let Some(d) = &device {
             let current = inner.links.lock().unwrap().get(&d.id).is_some_and(|ls| ls.iter().any(|l| l.generation == generation));
             if !current {
@@ -977,12 +1073,16 @@ fn run_link<S: Sock>(inner: &Arc<Inner>, mut stream: Tls2<S>, ip: IpAddr, cert: 
             break Ok(());
         }
         let _ = stream.flush();
-        if device.is_none() && started.elapsed() > Duration::from_secs(3)
-            && let Some(body) = pending_plain.take() {
-                let d = device_from(&body, ip, &cert, &identity::trusted(&inner.dir));
-                if !register(&d, &tx) { break Err(io::Error::other("identity certificate mismatch")); }
-                device = Some(d);
+        if device.is_none()
+            && started.elapsed() > Duration::from_secs(3)
+            && let Some(body) = pending_plain.take()
+        {
+            let d = device_from(&body, ip, &cert, &identity::trusted(&inner.dir));
+            if !register(&d, &tx) {
+                break Err(io::Error::other("identity certificate mismatch"));
             }
+            device = Some(d);
+        }
         match stream.read(&mut tmp) {
             Ok(0) => break Ok(()),
             Ok(n) => {
@@ -997,18 +1097,26 @@ fn run_link<S: Sock>(inner: &Arc<Inner>, mut stream: Tls2<S>, ip: IpAddr, cert: 
                     let Ok(v) = serde_json::from_slice::<Value>(raw.trim_ascii()) else { continue };
                     if v["type"] == "kdeconnect.identity" {
                         let d = device_from(&v["body"], ip, &cert, &identity::trusted(&inner.dir));
-                        if device.is_some() { continue; }
+                        if device.is_some() {
+                            continue;
+                        }
                         if d.id.is_empty() || d.id == inner.me.device_id {
                             return Ok(());
                         }
                         pending_plain = None;
-                        if !register(&d, &tx) { return Err(io::Error::other("identity certificate mismatch")); }
+                        if !register(&d, &tx) {
+                            return Err(io::Error::other("identity certificate mismatch"));
+                        }
                         device = Some(d);
                         continue;
                     }
                     if let Some(d) = &device {
                         trace(&format!("← {} {}", short(&d.id), v["type"].as_str().unwrap_or("?")));
-                        if via == Via::Bluetooth && (!bluetooth_ok(v["type"].as_str().unwrap_or_default()) || v.get("payloadTransferInfo").is_some()) { continue; }
+                        if via == Via::Bluetooth
+                            && (!bluetooth_ok(v["type"].as_str().unwrap_or_default()) || v.get("payloadTransferInfo").is_some())
+                        {
+                            continue;
+                        }
                         handle(inner, &d.id, ip, generation, &cert, &v);
                     }
                 }
@@ -1056,14 +1164,20 @@ fn fingerprint(cert: &[u8]) -> String {
 }
 
 fn complete_pair(inner: &Arc<Inner>, id: &str, pending: &PendingPair) -> bool {
-    if pending.created.elapsed() > Duration::from_secs(120) { return false; }
+    if pending.created.elapsed() > Duration::from_secs(120) {
+        return false;
+    }
     {
         let mut links = inner.links.lock().unwrap();
         let Some(ls) = links.get_mut(id) else { return false };
         let Some(l) = ls.iter().find(|l| l.generation == pending.generation && l.cert == pending.cert) else { return false };
         let t = Trusted { id: id.to_string(), name: l.device.name.clone(), kind: l.device.kind.clone(), cert: l.cert.clone() };
-        if identity::trust(&inner.dir, &t).is_err() { return false; }
-        for l in ls.iter_mut() { l.device.paired = l.cert == pending.cert; }
+        if identity::trust(&inner.dir, &t).is_err() {
+            return false;
+        }
+        for l in ls.iter_mut() {
+            l.device.paired = l.cert == pending.cert;
+        }
     }
     let Some(dev) = inner.device(id) else { return false };
     (inner.emit)(Event::Paired(dev));
@@ -1076,7 +1190,9 @@ fn forget(inner: &Arc<Inner>, id: &str) {
     inner.pairing.lock().unwrap().remove(id);
     inner.offers.lock().unwrap().retain(|_, o| o.device != id);
     if let Some(ls) = inner.links.lock().unwrap().remove(id) {
-        for l in ls { l.revoked.store(true, Ordering::Relaxed); }
+        for l in ls {
+            l.revoked.store(true, Ordering::Relaxed);
+        }
     }
     (inner.emit)(Event::Unpaired(id.to_string()));
     (inner.emit)(Event::Gone(id.to_string()));
@@ -1093,7 +1209,13 @@ fn handle(inner: &Arc<Inner>, id: &str, ip: IpAddr, generation: u64, cert: &[u8]
     let emit = |e: Event| (inner.emit)(e);
     if kind == "kdeconnect.pair" {
         let wants = b(body, "pair");
-        let asked = inner.pairing.lock().unwrap().get(id).filter(|p| p.generation == generation && p.cert == cert && p.created.elapsed() < Duration::from_secs(120)).cloned();
+        let asked = inner
+            .pairing
+            .lock()
+            .unwrap()
+            .get(id)
+            .filter(|p| p.generation == generation && p.cert == cert && p.created.elapsed() < Duration::from_secs(120))
+            .cloned();
         match (wants, asked) {
             (true, Some(pending)) if pending.asked => {
                 inner.pairing.lock().unwrap().remove(id);
@@ -1108,7 +1230,11 @@ fn handle(inner: &Arc<Inner>, id: &str, ip: IpAddr, generation: u64, cert: &[u8]
                 let ts = i(body, "timestamp").max(0) as u64;
                 let Some(cert) = inner.cert(id) else { return };
                 let code = identity::verification_key(&inner.me.cert, &cert, ts);
-                inner.pairing.lock().unwrap().insert(id.to_string(), PendingPair { cert, generation, created: Instant::now(), asked: false, timestamp: ts });
+                inner
+                    .pairing
+                    .lock()
+                    .unwrap()
+                    .insert(id.to_string(), PendingPair { cert, generation, created: Instant::now(), asked: false, timestamp: ts });
                 emit(Event::PairRequested { id: id.to_string(), code });
             }
             (false, Some(_)) => {
@@ -1134,8 +1260,12 @@ fn handle(inner: &Arc<Inner>, id: &str, ip: IpAddr, generation: u64, cert: &[u8]
             if !clip.is_empty() {
                 let mut seen = inner.clips.lock().unwrap();
                 seen.retain(|_, at| now_ms() - *at < 60_000);
-                if seen.len() >= 4096 { seen.clear(); }
-                if seen.insert(format!("{id}:{clip}"), now_ms()).is_some() { return; }
+                if seen.len() >= 4096 {
+                    seen.clear();
+                }
+                if seen.insert(format!("{id}:{clip}"), now_ms()).is_some() {
+                    return;
+                }
             }
             let text = s(body, "content");
             if !text.is_empty() {
@@ -1161,7 +1291,10 @@ fn handle(inner: &Arc<Inner>, id: &str, ip: IpAddr, generation: u64, cert: &[u8]
                 dismissable: body.get("isClearable").is_none_or(|_| b(body, "isClearable")),
                 silent: b(body, "silent"),
                 reply_id: (!reply.is_empty()).then_some(reply),
-                actions: body["actions"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default(),
+                actions: body["actions"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                    .unwrap_or_default(),
             };
             emit(Event::Notification { id, notification: n });
         }
@@ -1177,7 +1310,16 @@ fn handle(inner: &Arc<Inner>, id: &str, ip: IpAddr, generation: u64, cert: &[u8]
                         Value::Array(a) => a.iter().map(|x| s(x, "address")).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(", "),
                         _ => s(m, "address"),
                     };
-                    Sms { thread: i(m, "thread_id"), uid: i(m, "_id"), address, body: s(m, "body"), date: i(m, "date"), outgoing: i(m, "type") == 2, read: i(m, "read") != 0, attachments: m["attachments"].as_array().cloned().unwrap_or_default() }
+                    Sms {
+                        thread: i(m, "thread_id"),
+                        uid: i(m, "_id"),
+                        address,
+                        body: s(m, "body"),
+                        date: i(m, "date"),
+                        outgoing: i(m, "type") == 2,
+                        read: i(m, "read") != 0,
+                        attachments: m["attachments"].as_array().cloned().unwrap_or_default(),
+                    }
                 })
                 .collect();
             emit(Event::Sms { id, messages });
@@ -1199,7 +1341,15 @@ fn handle(inner: &Arc<Inner>, id: &str, ip: IpAddr, generation: u64, cert: &[u8]
                     x if x.is_empty() => ip.to_string(),
                     x => x,
                 };
-                Ok(Sftp { ip: ip_s, port: i(body, "port") as u16, user: s(body, "user"), password: s(body, "password"), host_key_fingerprint: s(body, "hostKeyFingerprint"), path: s(body, "path"), places: paths.into_iter().zip(names).collect() })
+                Ok(Sftp {
+                    ip: ip_s,
+                    port: i(body, "port") as u16,
+                    user: s(body, "user"),
+                    password: s(body, "password"),
+                    host_key_fingerprint: s(body, "hostKeyFingerprint"),
+                    path: s(body, "path"),
+                    places: paths.into_iter().zip(names).collect(),
+                })
             };
             emit(Event::Sftp { id, result });
         }
@@ -1223,8 +1373,23 @@ fn handle(inner: &Arc<Inner>, id: &str, ip: IpAddr, generation: u64, cert: &[u8]
                 let transfer = inner.new_id();
                 let mut offers = inner.offers.lock().unwrap();
                 offers.retain(|_, o| o.created.elapsed() < Duration::from_secs(300));
-                if offers.len() >= 128 { return; }
-                offers.insert(transfer, Offer { device: id.clone(), ip, port: port as u16, name: name.clone(), size, modified: i(body, "lastModified"), cert: cert.to_vec(), generation, created: Instant::now() });
+                if offers.len() >= 128 {
+                    return;
+                }
+                offers.insert(
+                    transfer,
+                    Offer {
+                        device: id.clone(),
+                        ip,
+                        port: port as u16,
+                        name: name.clone(),
+                        size,
+                        modified: i(body, "lastModified"),
+                        cert: cert.to_vec(),
+                        generation,
+                        created: Instant::now(),
+                    },
+                );
                 drop(offers);
                 emit(Event::Incoming { id, transfer, name, size: size.max(0) as u64, kind: kind.to_string(), body: body.clone() });
             } else {
@@ -1263,7 +1428,11 @@ fn publish_no_replace(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 struct TransferGuard<'a>(&'a Inner, u64);
-impl Drop for TransferGuard<'_> { fn drop(&mut self) { self.0.transfers.lock().unwrap().remove(&self.1); } }
+impl Drop for TransferGuard<'_> {
+    fn drop(&mut self) {
+        self.0.transfers.lock().unwrap().remove(&self.1);
+    }
+}
 fn cancelled(inner: &Inner, transfer: u64) -> bool {
     inner.transfers.lock().unwrap().get(&transfer).is_some_and(|flag| flag.load(Ordering::Relaxed))
 }
@@ -1271,10 +1440,21 @@ fn cancelled(inner: &Inner, transfer: u64) -> bool {
 fn download(inner: &Arc<Inner>, transfer: u64, o: Offer, dir: &Path) {
     let _guard = TransferGuard(inner, transfer);
     let done = Arc::new(AtomicU64::new(0));
-    (inner.emit)(Event::TransferStarted { id: o.device.clone(), transfer, name: o.name.clone(), size: o.size.max(0) as u64, upload: false, done: done.clone() });
+    (inner.emit)(Event::TransferStarted {
+        id: o.device.clone(),
+        transfer,
+        name: o.name.clone(),
+        size: o.size.max(0) as u64,
+        upload: false,
+        done: done.clone(),
+    });
     let result = (|| -> io::Result<PathBuf> {
-        if cancelled(inner, transfer) { return Err(io::Error::other("Cancelled")); }
-        if !inner.authorized(&o.device, &o.cert, o.generation) { return Err(io::Error::other("pairing revoked")); }
+        if cancelled(inner, transfer) {
+            return Err(io::Error::other("Cancelled"));
+        }
+        if !inner.authorized(&o.device, &o.cert, o.generation) {
+            return Err(io::Error::other("pairing revoked"));
+        }
         std::fs::create_dir_all(dir)?;
         let mut sock = TcpStream::connect_timeout(&SocketAddr::new(o.ip, o.port), Duration::from_secs(10))?;
         sock.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -1291,14 +1471,25 @@ fn download(inner: &Arc<Inner>, transfer: u64, o: Offer, dir: &Path) {
         getrandom::fill(&mut random).map_err(|e| io::Error::other(e.to_string()))?;
         let part = dir.join(format!(".echo-{}.part", random.iter().map(|b| format!("{b:02x}")).collect::<String>()));
         struct Cleanup(PathBuf);
-        impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); } }
-        let mut file = { use std::os::unix::fs::OpenOptionsExt; std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&part)? };
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let mut file = {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&part)?
+        };
         let _cleanup = Cleanup(part.clone());
         let mut buf = vec![0u8; 256 * 1024];
         let mut got: u64 = 0;
         loop {
-            if cancelled(inner, transfer) { return Err(io::Error::other("Cancelled")); }
-            if !inner.authorized(&o.device, &o.cert, o.generation) { return Err(io::Error::other("pairing revoked")); }
+            if cancelled(inner, transfer) {
+                return Err(io::Error::other("Cancelled"));
+            }
+            if !inner.authorized(&o.device, &o.cert, o.generation) {
+                return Err(io::Error::other("pairing revoked"));
+            }
             if o.size >= 0 && got >= o.size as u64 {
                 break;
             }
@@ -1317,7 +1508,9 @@ fn download(inner: &Arc<Inner>, transfer: u64, o: Offer, dir: &Path) {
             got += n as u64;
             done.store(got, Ordering::Relaxed);
         }
-        if cancelled(inner, transfer) { return Err(io::Error::other("Cancelled")); }
+        if cancelled(inner, transfer) {
+            return Err(io::Error::other("Cancelled"));
+        }
         file.sync_all()?;
         if o.size >= 0 && got < o.size as u64 {
             let _ = std::fs::remove_file(&part);
@@ -1329,7 +1522,9 @@ fn download(inner: &Arc<Inner>, transfer: u64, o: Offer, dir: &Path) {
         }
         drop(file);
         loop {
-            if !inner.authorized(&o.device, &o.cert, o.generation) { return Err(io::Error::other("pairing revoked")); }
+            if !inner.authorized(&o.device, &o.cert, o.generation) {
+                return Err(io::Error::other("pairing revoked"));
+            }
             let target = free_name(dir, &o.name);
             match publish_no_replace(&part, &target) {
                 Ok(()) => break Ok(target),
@@ -1341,11 +1536,23 @@ fn download(inner: &Arc<Inner>, transfer: u64, o: Offer, dir: &Path) {
     (inner.emit)(Event::TransferDone { id: o.device, transfer, upload: false, result: result.map_err(|e| e.to_string()) });
 }
 
-fn upload(inner: &Arc<Inner>, device: &str, transfer: u64, kind: &str, body: Value, source: Source, auth: &(Vec<u8>, u64)) -> Result<(), String> {
+fn upload(
+    inner: &Arc<Inner>,
+    device: &str,
+    transfer: u64,
+    kind: &str,
+    body: Value,
+    source: Source,
+    auth: &(Vec<u8>, u64),
+) -> Result<(), String> {
     let _guard = TransferGuard(inner, transfer);
-    if cancelled(inner, transfer) { return Err("Cancelled".into()); }
+    if cancelled(inner, transfer) {
+        return Err("Cancelled".into());
+    }
     let (expected, generation) = auth;
-    if !inner.authorized(device, expected, *generation) { return Err("Pairing or connection revoked".into()); }
+    if !inner.authorized(device, expected, *generation) {
+        return Err("Pairing or connection revoked".into());
+    }
     let (mut reader, size): (Box<dyn Read + Send>, u64) = match source {
         Source::Path(path) => {
             let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
@@ -1361,7 +1568,10 @@ fn upload(inner: &Arc<Inner>, device: &str, transfer: u64, kind: &str, body: Val
         }
     };
     let name = body["filename"].as_str().unwrap_or(kind).to_string();
-    let listener = PAYLOAD_PORTS.clone().find_map(|p| TcpListener::bind((Ipv4Addr::UNSPECIFIED, p)).ok()).ok_or("No free port to send from (1739–1764).")?;
+    let listener = PAYLOAD_PORTS
+        .clone()
+        .find_map(|p| TcpListener::bind((Ipv4Addr::UNSPECIFIED, p)).ok())
+        .ok_or("No free port to send from (1739–1764).")?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let mut p = packet(kind, body);
     p["payloadSize"] = json!(size);
@@ -1376,8 +1586,12 @@ fn upload(inner: &Arc<Inner>, device: &str, transfer: u64, kind: &str, body: Val
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut sock = loop {
-        if !inner.authorized(device, expected, *generation) { return Err("Pairing or connection revoked".into()); }
-        if cancelled(inner, transfer) { return Err("Cancelled".into()); }
+        if !inner.authorized(device, expected, *generation) {
+            return Err("Pairing or connection revoked".into());
+        }
+        if cancelled(inner, transfer) {
+            return Err("Cancelled".into());
+        }
         match listener.accept() {
             Ok((s, _)) => break s,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -1397,15 +1611,21 @@ fn upload(inner: &Arc<Inner>, device: &str, transfer: u64, kind: &str, body: Val
         conn.complete_io(&mut sock).map_err(|e| e.to_string())?;
     }
     let peer = conn.peer_certificates().and_then(|c| c.first()).map(|c| c.to_vec());
-    if peer.as_deref() != Some(expected.as_slice()) { return Err("Payload certificate does not match the paired device".into()); }
+    if peer.as_deref() != Some(expected.as_slice()) {
+        return Err("Payload certificate does not match the paired device".into());
+    }
     let mut stream = StreamOwned::new(conn, sock);
     let mut buf = vec![0u8; 256 * 1024];
     let mut sent = 0u64;
     while sent < size {
-        if cancelled(inner, transfer) { return Err("Cancelled".into()); }
+        if cancelled(inner, transfer) {
+            return Err("Cancelled".into());
+        }
         let remaining = (size - sent).min(buf.len() as u64) as usize;
         let n = reader.read(&mut buf[..remaining]).map_err(|e| e.to_string())?;
-        if n == 0 { return Err("The source file changed before the transfer finished.".into()); }
+        if n == 0 {
+            return Err("The source file changed before the transfer finished.".into());
+        }
         stream.write_all(&buf[..n]).map_err(|e| e.to_string())?;
         sent += n as u64;
         done.store(sent, Ordering::Relaxed);
@@ -1414,6 +1634,82 @@ fn upload(inner: &Arc<Inner>, device: &str, transfer: u64, kind: &str, body: Val
     stream.conn.send_close_notify();
     let _ = stream.flush();
     Ok(())
+}
+
+struct Permit(Arc<AtomicUsize>);
+impl Permit {
+    fn take(counter: &Arc<AtomicUsize>, max: usize) -> Option<Self> {
+        counter.fetch_update(Ordering::AcqRel, Ordering::Relaxed, |n| (n < max).then_some(n + 1)).ok()?;
+        Some(Self(counter.clone()))
+    }
+}
+impl Drop for Permit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn connect_bounded(inner: &Arc<Inner>, to: SocketAddr) {
+    if inner.stopped.load(Ordering::Acquire) {
+        return;
+    }
+    let Some(permit) = Permit::take(&inner.connections, 32) else { return };
+    if !inner.pending.lock().unwrap().insert(to) {
+        return;
+    }
+    let inner = inner.clone();
+    std::thread::spawn(move || {
+        let _permit = permit;
+        let _ = outgoing(&inner, to);
+        inner.pending.lock().unwrap().remove(&to);
+    });
+}
+
+struct Deadline<S> {
+    inner: S,
+    until: Option<Instant>,
+}
+impl<S> Deadline<S> {
+    fn check(&self) -> io::Result<()> {
+        if self.until.is_some_and(|d| Instant::now() >= d) {
+            Err(io::Error::new(io::ErrorKind::TimedOut, "complete handshake deadline"))
+        } else {
+            Ok(())
+        }
+    }
+}
+impl<S: Read> Read for Deadline<S> {
+    fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+        self.check()?;
+        self.inner.read(b)
+    }
+}
+impl<S: Write> Write for Deadline<S> {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        self.check()?;
+        self.inner.write(b)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.check()?;
+        self.inner.flush()
+    }
+}
+impl<S: Sock> Sock for Deadline<S> {
+    fn timeout(&self, d: Option<Duration>) -> io::Result<()> {
+        self.inner.timeout(d)
+    }
+}
+
+struct Startup {
+    inner: Arc<Inner>,
+    complete: bool,
+}
+impl Drop for Startup {
+    fn drop(&mut self) {
+        if !self.complete {
+            Service { inner: self.inner.clone() }.shutdown();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1440,40 +1736,3 @@ mod tests {
         assert_eq!(i(&v, "missing"), 0);
     }
 }
-
-struct Permit(Arc<AtomicUsize>);
-impl Permit {
-    fn take(counter: &Arc<AtomicUsize>, max: usize) -> Option<Self> {
-        counter.fetch_update(Ordering::AcqRel, Ordering::Relaxed, |n| (n < max).then_some(n + 1)).ok()?;
-        Some(Self(counter.clone()))
-    }
-}
-impl Drop for Permit { fn drop(&mut self) { self.0.fetch_sub(1, Ordering::AcqRel); } }
-
-fn connect_bounded(inner: &Arc<Inner>, to: SocketAddr) {
-    if inner.stopped.load(Ordering::Acquire) { return; }
-    let Some(permit) = Permit::take(&inner.connections, 32) else { return };
-    if !inner.pending.lock().unwrap().insert(to) { return; }
-    let inner = inner.clone();
-    std::thread::spawn(move || {
-        let _permit = permit;
-        let _ = outgoing(&inner, to);
-        inner.pending.lock().unwrap().remove(&to);
-    });
-}
-
-struct Deadline<S> { inner: S, until: Option<Instant> }
-impl<S> Deadline<S> {
-    fn check(&self) -> io::Result<()> {
-        if self.until.is_some_and(|d| Instant::now() >= d) { Err(io::Error::new(io::ErrorKind::TimedOut, "complete handshake deadline")) } else { Ok(()) }
-    }
-}
-impl<S: Read> Read for Deadline<S> { fn read(&mut self, b: &mut [u8]) -> io::Result<usize> { self.check()?; self.inner.read(b) } }
-impl<S: Write> Write for Deadline<S> {
-    fn write(&mut self, b: &[u8]) -> io::Result<usize> { self.check()?; self.inner.write(b) }
-    fn flush(&mut self) -> io::Result<()> { self.check()?; self.inner.flush() }
-}
-impl<S: Sock> Sock for Deadline<S> { fn timeout(&self, d: Option<Duration>) -> io::Result<()> { self.inner.timeout(d) } }
-
-struct Startup { inner: Arc<Inner>, complete: bool }
-impl Drop for Startup { fn drop(&mut self) { if !self.complete { Service { inner: self.inner.clone() }.shutdown(); } } }

@@ -13,10 +13,10 @@ use ef_core::volume::FsInfo;
 use ef_disks::polkit::Prompt;
 use ef_disks::{MountError, Mounted, Volume};
 use iced::futures::channel::mpsc;
-use iced::widget::{column, container, row, scrollable, text, Space};
+use iced::widget::{Space, column, container, row, scrollable, text};
 use iced::{Alignment, Background, Border, Element, Length, Point, Task};
 
-use crate::app::{background, fs_of, App, Message};
+use crate::app::{App, Message, background, fs_of};
 use crate::overlay::{Dialog, MenuFor, Tone};
 use crate::style::{self, color};
 use crate::widgets as w;
@@ -34,7 +34,7 @@ pub struct DriveState {
 
 #[derive(Debug, Clone)]
 pub enum DriveMsg {
-    Volumes(Result<(Vec<Volume>, Vec<Option<ef_core::volume::FsInfo>>, Option<ef_core::volume::FsInfo>), String>),
+    Volumes(Result<VolumeScan, String>),
     Animations(bool),
     Click(usize),
     Mounted { device: String, result: Result<Mounted, MountError>, open: bool },
@@ -153,11 +153,24 @@ impl App {
             DriveMsg::Click(i) => {
                 let Some(v) = self.volumes.get(i) else { return Task::none() };
                 if v.locked && v.is_bitlocker() {
-                    self.push_toast(Tone::Accent, format!("{} is locked with BitLocker", display_name(v, &self.volumes)), Some("Unlock it in Windows (or turn BitLocker off there) to open it here. Unlocking from Linux is coming.".into()), None);
+                    self.push_toast(
+                        Tone::Accent,
+                        format!("{} is locked with BitLocker", display_name(v, &self.volumes)),
+                        Some("Unlock it in Windows (or turn BitLocker off there) to open it here. Unlocking from Linux is coming.".into()),
+                        None,
+                    );
                     return Task::none();
                 }
                 if v.locked {
-                    self.push_toast(Tone::Accent, format!("{} is encrypted and locked", display_name(v, &self.volumes)), Some(format!("Unlock it with `udisksctl unlock -b {}`, then click it again. Unlocking from EchoFiles is coming.", v.device)), None);
+                    self.push_toast(
+                        Tone::Accent,
+                        format!("{} is encrypted and locked", display_name(v, &self.volumes)),
+                        Some(format!(
+                            "Unlock it with `udisksctl unlock -b {}`, then click it again. Unlocking from EchoFiles is coming.",
+                            v.device
+                        )),
+                        None,
+                    );
                     return Task::none();
                 }
                 match v.mount_points.first() {
@@ -170,7 +183,12 @@ impl App {
                 }
             }
             DriveMsg::Mounted { device, result, open } => {
-                let name = self.volumes.iter().find(|v| v.device == device).map(|v| display_name(v, &self.volumes)).unwrap_or_else(|| device.clone());
+                let name = self
+                    .volumes
+                    .iter()
+                    .find(|v| v.device == device)
+                    .map(|v| display_name(v, &self.volumes))
+                    .unwrap_or_else(|| device.clone());
                 let st = self.drive_state.entry(device.clone()).or_default();
                 st.mounting = false;
                 match result {
@@ -188,7 +206,12 @@ impl App {
                         t
                     }
                     Err(MountError::NotAuthorized) => {
-                        self.push_toast(Tone::Accent, format!("{name} wasn't mounted"), Some("Mounting a drive inside this computer needs your password.".into()), None);
+                        self.push_toast(
+                            Tone::Accent,
+                            format!("{name} wasn't mounted"),
+                            Some("Mounting a drive inside this computer needs your password.".into()),
+                            None,
+                        );
                         Task::none()
                     }
                     Err(MountError::Failed(e)) => {
@@ -223,12 +246,20 @@ impl App {
                 Task::batch(tasks)
             }
             DriveMsg::Unmounted { device, result } => {
-                let name = self.volumes.iter().find(|v| v.device == device).map(|v| display_name(v, &self.volumes)).unwrap_or_else(|| device.clone());
+                let name = self
+                    .volumes
+                    .iter()
+                    .find(|v| v.device == device)
+                    .map(|v| display_name(v, &self.volumes))
+                    .unwrap_or_else(|| device.clone());
                 match result {
                     Ok(()) => {
                         self.drive_state.remove(&device);
                     }
-                    Err(e) => self.toast_error(format!("Couldn't unmount {name}"), format!("{e}. Close files and terminals that are using it, then try again.")),
+                    Err(e) => self.toast_error(
+                        format!("Couldn't unmount {name}"),
+                        format!("{e}. Close files and terminals that are using it, then try again."),
+                    ),
                 }
                 self.volumes_task()
             }
@@ -280,20 +311,49 @@ impl App {
         let name = display_name(v, &self.volumes);
         let p = &self.palette;
         let (tone, icon, msg, action): (ef_theme::Semantic, &str, String, Option<Element<'_, Message>>) = if let Some(r) = &st.reason {
-            (p.warning, "alert", format!("{name} is read-only. {r} Restart Windows (not Shut down) or turn off Fast Startup to write here."), None)
+            (
+                p.warning,
+                "alert",
+                format!("{name} is read-only. {r} Restart Windows (not Shut down) or turn off Fast Startup to write here."),
+                None,
+            )
         } else if st.write_allowed && v.system {
             (p.warning, "unlock", format!("Writing to {name} is on until the drive is unmounted."), None)
         } else if v.system && pane.fs.as_ref().is_some_and(|f| f.read_only) {
-            (p.info, "shield", format!("{name} is read-only to protect Windows."), Some(w::text_button(p, &self.icons, "Allow writing…", Some("unlock"), None, w::Variant::Secondary, Some(Message::Drive(DriveMsg::AskWrite(i))))))
+            (
+                p.info,
+                "shield",
+                format!("{name} is read-only to protect Windows."),
+                Some(w::text_button(
+                    p,
+                    &self.icons,
+                    "Allow writing…",
+                    Some("unlock"),
+                    None,
+                    w::Variant::Secondary,
+                    Some(Message::Drive(DriveMsg::AskWrite(i))),
+                )),
+            )
         } else {
             return None;
         };
-        let mut r = row![w::glyph(&self.icons, icon, 16.0, color(tone.ink)), text(msg).size(style::META).font(style::FONT).color(color(p.ink)).width(Length::Fill)].spacing(style::SPACE_4).align_y(Alignment::Center);
+        let mut r = row![
+            w::glyph(&self.icons, icon, 16.0, color(tone.ink)),
+            text(msg).size(style::META).font(style::FONT).color(color(p.ink)).width(Length::Fill)
+        ]
+        .spacing(style::SPACE_4)
+        .align_y(Alignment::Center);
         if let Some(a) = action {
             r = r.push(a);
         }
         let bg = color(tone.soft);
-        Some(container(r).width(Length::Fill).padding([6, 16]).style(move |_| container::Style { background: Some(Background::Color(bg)), ..Default::default() }).into())
+        Some(
+            container(r)
+                .width(Length::Fill)
+                .padding([6, 16])
+                .style(move |_| container::Style { background: Some(Background::Color(bg)), ..Default::default() })
+                .into(),
+        )
     }
 
     /// Sidebar row: name, then the state pill before the size on the second line.
@@ -303,8 +363,18 @@ impl App {
         let active = !pane.drives && v.mount_points.iter().any(|m| pane.location.starts_with(m.as_str()));
         let fs = self.volume_fs.get(i).cloned().flatten();
         let st = self.drive_state.get(&v.device).cloned().unwrap_or_default();
-        let ink = if active { color(p.ink_strong) } else if v.is_mounted() { color(p.ink) } else { color(p.ink_muted) };
-        let head = text(display_name(v, &self.volumes)).size(style::BODY).font(if active { style::FONT_BOLD } else { style::FONT }).color(ink).wrapping(text::Wrapping::None);
+        let ink = if active {
+            color(p.ink_strong)
+        } else if v.is_mounted() {
+            color(p.ink)
+        } else {
+            color(p.ink_muted)
+        };
+        let head = text(display_name(v, &self.volumes))
+            .size(style::BODY)
+            .font(if active { style::FONT_BOLD } else { style::FONT })
+            .color(ink)
+            .wrapping(text::Wrapping::None);
         let mut meta = String::new();
         // With a pill on the line there's only room for the free space; the total is in
         // the tooltip and on the Drives page.
@@ -339,7 +409,9 @@ impl App {
         meta_row = meta_row.push(text(meta).size(style::LABEL).font(style::FONT).color(color(p.ink_muted)).wrapping(text::Wrapping::None));
         lines = lines.push(meta_row);
         let tint = if active { color(p.accent_ink) } else { color(p.ink_muted) };
-        let r = row![container(w::glyph(&self.icons, if v.locked { "lock" } else { "drive" }, 16.0, tint)).padding([2, 0]), lines].spacing(style::SPACE_4).align_y(Alignment::Start);
+        let r = row![container(w::glyph(&self.icons, if v.locked { "lock" } else { "drive" }, 16.0, tint)).padding([2, 0]), lines]
+            .spacing(style::SPACE_4)
+            .align_y(Alignment::Start);
         let item = w::row_button(p, container(r).padding([6, 0]).into(), active, Some(Message::Drive(DriveMsg::Click(i))));
         let tip = match v.mount_points.first() {
             Some(mp) => {
@@ -358,7 +430,18 @@ impl App {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn drive_card<'a>(&'a self, name: String, icon: &'static str, facts: String, fs: Option<FsInfo>, size: u64, world: ef_theme::Rgb, pill: Option<Element<'a, Message>>, msg: Message, menu: Option<usize>) -> Element<'a, Message> {
+    fn drive_card<'a>(
+        &'a self,
+        name: String,
+        icon: &'static str,
+        facts: String,
+        fs: Option<FsInfo>,
+        size: u64,
+        world: ef_theme::Rgb,
+        pill: Option<Element<'a, Message>>,
+        msg: Message,
+        menu: Option<usize>,
+    ) -> Element<'a, Message> {
         let p = &self.palette;
         let mut free = String::new();
         match &fs {
@@ -372,7 +455,9 @@ impl App {
                 free.push_str(" · not mounted");
             }
         }
-        let mut head = row![text(name).size(15).font(style::FONT_BOLD).color(color(p.ink_strong)).width(Length::Fill).wrapping(text::Wrapping::None)].align_y(Alignment::Center);
+        let mut head =
+            row![text(name).size(15).font(style::FONT_BOLD).color(color(p.ink_strong)).width(Length::Fill).wrapping(text::Wrapping::None)]
+                .align_y(Alignment::Center);
         if let Some(pl) = pill {
             head = head.push(pl);
         }
@@ -386,15 +471,18 @@ impl App {
         ]
         .spacing(style::SPACE_3);
         let pal = p.clone();
-        let card = iced::widget::button(container(body).padding(16).width(280))
-            .padding(0)
-            .on_press(msg)
-            .style(move |_, status| iced::widget::button::Style {
+        let card = iced::widget::button(container(body).padding(16).width(280)).padding(0).on_press(msg).style(move |_, status| {
+            iced::widget::button::Style {
                 background: Some(Background::Color(color(pal.bg_raised))),
-                border: Border { color: if matches!(status, iced::widget::button::Status::Hovered) { color(pal.line_strong) } else { color(pal.line) }, width: 1.0, radius: 2.0.into() },
+                border: Border {
+                    color: if matches!(status, iced::widget::button::Status::Hovered) { color(pal.line_strong) } else { color(pal.line) },
+                    width: 1.0,
+                    radius: 2.0.into(),
+                },
                 text_color: color(pal.ink),
                 ..Default::default()
-            });
+            }
+        });
         match menu {
             Some(i) => w::context_area(card, move |at| Message::Drive(DriveMsg::Menu(i, at))),
             None => card.into(),
@@ -417,7 +505,12 @@ impl App {
             Message::Navigate(PathBuf::from("/")),
             None,
         )];
-        let linux_first = self.volumes.iter().enumerate().filter(|(_, v)| !v.is_windows()).chain(self.volumes.iter().enumerate().filter(|(_, v)| v.is_windows()));
+        let linux_first = self
+            .volumes
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| !v.is_windows())
+            .chain(self.volumes.iter().enumerate().filter(|(_, v)| v.is_windows()));
         for (i, v) in linux_first {
             let fs = self.volume_fs.get(i).cloned().flatten();
             let st = self.drive_state.get(&v.device).cloned().unwrap_or_default();
@@ -435,11 +528,29 @@ impl App {
                 None
             };
             let (facts, world) = if v.is_windows() {
-                (format!("{} · {} · {}", v.kind(), fs.as_ref().map_or("ntfs3", |f| f.fs_type), if v.system { "Windows system" } else { "data" }), p.world_windows)
+                (
+                    format!(
+                        "{} · {} · {}",
+                        v.kind(),
+                        fs.as_ref().map_or("ntfs3", |f| f.fs_type),
+                        if v.system { "Windows system" } else { "data" }
+                    ),
+                    p.world_windows,
+                )
             } else {
                 (format!("{} · Linux · {}", fs.as_ref().map_or(v.kind(), |f| f.fs_type), v.device), p.world_linux)
             };
-            cards.push(self.drive_card(display_name(v, &self.volumes), if v.locked { "lock" } else { "drive" }, facts, fs, v.size, world, pill, Message::Drive(DriveMsg::Click(i)), Some(i)));
+            cards.push(self.drive_card(
+                display_name(v, &self.volumes),
+                if v.locked { "lock" } else { "drive" },
+                facts,
+                fs,
+                v.size,
+                world,
+                pill,
+                Message::Drive(DriveMsg::Click(i)),
+                Some(i),
+            ));
         }
         let mut grid = column![].spacing(style::SPACE_4);
         let mut it = cards.into_iter().peekable();
@@ -454,14 +565,27 @@ impl App {
         }
         let head = column![
             text("Drives").size(22).font(style::FONT_BOLD).color(color(p.ink_strong)),
-            text("Click a drive to open it — drives that aren't mounted mount on the first click. Right-click for more.").size(style::META).font(style::FONT).color(color(p.ink_muted)),
+            text("Click a drive to open it — drives that aren't mounted mount on the first click. Right-click for more.")
+                .size(style::META)
+                .font(style::FONT)
+                .color(color(p.ink_muted)),
         ]
         .spacing(6);
-        w::fill(scrollable(container(column![head, grid, Space::new().height(24)].spacing(style::SPACE_5)).padding([24, 28])).height(Length::Fill), p.bg).width(Length::Fill).height(Length::Fill).into()
+        w::fill(
+            scrollable(container(column![head, grid, Space::new().height(24)].spacing(style::SPACE_5)).padding([24, 28]))
+                .height(Length::Fill),
+            p.bg,
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     }
 }
 
-pub(crate) fn read_volumes() -> Result<(Vec<Volume>, Vec<Option<ef_core::volume::FsInfo>>, Option<ef_core::volume::FsInfo>), String> {
+/// The Windows volumes, each one's filesystem facts, and the system drive's.
+pub(crate) type VolumeScan = (Vec<Volume>, Vec<Option<ef_core::volume::FsInfo>>, Option<ef_core::volume::FsInfo>);
+
+pub(crate) fn read_volumes() -> Result<VolumeScan, String> {
     let mut volumes = ef_disks::windows_volumes().map_err(|e| e.to_string())?;
     volumes.extend(ef_disks::linux_volumes().map_err(|e| e.to_string())?);
     let fs = volumes.iter().map(|v| v.mount_points.first().and_then(|m| fs_of(Path::new(m)))).collect();

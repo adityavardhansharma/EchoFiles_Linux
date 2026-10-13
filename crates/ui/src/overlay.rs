@@ -10,10 +10,10 @@ use ef_config::{self as config, Scope};
 use ef_core::fmt;
 use ef_core::ops::{Kind, Phase, Resolution};
 use ef_core::trash;
-use iced::widget::{button, column, container, mouse_area, pin, row, scrollable, span, stack, text, text_input, Space};
+use iced::widget::{Space, button, column, container, mouse_area, pin, row, scrollable, span, stack, text, text_input};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Point, Shadow, Task, Vector};
 
-use crate::actions::{place_name, FileMsg};
+use crate::actions::{FileMsg, place_name};
 use crate::app::{App, Message};
 use crate::drives::DriveMsg;
 use crate::settings::{Page, SettingsMsg};
@@ -46,6 +46,9 @@ pub(crate) fn item(icon: &'static str, label: impl Into<String>, kbd: Option<&'s
     Entry::Item(MenuItem { icon, label: label.into(), kbd, hint: None, msg: Some(msg), danger: false, submenu: Vec::new(), checked: false })
 }
 
+// A menu holds a handful of entries for as long as it is open; boxing items would only
+// add allocations.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Entry {
     Item(MenuItem),
@@ -76,8 +79,14 @@ pub struct Menu {
 /// What was right-clicked.
 #[derive(Debug, Clone)]
 pub enum MenuFor {
-    Files { pane: u64, on_item: bool },
-    Place { path: PathBuf, pinned: bool },
+    Files {
+        pane: u64,
+        on_item: bool,
+    },
+    Place {
+        path: PathBuf,
+        pinned: bool,
+    },
     Drive(usize),
     Tab(usize),
     /// Path segments folded into "…".
@@ -107,18 +116,56 @@ pub struct Toast {
 }
 
 pub enum Dialog {
-    Delete { paths: Vec<PathBuf>, reason: Option<String>, opened: Instant },
-    Conflict { id: u64, index: usize, all: bool, opened: Instant },
-    BadNames { id: u64, opened: Instant },
-    Password { prompt: ef_disks::polkit::Prompt, value: String, opened: Instant },
-    WriteSystem { drive: usize, opened: Instant },
+    Delete {
+        paths: Vec<PathBuf>,
+        reason: Option<String>,
+        opened: Instant,
+    },
+    Conflict {
+        id: u64,
+        index: usize,
+        all: bool,
+        opened: Instant,
+    },
+    BadNames {
+        id: u64,
+        opened: Instant,
+    },
+    Password {
+        prompt: ef_disks::polkit::Prompt,
+        value: String,
+        opened: Instant,
+    },
+    WriteSystem {
+        drive: usize,
+        opened: Instant,
+    },
     /// A server wants a user name and password (design system `SignInDialog`).
-    Login { ask: ef_net::LoginAsk, user: String, domain: String, password: String, guest: bool, remember: bool, opened: Instant },
+    Login {
+        ask: ef_net::LoginAsk,
+        user: String,
+        domain: String,
+        password: String,
+        guest: bool,
+        remember: bool,
+        opened: Instant,
+    },
     /// A server connection has a question, e.g. an unknown SSH host key.
-    Question { ask: ef_net::QuestionAsk, opened: Instant },
-    EmptyTrash { opened: Instant },
+    Question {
+        ask: ef_net::QuestionAsk,
+        opened: Instant,
+    },
+    EmptyTrash {
+        opened: Instant,
+    },
     /// Properties (Alt+Enter): facts only, closed with × or Esc.
-    Properties { paths: Vec<PathBuf>, data: Option<std::sync::Arc<crate::preview::PreviewData>>, total: Option<std::sync::Arc<ef_core::ops::DirSize>>, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>, opened: Instant },
+    Properties {
+        paths: Vec<PathBuf>,
+        data: Option<std::sync::Arc<crate::preview::PreviewData>>,
+        total: Option<std::sync::Arc<ef_core::ops::DirSize>>,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        opened: Instant,
+    },
 }
 
 impl Dialog {
@@ -219,7 +266,9 @@ impl App {
     /// Success toasts leave after 4 s (not while hovered); errors stay until dismissed.
     /// Finished transfers leave after 6 s.
     pub(crate) fn expire_toasts(&mut self) {
-        self.toasts.retain(|t| t.tone == Tone::Danger || t.hovered || t.at.elapsed() < Duration::from_secs(if t.action.is_some() { 8 } else { 4 }));
+        self.toasts.retain(|t| {
+            t.tone == Tone::Danger || t.hovered || t.at.elapsed() < Duration::from_secs(if t.action.is_some() { 8 } else { 4 })
+        });
         self.transfers.retain(|t| t.finished.is_none_or(|f| f.elapsed() < Duration::from_secs(6)));
     }
 
@@ -256,7 +305,12 @@ impl App {
         if let Some(o) = self.other_pane() {
             out.push((format!("Other pane · {}", place_name(&o.location)), o.location.clone(), "columns"));
         }
-        for (n, p, i) in [("Home", home.clone(), "home"), ("Documents", home.join("Documents"), "file"), ("Downloads", home.join("Downloads"), "download"), ("Pictures", home.join("Pictures"), "image")] {
+        for (n, p, i) in [
+            ("Home", home.clone(), "home"),
+            ("Documents", home.join("Documents"), "file"),
+            ("Downloads", home.join("Downloads"), "download"),
+            ("Pictures", home.join("Pictures"), "image"),
+        ] {
             if p.is_dir() {
                 out.push((n.to_string(), p, i));
             }
@@ -299,7 +353,16 @@ impl App {
                     if in_trash {
                         e.push(item("undo", "Restore", None, f(FileMsg::Restore)));
                         e.push(Entry::Sep);
-                        e.push(Entry::Item(MenuItem { icon: "trash", label: "Delete permanently".into(), kbd: Some("Shift+Del"), hint: None, msg: Some(f(FileMsg::AskDelete)), danger: true, submenu: Vec::new(), checked: false }));
+                        e.push(Entry::Item(MenuItem {
+                            icon: "trash",
+                            label: "Delete permanently".into(),
+                            kbd: Some("Shift+Del"),
+                            hint: None,
+                            msg: Some(f(FileMsg::AskDelete)),
+                            danger: true,
+                            submenu: Vec::new(),
+                            checked: false,
+                        }));
                         e.push(Entry::Sep);
                         e.push(item("info", "Properties", Some("Alt+Enter"), f(FileMsg::Properties)));
                         return e;
@@ -320,8 +383,26 @@ impl App {
                     }
                     let moves = self.destinations(Kind::Move, &targets);
                     if !moves.is_empty() {
-                        e.push(Entry::Item(MenuItem { icon: "move", label: "Move to".into(), kbd: None, hint: None, msg: None, danger: false, submenu: moves, checked: false }));
-                        e.push(Entry::Item(MenuItem { icon: "copy", label: "Copy to".into(), kbd: None, hint: None, msg: None, danger: false, submenu: self.destinations(Kind::Copy, &targets), checked: false }));
+                        e.push(Entry::Item(MenuItem {
+                            icon: "move",
+                            label: "Move to".into(),
+                            kbd: None,
+                            hint: None,
+                            msg: None,
+                            danger: false,
+                            submenu: moves,
+                            checked: false,
+                        }));
+                        e.push(Entry::Item(MenuItem {
+                            icon: "copy",
+                            label: "Copy to".into(),
+                            kbd: None,
+                            hint: None,
+                            msg: None,
+                            danger: false,
+                            submenu: self.destinations(Kind::Copy, &targets),
+                            checked: false,
+                        }));
                     }
                     if targets.len() == 1 {
                         e.push(item("rename", "Rename", Some("F2"), f(FileMsg::StartRename)));
@@ -329,25 +410,61 @@ impl App {
                     e.push(item("link", "Copy path", Some("Ctrl+Shift+C"), f(FileMsg::CopyPath)));
                     if windows {
                         let hint = targets.first().and_then(|t| self.windows_path(t));
-                        e.push(Entry::Item(MenuItem { icon: "link", label: "Copy as Windows path".into(), kbd: None, hint, msg: Some(f(FileMsg::CopyWindowsPath)), danger: false, submenu: Vec::new(), checked: false }));
+                        e.push(Entry::Item(MenuItem {
+                            icon: "link",
+                            label: "Copy as Windows path".into(),
+                            kbd: None,
+                            hint,
+                            msg: Some(f(FileMsg::CopyWindowsPath)),
+                            danger: false,
+                            submenu: Vec::new(),
+                            checked: false,
+                        }));
                     }
                     if one_dir {
                         let pinned = self.settings.sidebar.pinned.iter().any(|s| config::expand(s) == targets[0]);
-                        e.push(if pinned { item("pin", "Unpin from sidebar", None, f(FileMsg::Unpin(targets[0].clone()))) } else { item("pin", "Pin to sidebar", None, f(FileMsg::Pin(targets[0].clone()))) });
+                        e.push(if pinned {
+                            item("pin", "Unpin from sidebar", None, f(FileMsg::Unpin(targets[0].clone())))
+                        } else {
+                            item("pin", "Pin to sidebar", None, f(FileMsg::Pin(targets[0].clone())))
+                        });
                     }
                     if let Some(pid) = self.phone_id().filter(|i| self.phone_online(i))
                         && targets.iter().all(|t| t.is_file())
                     {
-                        e.push(item("phone", format!("Send to {}", self.phone_name(&pid)), None, Message::Phone(crate::phone::PhoneMsg::SendPaths(targets.clone()))));
+                        e.push(item(
+                            "phone",
+                            format!("Send to {}", self.phone_name(&pid)),
+                            None,
+                            Message::Phone(crate::phone::PhoneMsg::SendPaths(targets.clone())),
+                        ));
                     }
                     e.push(Entry::Sep);
                     e.push(item("trash", "Move to Trash", Some("Del"), f(FileMsg::Trash)));
-                    e.push(Entry::Item(MenuItem { icon: "trash", label: "Delete permanently".into(), kbd: Some("Shift+Del"), hint: None, msg: Some(f(FileMsg::AskDelete)), danger: true, submenu: Vec::new(), checked: false }));
+                    e.push(Entry::Item(MenuItem {
+                        icon: "trash",
+                        label: "Delete permanently".into(),
+                        kbd: Some("Shift+Del"),
+                        hint: None,
+                        msg: Some(f(FileMsg::AskDelete)),
+                        danger: true,
+                        submenu: Vec::new(),
+                        checked: false,
+                    }));
                     e.push(Entry::Sep);
                     e.push(item("info", "Properties", Some("Alt+Enter"), f(FileMsg::Properties)));
                 } else {
                     if in_trash {
-                        e.push(Entry::Item(MenuItem { icon: "trash", label: "Empty Trash".into(), kbd: None, hint: None, msg: Some(f(FileMsg::AskEmptyTrash)), danger: true, submenu: Vec::new(), checked: false }));
+                        e.push(Entry::Item(MenuItem {
+                            icon: "trash",
+                            label: "Empty Trash".into(),
+                            kbd: None,
+                            hint: None,
+                            msg: Some(f(FileMsg::AskEmptyTrash)),
+                            danger: true,
+                            submenu: Vec::new(),
+                            checked: false,
+                        }));
                         return e;
                     }
                     e.push(item("folder-plus", "New folder", Some("Ctrl+Shift+N"), f(FileMsg::NewFolder)));
@@ -355,8 +472,17 @@ impl App {
                     e.push(item("paste", "Paste", Some("Ctrl+V"), f(FileMsg::Paste)));
                     e.push(item("check", "Select all", Some("Ctrl+A"), f(FileMsg::SelectAll)));
                     e.push(Entry::Sep);
-                    e.push(if p.grid { item("list", "View as list", Some("Ctrl+1"), Message::SetGrid(false)) } else { item("grid", "View as grid", Some("Ctrl+2"), Message::SetGrid(true)) });
-                    e.push(item(if self.show_hidden { "eye-off" } else { "eye" }, if self.show_hidden { "Hide hidden files" } else { "Show hidden files" }, Some("Ctrl+H"), Message::ToggleHidden));
+                    e.push(if p.grid {
+                        item("list", "View as list", Some("Ctrl+1"), Message::SetGrid(false))
+                    } else {
+                        item("grid", "View as grid", Some("Ctrl+2"), Message::SetGrid(true))
+                    });
+                    e.push(item(
+                        if self.show_hidden { "eye-off" } else { "eye" },
+                        if self.show_hidden { "Hide hidden files" } else { "Show hidden files" },
+                        Some("Ctrl+H"),
+                        Message::ToggleHidden,
+                    ));
                     e.push(Entry::Sep);
                     e.push(item("terminal", "Open terminal here", None, f(FileMsg::OpenTerminal)));
                     e.push(item("link", "Copy path", None, f(FileMsg::CopyPath)));
@@ -370,17 +496,33 @@ impl App {
                 e
             }
             MenuFor::Place { path, pinned } => {
-                let mut e = vec![item("external", "Open", None, Message::Navigate(path.clone())), item("plus", "Open in new tab", None, Message::OpenTab(path.clone()))];
+                let mut e = vec![
+                    item("external", "Open", None, Message::Navigate(path.clone())),
+                    item("plus", "Open in new tab", None, Message::OpenTab(path.clone())),
+                ];
                 if path == trash::home_trash().join("files") {
                     e.push(Entry::Sep);
-                    e.push(Entry::Item(MenuItem { icon: "trash", label: "Empty Trash".into(), kbd: None, hint: None, msg: Some(f(FileMsg::AskEmptyTrash)), danger: true, submenu: Vec::new(), checked: false }));
+                    e.push(Entry::Item(MenuItem {
+                        icon: "trash",
+                        label: "Empty Trash".into(),
+                        kbd: None,
+                        hint: None,
+                        msg: Some(f(FileMsg::AskEmptyTrash)),
+                        danger: true,
+                        submenu: Vec::new(),
+                        checked: false,
+                    }));
                     return e;
                 }
                 if self.clip.is_some() {
                     e.push(item("paste", "Paste into folder", None, f(FileMsg::PasteInto(path.clone()))));
                 }
                 e.push(Entry::Sep);
-                e.push(if pinned { item("pin", "Unpin from sidebar", None, f(FileMsg::Unpin(path))) } else { item("pin", "Pin to sidebar", None, f(FileMsg::Pin(path))) });
+                e.push(if pinned {
+                    item("pin", "Unpin from sidebar", None, f(FileMsg::Unpin(path)))
+                } else {
+                    item("pin", "Pin to sidebar", None, f(FileMsg::Pin(path)))
+                });
                 e
             }
             MenuFor::Drive(i) => {
@@ -397,7 +539,16 @@ impl App {
                         e.push(item("plus", "Open in new tab", None, Message::OpenTab(PathBuf::from(mp))));
                         if v.system && self.drive_state.get(&v.device).is_none_or(|s| s.read_only) {
                             e.push(Entry::Sep);
-                            e.push(Entry::Item(MenuItem { icon: "unlock", label: "Allow writing…".into(), kbd: None, hint: Some("unsafe".into()), msg: Some(d(DriveMsg::AskWrite(i))), danger: true, submenu: Vec::new(), checked: false }));
+                            e.push(Entry::Item(MenuItem {
+                                icon: "unlock",
+                                label: "Allow writing…".into(),
+                                kbd: None,
+                                hint: Some("unsafe".into()),
+                                msg: Some(d(DriveMsg::AskWrite(i))),
+                                danger: true,
+                                submenu: Vec::new(),
+                                checked: false,
+                            }));
                         }
                         e.push(Entry::Sep);
                         e.push(item("arrow-up", "Unmount", None, d(DriveMsg::Unmount(i))));
@@ -411,7 +562,18 @@ impl App {
             MenuFor::Crumbs(segs) => segs.into_iter().map(|(label, p)| item("folder", label, None, Message::Navigate(p))).collect(),
             MenuFor::View => {
                 let grid = self.pane().grid;
-                let toggle = |icon, label: &str, kbd, msg, on| Entry::Item(MenuItem { icon, label: label.into(), kbd: Some(kbd), hint: None, msg: Some(msg), danger: false, submenu: Vec::new(), checked: on });
+                let toggle = |icon, label: &str, kbd, msg, on| {
+                    Entry::Item(MenuItem {
+                        icon,
+                        label: label.into(),
+                        kbd: Some(kbd),
+                        hint: None,
+                        msg: Some(msg),
+                        danger: false,
+                        submenu: Vec::new(),
+                        checked: on,
+                    })
+                };
                 vec![
                     Entry::Heading("Layout".into()),
                     toggle("list", "List", "Ctrl+1", Message::SetGrid(false), !grid),
@@ -434,7 +596,10 @@ impl App {
     }
 
     fn menu_items(&self) -> Vec<(usize, &MenuItem)> {
-        self.menu.as_ref().map(|m| m.entries.iter().enumerate().filter_map(|(i, e)| if let Entry::Item(it) = e { Some((i, it)) } else { None }).collect()).unwrap_or_default()
+        self.menu
+            .as_ref()
+            .map(|m| m.entries.iter().enumerate().filter_map(|(i, e)| if let Entry::Item(it) = e { Some((i, it)) } else { None }).collect())
+            .unwrap_or_default()
     }
 
     /// Everything the palette can do, filtered by `query`.
@@ -444,27 +609,63 @@ impl App {
         // Paths: `/`, `~` or `X:\` switch to path completion.
         if q.starts_with('/') || q.starts_with('~') {
             let full = config::expand(q);
-            let (dir, prefix) = if q.ends_with('/') { (full.clone(), String::new()) } else { (full.parent().map(PathBuf::from).unwrap_or_default(), full.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default()) };
+            let (dir, prefix) = if q.ends_with('/') {
+                (full.clone(), String::new())
+            } else {
+                (
+                    full.parent().map(PathBuf::from).unwrap_or_default(),
+                    full.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default(),
+                )
+            };
             if full.is_dir() {
-                out.push(Found { group: "Go to", icon: "folder", label: config::tilde(&full), hint: None, kbd: Some("Enter"), msg: Message::Navigate(full.clone()), matched: Vec::new(), score: 1000 });
+                out.push(Found {
+                    group: "Go to",
+                    icon: "folder",
+                    label: config::tilde(&full),
+                    hint: None,
+                    kbd: Some("Enter"),
+                    msg: Message::Navigate(full.clone()),
+                    matched: Vec::new(),
+                    score: 1000,
+                });
             }
             if let Ok(rd) = std::fs::read_dir(&dir) {
-                let mut dirs: Vec<PathBuf> = rd.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().to_lowercase().starts_with(&prefix) && (self.show_hidden || !n.to_string_lossy().starts_with('.')))).collect();
+                let mut dirs: Vec<PathBuf> = rd
+                    .flatten()
+                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.file_name().is_some_and(|n| {
+                            n.to_string_lossy().to_lowercase().starts_with(&prefix)
+                                && (self.show_hidden || !n.to_string_lossy().starts_with('.'))
+                        })
+                    })
+                    .collect();
                 dirs.sort();
                 for p in dirs.into_iter().take(12) {
                     if p != full {
-                        out.push(Found { group: "Go to", icon: "folder", label: config::tilde(&p), hint: None, kbd: None, msg: Message::Navigate(p), matched: Vec::new(), score: 0 });
+                        out.push(Found {
+                            group: "Go to",
+                            icon: "folder",
+                            label: config::tilde(&p),
+                            hint: None,
+                            kbd: None,
+                            msg: Message::Navigate(p),
+                            matched: Vec::new(),
+                            score: 0,
+                        });
                     }
                 }
             }
             return out;
         }
         let f = Message::File;
-        let mut add = |group: &'static str, icon: &'static str, label: String, hint: Option<String>, kbd: Option<&'static str>, msg: Message| {
-            if let Some((score, matched)) = fuzzy(q, &label) {
-                out.push(Found { group, icon, label, hint, kbd, msg, matched, score });
-            }
-        };
+        let mut add =
+            |group: &'static str, icon: &'static str, label: String, hint: Option<String>, kbd: Option<&'static str>, msg: Message| {
+                if let Some((score, matched)) = fuzzy(q, &label) {
+                    out.push(Found { group, icon, label, hint, kbd, msg, matched, score });
+                }
+            };
         let actions: Vec<(&'static str, &str, Option<&'static str>, Message)> = vec![
             ("folder-plus", "New folder", Some("Ctrl+Shift+N"), f(FileMsg::NewFolder)),
             ("file-plus", "New file", None, f(FileMsg::NewFile)),
@@ -520,10 +721,24 @@ impl App {
             if v.is_mounted() {
                 add("Actions", "drive", format!("Unmount {name}"), None, None, Message::Drive(DriveMsg::Unmount(i)));
                 if v.system && self.drive_state.get(&v.device).is_none_or(|s| s.read_only) {
-                    add("Actions", "lock", format!("Mount {name} read-write"), Some("unsafe".into()), None, Message::Drive(DriveMsg::AskWrite(i)));
+                    add(
+                        "Actions",
+                        "lock",
+                        format!("Mount {name} read-write"),
+                        Some("unsafe".into()),
+                        None,
+                        Message::Drive(DriveMsg::AskWrite(i)),
+                    );
                 }
             } else {
-                add("Actions", "drive", format!("Mount {name}"), Some(format!("{size} {}", v.kind())), None, Message::Drive(DriveMsg::Click(i)));
+                add(
+                    "Actions",
+                    "drive",
+                    format!("Mount {name}"),
+                    Some(format!("{size} {}", v.kind())),
+                    None,
+                    Message::Drive(DriveMsg::Click(i)),
+                );
             }
         }
         for place in self.net_places() {
@@ -533,7 +748,14 @@ impl App {
             };
             let hint = place.address.as_ref().map(|a| format!("{} · {}", a.protocol.label(), a.who_where()));
             if place.mount.is_some() {
-                add("Actions", "arrow-up", format!("Disconnect {}", place.name), hint.clone(), None, Message::Net(crate::network::NetMsg::Disconnect(place.key.clone())));
+                add(
+                    "Actions",
+                    "arrow-up",
+                    format!("Disconnect {}", place.name),
+                    hint.clone(),
+                    None,
+                    Message::Net(crate::network::NetMsg::Disconnect(place.key.clone())),
+                );
             }
             add("Go to", icon, label, hint, None, Message::Net(crate::network::NetMsg::Click(place.key.clone())));
         }
@@ -559,10 +781,22 @@ impl App {
             if !p.is_dir() || !seen.insert(p.clone()) {
                 continue;
             }
-            let label = self.volumes.iter().find(|v| v.mount_points.first().is_some_and(|m| *m == p)).map(|v| crate::drives::display_name(v, &self.volumes)).unwrap_or_else(|| config::tilde(&p));
+            let label = self
+                .volumes
+                .iter()
+                .find(|v| v.mount_points.first().is_some_and(|m| *m == p))
+                .map(|v| crate::drives::display_name(v, &self.volumes))
+                .unwrap_or_else(|| config::tilde(&p));
             add("Go to", icon, label, (icon == "history").then(|| "recent".to_string()), None, Message::Navigate(p));
         }
-        for (page, icon, label) in [(Page::General, "sliders", "Settings: General"), (Page::Search, "search", "Settings: Search & index"), (Page::Agents, "terminal", "Settings: AI agents"), (Page::Phone, "phone", "Settings: Phone"), (Page::Appearance, "image", "Settings: Appearance"), (Page::About, "info", "Settings: About & shortcuts")] {
+        for (page, icon, label) in [
+            (Page::General, "sliders", "Settings: General"),
+            (Page::Search, "search", "Settings: Search & index"),
+            (Page::Agents, "terminal", "Settings: AI agents"),
+            (Page::Phone, "phone", "Settings: Phone"),
+            (Page::Appearance, "image", "Settings: Appearance"),
+            (Page::About, "info", "Settings: About & shortcuts"),
+        ] {
             add("Settings", icon, label.to_string(), None, None, Message::Settings(SettingsMsg::OpenPage(page)));
         }
         if !q.is_empty() {
@@ -602,14 +836,21 @@ impl App {
                 Task::none()
             }
             UiMsg::MenuMove(d) => {
-                let items: Vec<usize> = self.menu_items().into_iter().filter(|(_, it)| it.msg.is_some() || !it.submenu.is_empty()).map(|(i, _)| i).collect();
+                let items: Vec<usize> =
+                    self.menu_items().into_iter().filter(|(_, it)| it.msg.is_some() || !it.submenu.is_empty()).map(|(i, _)| i).collect();
                 if let Some(m) = &mut self.menu {
                     if items.is_empty() {
                         return Task::none();
                     }
                     let cur = m.hover.and_then(|h| items.iter().position(|&x| x == h));
                     let next = match cur {
-                        None => if d > 0 { 0 } else { items.len() - 1 },
+                        None => {
+                            if d > 0 {
+                                0
+                            } else {
+                                items.len() - 1
+                            }
+                        }
                         Some(c) => (c as i32 + d).rem_euclid(items.len() as i32) as usize,
                     };
                     m.hover = Some(items[next]);
@@ -709,9 +950,10 @@ impl App {
             UiMsg::CommandMove(d) => {
                 let n = self.command.as_ref().map(|c| self.command_results(&c.query).len()).unwrap_or(0);
                 if let Some(c) = &mut self.command
-                    && n > 0 {
-                        c.cursor = (c.cursor as i32 + d).rem_euclid(n as i32) as usize;
-                    }
+                    && n > 0
+                {
+                    c.cursor = (c.cursor as i32 + d).rem_euclid(n as i32) as usize;
+                }
                 Task::none()
             }
             UiMsg::DropHover(p) => {
@@ -752,17 +994,54 @@ impl App {
         for (i, e) in entries.iter().enumerate() {
             match e {
                 Entry::Sep => col = col.push(container(w::hline::<Message>(p.line)).padding([4, 0])),
-                Entry::Heading(h) => col = col.push(container(text(h.to_uppercase()).size(style::LABEL).font(style::FONT_BOLD).color(color(p.ink_muted))).height(HEAD_H).padding([0, 10]).align_y(Alignment::Center)),
+                Entry::Heading(h) => {
+                    col = col.push(
+                        container(text(h.to_uppercase()).size(style::LABEL).font(style::FONT_BOLD).color(color(p.ink_muted)))
+                            .height(HEAD_H)
+                            .padding([0, 10])
+                            .align_y(Alignment::Center),
+                    )
+                }
                 Entry::Item(it) => {
                     let active = hover == Some(i) && !sub_level;
                     let enabled = it.msg.is_some() || !it.submenu.is_empty();
-                    let ink = if it.danger { color(p.danger.ink) } else if active { color(p.accent_ink) } else { color(p.ink) };
-                    let glyph = if it.danger { color(p.danger.ink) } else if active { color(p.accent_ink) } else { color(p.ink_muted) };
-                    let mut r = row![w::glyph(&self.icons, it.icon, 16.0, glyph), text(it.label.clone()).size(style::BODY).font(style::FONT).color(ink).wrapping(text::Wrapping::None).width(Length::Fill)]
-                        .spacing(style::SPACE_3 + 2.0)
-                        .align_y(Alignment::Center);
+                    let ink = if it.danger {
+                        color(p.danger.ink)
+                    } else if active {
+                        color(p.accent_ink)
+                    } else {
+                        color(p.ink)
+                    };
+                    let glyph = if it.danger {
+                        color(p.danger.ink)
+                    } else if active {
+                        color(p.accent_ink)
+                    } else {
+                        color(p.ink_muted)
+                    };
+                    let mut r = row![
+                        w::glyph(&self.icons, it.icon, 16.0, glyph),
+                        text(it.label.clone())
+                            .size(style::BODY)
+                            .font(style::FONT)
+                            .color(ink)
+                            .wrapping(text::Wrapping::None)
+                            .width(Length::Fill)
+                    ]
+                    .spacing(style::SPACE_3 + 2.0)
+                    .align_y(Alignment::Center);
                     if let Some(h) = &it.hint {
-                        r = r.push(container(text(h.clone()).size(style::LABEL).font(style::FONT).color(color(p.ink_muted)).wrapping(text::Wrapping::None)).max_width(110).clip(true));
+                        r = r.push(
+                            container(
+                                text(h.clone())
+                                    .size(style::LABEL)
+                                    .font(style::FONT)
+                                    .color(color(p.ink_muted))
+                                    .wrapping(text::Wrapping::None),
+                            )
+                            .max_width(110)
+                            .clip(true),
+                        );
                     }
                     if let Some(k) = it.kbd {
                         r = r.push(w::kbd_chip(p, k));
@@ -781,16 +1060,28 @@ impl App {
                         (None, false) => Some(Message::Ui(UiMsg::MenuHover(i))),
                         _ => None,
                     };
-                    let b = button(container(r).height(ITEM_H).align_y(Alignment::Center)).padding([0, 10]).width(Length::Fill).on_press_maybe(msg).style(move |_, status| {
-                        let hot = active || matches!(status, button::Status::Hovered | button::Status::Pressed);
-                        button::Style {
-                            background: hot.then(|| Background::Color(color(pal.state_hover))),
-                            border: Border { color: if hot { color(pal.line) } else { Color::TRANSPARENT }, width: 1.0, radius: 0.0.into() },
-                            text_color: color(pal.ink),
-                            ..Default::default()
-                        }
-                    });
-                    let el: Element<'a, Message> = if enabled { b.into() } else { container(b).style(|_| container::Style { text_color: None, ..Default::default() }).into() };
+                    let b = button(container(r).height(ITEM_H).align_y(Alignment::Center))
+                        .padding([0, 10])
+                        .width(Length::Fill)
+                        .on_press_maybe(msg)
+                        .style(move |_, status| {
+                            let hot = active || matches!(status, button::Status::Hovered | button::Status::Pressed);
+                            button::Style {
+                                background: hot.then(|| Background::Color(color(pal.state_hover))),
+                                border: Border {
+                                    color: if hot { color(pal.line) } else { Color::TRANSPARENT },
+                                    width: 1.0,
+                                    radius: 0.0.into(),
+                                },
+                                text_color: color(pal.ink),
+                                ..Default::default()
+                            }
+                        });
+                    let el: Element<'a, Message> = if enabled {
+                        b.into()
+                    } else {
+                        container(b).style(|_| container::Style { text_color: None, ..Default::default() }).into()
+                    };
                     col = col.push(if sub_level { el } else { mouse_area(el).on_enter(Message::Ui(UiMsg::MenuHover(i))).into() });
                 }
             }
@@ -823,7 +1114,10 @@ impl App {
         let at = self.fit(m.at, MENU_W, h);
         let mut layers = vec![
             // Clicking anywhere else closes the menu (and doesn't click through).
-            mouse_area(container(Space::new()).width(Length::Fill).height(Length::Fill)).on_press(Message::Ui(UiMsg::CloseMenu)).on_right_press(Message::Ui(UiMsg::CloseMenu)).into(),
+            mouse_area(container(Space::new()).width(Length::Fill).height(Length::Fill))
+                .on_press(Message::Ui(UiMsg::CloseMenu))
+                .on_right_press(Message::Ui(UiMsg::CloseMenu))
+                .into(),
             pin(self.menu_panel(&m.entries, m.hover, false)).x(at.x).y(at.y - 4.0 * (1.0 - t)).into(),
         ];
         if let Some(si) = m.sub.filter(|_| !m.sub_entries.is_empty()) {
@@ -836,13 +1130,30 @@ impl App {
         Some(stack(layers).width(Length::Fill).height(Length::Fill).into())
     }
 
-    fn dialog_frame<'a>(&'a self, icon: &'static str, title: String, body: Element<'a, Message>, footer: Vec<Element<'a, Message>>, danger: bool, opened: Instant) -> Element<'a, Message> {
+    fn dialog_frame<'a>(
+        &'a self,
+        icon: &'static str,
+        title: String,
+        body: Element<'a, Message>,
+        footer: Vec<Element<'a, Message>>,
+        danger: bool,
+        opened: Instant,
+    ) -> Element<'a, Message> {
         self.dialog_frame_with(icon, title, body, footer, danger, false, opened)
     }
 
     /// `closable` adds a × in the corner (Properties, which has nothing to decide).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn dialog_frame_with<'a>(&'a self, icon: &'static str, title: String, body: Element<'a, Message>, footer: Vec<Element<'a, Message>>, danger: bool, closable: bool, opened: Instant) -> Element<'a, Message> {
+    pub(crate) fn dialog_frame_with<'a>(
+        &'a self,
+        icon: &'static str,
+        title: String,
+        body: Element<'a, Message>,
+        footer: Vec<Element<'a, Message>>,
+        danger: bool,
+        closable: bool,
+        opened: Instant,
+    ) -> Element<'a, Message> {
         let p = &self.palette;
         let t = self.t(opened, 180);
         let mut head = row![
@@ -852,7 +1163,11 @@ impl App {
         .spacing(style::SPACE_4)
         .align_y(Alignment::Center);
         if closable {
-            head = head.push(self.tip(w::icon_button(p, &self.icons, "close", Some(Message::Ui(UiMsg::CloseDialog)), false), "Close", Some("Esc")));
+            head = head.push(self.tip(
+                w::icon_button(p, &self.icons, "close", Some(Message::Ui(UiMsg::CloseDialog)), false),
+                "Close",
+                Some("Esc"),
+            ));
         }
         let mut foot = row![Space::new().width(Length::Fill)].spacing(style::SPACE_3).align_y(Alignment::Center);
         for b in footer {
@@ -860,17 +1175,20 @@ impl App {
         }
         let edge = if danger { color(p.danger.base) } else { color(p.accent) };
         let pal = p.clone();
-        let panel = container(column![head, body, foot].spacing(style::SPACE_5))
-            .width(540.0 * (0.98 + 0.02 * t))
-            .padding(20)
-            .style(move |_| container::Style {
-                background: Some(Background::Color(color(pal.bg_raised))),
-                border: Border { color: edge, width: 2.0, radius: 0.0.into() },
-                shadow: Shadow { color: Color { a: 0.45, ..Color::BLACK }, offset: Vector::new(0.0, 12.0), blur_radius: 32.0 },
-                ..Default::default()
+        let panel =
+            container(column![head, body, foot].spacing(style::SPACE_5)).width(540.0 * (0.98 + 0.02 * t)).padding(20).style(move |_| {
+                container::Style {
+                    background: Some(Background::Color(color(pal.bg_raised))),
+                    border: Border { color: edge, width: 2.0, radius: 0.0.into() },
+                    shadow: Shadow { color: Color { a: 0.45, ..Color::BLACK }, offset: Vector::new(0.0, 12.0), blur_radius: 32.0 },
+                    ..Default::default()
+                }
             });
         let scrim = color(p.scrim);
-        let back = mouse_area(container(Space::new()).width(Length::Fill).height(Length::Fill).style(move |_| container::Style { background: Some(Background::Color(Color { a: scrim.a * t, ..scrim })), ..Default::default() }));
+        let back = mouse_area(container(Space::new()).width(Length::Fill).height(Length::Fill).style(move |_| container::Style {
+            background: Some(Background::Color(Color { a: scrim.a * t, ..scrim })),
+            ..Default::default()
+        }));
         stack![back, container(iced::widget::opaque(panel)).center(Length::Fill)].into()
     }
 
@@ -888,7 +1206,11 @@ impl App {
         let cancel = || self.btn("Cancel", None, Some("Esc"), Variant::Ghost, Message::Ui(UiMsg::CloseDialog));
         Some(match d {
             Dialog::Delete { paths, reason, opened } => {
-                let what = if paths.len() == 1 { format!("“{}”", paths[0].file_name().unwrap_or_default().to_string_lossy()) } else { format!("{} items", paths.len()) };
+                let what = if paths.len() == 1 {
+                    format!("“{}”", paths[0].file_name().unwrap_or_default().to_string_lossy())
+                } else {
+                    format!("{} items", paths.len())
+                };
                 let mut body = String::new();
                 if let Some(r) = reason {
                     body.push_str(r);
@@ -897,16 +1219,47 @@ impl App {
                 body.push_str("Deleting permanently can't be undone.");
                 let mut foot = vec![cancel()];
                 if reason.is_none() {
-                    foot.push(self.btn("Move to Trash", Some("trash"), None, Variant::Secondary, Message::Ui(UiMsg::Pick(Box::new(Message::File(FileMsg::Trash))))));
+                    foot.push(self.btn(
+                        "Move to Trash",
+                        Some("trash"),
+                        None,
+                        Variant::Secondary,
+                        Message::Ui(UiMsg::Pick(Box::new(Message::File(FileMsg::Trash)))),
+                    ));
                 }
                 let paths = paths.clone();
-                foot.push(self.btn("Delete permanently", Some("trash"), None, Variant::Danger, Message::Ui(UiMsg::Pick(Box::new(Message::File(FileMsg::Delete(paths)))))));
+                foot.push(self.btn(
+                    "Delete permanently",
+                    Some("trash"),
+                    None,
+                    Variant::Danger,
+                    Message::Ui(UiMsg::Pick(Box::new(Message::File(FileMsg::Delete(paths))))),
+                ));
                 self.dialog_frame("trash-full", format!("Delete {what} permanently?"), self.body_text(body), foot, true, *opened)
             }
             Dialog::EmptyTrash { opened } => {
                 let n = std::fs::read_dir(trash::home_trash().join("files")).map(|r| r.count()).unwrap_or(0);
-                let foot = vec![cancel(), self.btn("Empty Trash", Some("trash"), None, Variant::Danger, Message::Ui(UiMsg::Pick(Box::new(Message::File(FileMsg::EmptyTrash)))))];
-                self.dialog_frame("trash-full", "Empty the Trash?".into(), self.body_text(format!("{n} {} will be deleted permanently. This can't be undone.", if n == 1 { "item" } else { "items" })), foot, true, *opened)
+                let foot = vec![
+                    cancel(),
+                    self.btn(
+                        "Empty Trash",
+                        Some("trash"),
+                        None,
+                        Variant::Danger,
+                        Message::Ui(UiMsg::Pick(Box::new(Message::File(FileMsg::EmptyTrash)))),
+                    ),
+                ];
+                self.dialog_frame(
+                    "trash-full",
+                    "Empty the Trash?".into(),
+                    self.body_text(format!(
+                        "{n} {} will be deleted permanently. This can't be undone.",
+                        if n == 1 { "item" } else { "items" }
+                    )),
+                    foot,
+                    true,
+                    *opened,
+                )
             }
             Dialog::Conflict { id, index, all, opened } => {
                 let t = self.transfers.iter().find(|t| t.id == *id)?;
@@ -933,36 +1286,100 @@ impl App {
                         col = col.push(text("Newer").size(style::LABEL).font(style::FONT_BOLD).color(color(p.success.ink)));
                     }
                     let pal = p.clone();
-                    container(col).padding(10).width(Length::Fill).style(move |_| container::Style { background: Some(Background::Color(color(pal.bg_deep))), border: Border { color: color(pal.line), width: 1.0, radius: 2.0.into() }, ..Default::default() }).into()
+                    container(col)
+                        .padding(10)
+                        .width(Length::Fill)
+                        .style(move |_| container::Style {
+                            background: Some(Background::Color(color(pal.bg_deep))),
+                            border: Border { color: color(pal.line), width: 1.0, radius: 2.0.into() },
+                            ..Default::default()
+                        })
+                        .into()
                 };
                 let mut body = column![
-                    self.body_text(format!("A {} with this name is already in {}. Which one do you want to keep?", if c.dirs { "folder" } else { "file" }, place_name(&plan.dest))),
-                    row![card("Already there", c.dst_size, c.dst_mtime, c.dst_mtime > c.src_mtime, c.dirs), card(if t.kind == Kind::Copy { "Copying" } else { "Moving" }, c.src_size, c.src_mtime, c.src_mtime > c.dst_mtime, c.dirs)].spacing(style::SPACE_3),
+                    self.body_text(format!(
+                        "A {} with this name is already in {}. Which one do you want to keep?",
+                        if c.dirs { "folder" } else { "file" },
+                        place_name(&plan.dest)
+                    )),
+                    row![
+                        card("Already there", c.dst_size, c.dst_mtime, c.dst_mtime > c.src_mtime, c.dirs),
+                        card(
+                            if t.kind == Kind::Copy { "Copying" } else { "Moving" },
+                            c.src_size,
+                            c.src_mtime,
+                            c.src_mtime > c.dst_mtime,
+                            c.dirs
+                        )
+                    ]
+                    .spacing(style::SPACE_3),
                 ]
                 .spacing(style::SPACE_4);
                 if remaining > 1 {
-                    body = body.push(w::checkbox(p, &self.icons, &format!("Do this for all {remaining} conflicts"), *all, |on| Message::Ui(UiMsg::ConflictAll(on))));
+                    body = body.push(w::checkbox(p, &self.icons, &format!("Do this for all {remaining} conflicts"), *all, |on| {
+                        Message::Ui(UiMsg::ConflictAll(on))
+                    }));
                 }
                 let all = *all;
                 let foot = vec![
                     cancel(),
                     self.btn("Skip", None, None, Variant::Secondary, Message::File(FileMsg::Resolve(Resolution::Skip, all))),
-                    self.btn(if c.dirs { "Merge" } else { "Replace" }, None, None, Variant::Secondary, Message::File(FileMsg::Resolve(Resolution::Replace, all))),
-                    self.btn("Keep both", None, Some("Enter"), Variant::Primary, Message::File(FileMsg::Resolve(Resolution::KeepBoth, all))),
+                    self.btn(
+                        if c.dirs { "Merge" } else { "Replace" },
+                        None,
+                        None,
+                        Variant::Secondary,
+                        Message::File(FileMsg::Resolve(Resolution::Replace, all)),
+                    ),
+                    self.btn(
+                        "Keep both",
+                        None,
+                        Some("Enter"),
+                        Variant::Primary,
+                        Message::File(FileMsg::Resolve(Resolution::KeepBoth, all)),
+                    ),
                 ];
-                self.dialog_frame(if c.dirs { "folder" } else { "file" }, format!("“{name}” already exists"), body.into(), foot, false, *opened)
+                self.dialog_frame(
+                    if c.dirs { "folder" } else { "file" },
+                    format!("“{name}” already exists"),
+                    body.into(),
+                    foot,
+                    false,
+                    *opened,
+                )
             }
             Dialog::BadNames { id, opened } => {
                 let t = self.transfers.iter().find(|t| t.id == *id)?;
                 let plan = t.plan.as_ref()?;
-                let mut body = column![self.body_text(format!("{} Windows doesn't allow. EchoFiles can rename them as they're copied:", if plan.bad_names.len() == 1 { "One name uses characters".to_string() } else { format!("{} names use characters", plan.bad_names.len()) }))].spacing(style::SPACE_3);
+                let mut body = column![self.body_text(format!(
+                    "{} Windows doesn't allow. EchoFiles can rename them as they're copied:",
+                    if plan.bad_names.len() == 1 {
+                        "One name uses characters".to_string()
+                    } else {
+                        format!("{} names use characters", plan.bad_names.len())
+                    }
+                ))]
+                .spacing(style::SPACE_3);
                 for (path, _why, fixed) in plan.bad_names.iter().take(6) {
-                    body = body.push(text(format!("{}  →  {fixed}", path.file_name().unwrap_or_default().to_string_lossy())).size(style::META).font(style::FONT).color(color(p.ink_muted)));
+                    body = body.push(
+                        text(format!("{}  →  {fixed}", path.file_name().unwrap_or_default().to_string_lossy()))
+                            .size(style::META)
+                            .font(style::FONT)
+                            .color(color(p.ink_muted)),
+                    );
                 }
                 if plan.bad_names.len() > 6 {
-                    body = body.push(text(format!("…and {} more", plan.bad_names.len() - 6)).size(style::META).font(style::FONT).color(color(p.ink_muted)));
+                    body = body.push(
+                        text(format!("…and {} more", plan.bad_names.len() - 6))
+                            .size(style::META)
+                            .font(style::FONT)
+                            .color(color(p.ink_muted)),
+                    );
                 }
-                let foot = vec![cancel(), self.btn("Rename and continue", None, Some("Enter"), Variant::Primary, Message::File(FileMsg::FixNames(true)))];
+                let foot = vec![
+                    cancel(),
+                    self.btn("Rename and continue", None, Some("Enter"), Variant::Primary, Message::File(FileMsg::FixNames(true))),
+                ];
                 self.dialog_frame("file-error", "Some names won't work on Windows".into(), body.into(), foot, false, *opened)
             }
             Dialog::Password { prompt, value, opened } => {
@@ -975,19 +1392,44 @@ impl App {
                     .font(style::FONT)
                     .padding([6, 10])
                     .style(w::field_style(p, prompt.retry));
-                let mut body = column![self.body_text(format!("{}. Enter the password for {}.", prompt.message.trim_end_matches('.'), prompt.user)), field].spacing(style::SPACE_3);
+                let mut body = column![
+                    self.body_text(format!("{}. Enter the password for {}.", prompt.message.trim_end_matches('.'), prompt.user)),
+                    field
+                ]
+                .spacing(style::SPACE_3);
                 if prompt.retry {
-                    body = body.push(row![w::glyph(&self.icons, "error", 14.0, color(p.danger.ink)), text("That password didn't work. Try again.").size(style::META).font(style::FONT).color(color(p.danger.ink))].spacing(6).align_y(Alignment::Center));
+                    body = body.push(
+                        row![
+                            w::glyph(&self.icons, "error", 14.0, color(p.danger.ink)),
+                            text("That password didn't work. Try again.").size(style::META).font(style::FONT).color(color(p.danger.ink))
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
+                    );
                 }
-                let foot = vec![cancel(), self.btn("Authenticate", Some("key"), Some("Enter"), Variant::Primary, Message::Ui(UiMsg::PasswordSubmit))];
+                let foot = vec![
+                    cancel(),
+                    self.btn("Authenticate", Some("key"), Some("Enter"), Variant::Primary, Message::Ui(UiMsg::PasswordSubmit)),
+                ];
                 self.dialog_frame("lock", "Password needed".into(), body.into(), foot, false, *opened)
             }
             Dialog::Properties { .. } => self.properties_dialog()?,
-            Dialog::Login { ask, user, domain, password, guest, remember, opened } => self.login_dialog(ask, user, domain, password, *guest, *remember, *opened),
+            Dialog::Login { ask, user, domain, password, guest, remember, opened } => {
+                self.login_dialog(ask, user, domain, password, *guest, *remember, *opened)
+            }
             Dialog::Question { ask, opened } => self.question_dialog(ask, *opened),
             Dialog::WriteSystem { drive, opened } => {
                 let name = self.volumes.get(*drive).map(|v| crate::drives::display_name(v, &self.volumes)).unwrap_or_default();
-                let foot = vec![cancel(), self.btn("Allow writing", Some("unlock"), None, Variant::Danger, Message::Ui(UiMsg::Pick(Box::new(Message::Drive(DriveMsg::AllowWrite(*drive))))))];
+                let foot = vec![
+                    cancel(),
+                    self.btn(
+                        "Allow writing",
+                        Some("unlock"),
+                        None,
+                        Variant::Danger,
+                        Message::Ui(UiMsg::Pick(Box::new(Message::Drive(DriveMsg::AllowWrite(*drive))))),
+                    ),
+                ];
                 self.dialog_frame(
                     "shield",
                     format!("Allow writing to {name}?"),
@@ -1003,7 +1445,15 @@ impl App {
     pub(crate) fn toast_layer(&self) -> Option<Element<'_, Message>> {
         // Transfers show once they're really moving bytes (not while a dialog asks about them)
         // and only if they take a moment — quick ones just end in a toast.
-        let transfers: Vec<_> = self.transfers.iter().filter(|t| t.plan.is_some() && t.progress.phase() != Phase::Planning && (t.started.elapsed() > Duration::from_millis(400) || t.finished.is_some())).collect();
+        let transfers: Vec<_> = self
+            .transfers
+            .iter()
+            .filter(|t| {
+                t.plan.is_some()
+                    && t.progress.phase() != Phase::Planning
+                    && (t.started.elapsed() > Duration::from_millis(400) || t.finished.is_some())
+            })
+            .collect();
         if self.toasts.is_empty() && transfers.is_empty() {
             return None;
         }
@@ -1025,15 +1475,31 @@ impl App {
                 Tone::Accent => ("info", color(p.accent_ink)),
                 Tone::Danger => ("error", color(p.danger.ink)),
             };
-            let mut head = row![w::glyph(&self.icons, icon, 16.0, tint), text(t.title.clone()).size(style::BODY).font(style::FONT_BOLD).color(color(p.ink_strong)).width(Length::Fill)].spacing(style::SPACE_3).align_y(Alignment::Center);
+            let mut head = row![
+                w::glyph(&self.icons, icon, 16.0, tint),
+                text(t.title.clone()).size(style::BODY).font(style::FONT_BOLD).color(color(p.ink_strong)).width(Length::Fill)
+            ]
+            .spacing(style::SPACE_3)
+            .align_y(Alignment::Center);
             if let Some((label, msg)) = &t.action {
                 let undo = label == "Undo";
-                head = head.push(w::text_button(p, &self.icons, label, undo.then_some("undo"), undo.then_some("Ctrl+Z"), Variant::Secondary, Some(Message::Ui(UiMsg::Pick(Box::new(msg.clone()))))));
+                head = head.push(w::text_button(
+                    p,
+                    &self.icons,
+                    label,
+                    undo.then_some("undo"),
+                    undo.then_some("Ctrl+Z"),
+                    Variant::Secondary,
+                    Some(Message::Ui(UiMsg::Pick(Box::new(msg.clone())))),
+                ));
             }
             head = head.push(w::icon_button(p, &self.icons, "close", Some(Message::Ui(UiMsg::ToastDismiss(t.id))), false));
             let mut c = column![head].spacing(4);
             if let Some(b) = &t.body {
-                c = c.push(container(text(b.clone()).size(style::META).font(style::FONT).color(color(p.ink_muted))).padding(Padding { left: 24.0, ..Padding::ZERO }));
+                c = c.push(
+                    container(text(b.clone()).size(style::META).font(style::FONT).color(color(p.ink_muted)))
+                        .padding(Padding { left: 24.0, ..Padding::ZERO }),
+                );
             }
             let ti = self.t(t.at, 240);
             let pal = p.clone();
@@ -1044,9 +1510,22 @@ impl App {
                 ..Default::default()
             });
             let id = t.id;
-            col = col.push(container(mouse_area(card).on_enter(Message::Ui(UiMsg::ToastHover(id, true))).on_exit(Message::Ui(UiMsg::ToastHover(id, false)))).padding(Padding { top: 12.0 * (1.0 - ti), ..Padding::ZERO }));
+            col = col.push(
+                container(
+                    mouse_area(card).on_enter(Message::Ui(UiMsg::ToastHover(id, true))).on_exit(Message::Ui(UiMsg::ToastHover(id, false))),
+                )
+                .padding(Padding { top: 12.0 * (1.0 - ti), ..Padding::ZERO }),
+            );
         }
-        Some(container(col).width(Length::Fill).height(Length::Fill).align_x(Alignment::End).align_y(Alignment::End).padding(Padding { right: 16.0, bottom: 36.0, left: 16.0, top: 16.0 }).into())
+        Some(
+            container(col)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(Alignment::End)
+                .align_y(Alignment::End)
+                .padding(Padding { right: 16.0, bottom: 36.0, left: 16.0, top: 16.0 })
+                .into(),
+        )
     }
 
     fn transfer_toast<'a>(&'a self, t: &'a crate::actions::Transfer) -> Element<'a, Message> {
@@ -1058,7 +1537,15 @@ impl App {
         let files_done = pr.files_done.load(Ordering::Relaxed);
         let finished = t.outcome.is_some();
         let ok = t.outcome.as_ref().is_some_and(|o| o.errors.is_empty() && !o.cancelled);
-        let frac = if finished { 1.0 } else if total > 0 { done as f32 / total as f32 } else if files_total > 0 { files_done as f32 / files_total as f32 } else { 0.0 };
+        let frac = if finished {
+            1.0
+        } else if total > 0 {
+            done as f32 / total as f32
+        } else if files_total > 0 {
+            files_done as f32 / files_total as f32
+        } else {
+            0.0
+        };
         let paused = pr.paused.load(Ordering::Relaxed);
         let phase = pr.phase();
         let mut meta = String::new();
@@ -1083,28 +1570,60 @@ impl App {
                 meta.push_str("/s");
                 let left = (total.saturating_sub(done)) as f64 / t.rate;
                 if left > 1.0 {
-                    meta.push_str(&format!(" · about {} left", if left < 60.0 { format!("{} s", left as u64) } else { format!("{} min", (left / 60.0).ceil() as u64) }));
+                    meta.push_str(&format!(
+                        " · about {} left",
+                        if left < 60.0 { format!("{} s", left as u64) } else { format!("{} min", (left / 60.0).ceil() as u64) }
+                    ));
                 }
             }
             if paused {
                 meta.push_str(" · paused");
             }
         }
-        let current = if finished { String::new() } else { pr.current().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() };
+        let current =
+            if finished { String::new() } else { pr.current().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() };
         let tint = if finished && ok { color(p.success.ink) } else { color(p.accent_ink) };
         let mut head = row![
-            w::glyph(&self.icons, if finished && ok { "check" } else if t.kind == Kind::Copy { "copy" } else { "move" }, 16.0, tint),
-            text(t.title()).size(style::BODY).font(style::FONT_BOLD).color(color(p.ink_strong)).width(Length::Fill).wrapping(text::Wrapping::None),
+            w::glyph(
+                &self.icons,
+                if finished && ok {
+                    "check"
+                } else if t.kind == Kind::Copy {
+                    "copy"
+                } else {
+                    "move"
+                },
+                16.0,
+                tint
+            ),
+            text(t.title())
+                .size(style::BODY)
+                .font(style::FONT_BOLD)
+                .color(color(p.ink_strong))
+                .width(Length::Fill)
+                .wrapping(text::Wrapping::None),
         ]
         .spacing(style::SPACE_3)
         .align_y(Alignment::Center);
         if finished {
             head = head.push(w::icon_button(p, &self.icons, "close", Some(Message::File(FileMsg::Dismiss(t.id))), false));
         } else {
-            head = head.push(w::icon_button(p, &self.icons, if paused { "play" } else { "pause" }, Some(Message::File(FileMsg::Pause(t.id))), paused));
+            head = head.push(w::icon_button(
+                p,
+                &self.icons,
+                if paused { "play" } else { "pause" },
+                Some(Message::File(FileMsg::Pause(t.id))),
+                paused,
+            ));
             head = head.push(w::icon_button(p, &self.icons, "close", Some(Message::File(FileMsg::Cancel(t.id))), false));
         }
-        let fill = if finished && ok { p.success.base } else if finished { p.danger.base } else { p.accent };
+        let fill = if finished && ok {
+            p.success.base
+        } else if finished {
+            p.danger.base
+        } else {
+            p.accent
+        };
         let bar = w::progress(p, frac, fill, phase == Phase::Planning && !finished);
         let mut c = column![head].spacing(6);
         if !current.is_empty() {
@@ -1159,7 +1678,10 @@ impl App {
         for (i, f) in results.iter().enumerate() {
             if f.group != group {
                 group = f.group;
-                list = list.push(container(text(group.to_uppercase()).size(style::LABEL).font(style::FONT_BOLD).color(color(p.ink_muted))).padding([6, 10]));
+                list = list.push(
+                    container(text(group.to_uppercase()).size(style::LABEL).font(style::FONT_BOLD).color(color(p.ink_muted)))
+                        .padding([6, 10]),
+                );
             }
             let active = i == c.cursor;
             let chars: Vec<char> = f.label.chars().collect();
@@ -1169,16 +1691,26 @@ impl App {
             for (ci, ch) in chars.iter().enumerate() {
                 let m = f.matched.contains(&ci);
                 if m != hl && !buf.is_empty() {
-                    spans.push(span(std::mem::take(&mut buf)).color(if hl { color(p.accent_ink) } else { color(p.ink) }).font(if hl { style::FONT_BOLD } else { style::FONT }));
+                    spans.push(span(std::mem::take(&mut buf)).color(if hl { color(p.accent_ink) } else { color(p.ink) }).font(if hl {
+                        style::FONT_BOLD
+                    } else {
+                        style::FONT
+                    }));
                 }
                 hl = m;
                 buf.push(*ch);
             }
             if !buf.is_empty() {
-                spans.push(span(buf).color(if hl { color(p.accent_ink) } else { color(p.ink) }).font(if hl { style::FONT_BOLD } else { style::FONT }));
+                spans.push(span(buf).color(if hl { color(p.accent_ink) } else { color(p.ink) }).font(if hl {
+                    style::FONT_BOLD
+                } else {
+                    style::FONT
+                }));
             }
             let label: Element<'_, Message> = iced::widget::rich_text(spans).size(style::BODY).width(Length::Fill).into();
-            let mut r = row![w::glyph(&self.icons, f.icon, 16.0, color(if active { p.accent_ink } else { p.ink_muted })), label].spacing(style::SPACE_3 + 2.0).align_y(Alignment::Center);
+            let mut r = row![w::glyph(&self.icons, f.icon, 16.0, color(if active { p.accent_ink } else { p.ink_muted })), label]
+                .spacing(style::SPACE_3 + 2.0)
+                .align_y(Alignment::Center);
             if let Some(h) = &f.hint {
                 r = r.push(text(h.clone()).size(style::META).font(style::FONT).color(color(p.ink_muted)));
             }
@@ -1195,7 +1727,11 @@ impl App {
                         let hot = active || matches!(status, button::Status::Hovered);
                         button::Style {
                             background: hot.then(|| Background::Color(color(pal.state_hover))),
-                            border: Border { color: if active { color(pal.line) } else { Color::TRANSPARENT }, width: 1.0, radius: 2.0.into() },
+                            border: Border {
+                                color: if active { color(pal.line) } else { Color::TRANSPARENT },
+                                width: 1.0,
+                                radius: 2.0.into(),
+                            },
                             text_color: color(pal.ink),
                             ..Default::default()
                         }
@@ -1203,21 +1739,39 @@ impl App {
             );
         }
         if results.is_empty() {
-            list = list.push(container(text("Nothing matches. Try a folder name, a path starting with / or ~, or an action like “new folder”.").size(style::META).font(style::FONT).color(color(p.ink_muted))).padding(12));
+            list = list.push(
+                container(
+                    text("Nothing matches. Try a folder name, a path starting with / or ~, or an action like “new folder”.")
+                        .size(style::META)
+                        .font(style::FONT)
+                        .color(color(p.ink_muted)),
+                )
+                .padding(12),
+            );
         }
         let t = self.t(c.opened, 180);
         let pal = p.clone();
-        let panel = container(column![container(field).padding([4, 10]), w::hline(p.line), scrollable(list).height(Length::Shrink)].spacing(4))
-            .width(620)
-            .max_height(460)
-            .padding(6)
-            .style(move |_| container::Style {
-                background: Some(Background::Color(color(pal.bg_raised))),
-                border: Border { color: color(pal.accent), width: 2.0, radius: 0.0.into() },
-                shadow: Shadow { color: Color { a: 0.45, ..Color::BLACK }, offset: Vector::new(0.0, 12.0), blur_radius: 32.0 },
-                ..Default::default()
-            });
+        let panel =
+            container(column![container(field).padding([4, 10]), w::hline(p.line), scrollable(list).height(Length::Shrink)].spacing(4))
+                .width(620)
+                .max_height(460)
+                .padding(6)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(color(pal.bg_raised))),
+                    border: Border { color: color(pal.accent), width: 2.0, radius: 0.0.into() },
+                    shadow: Shadow { color: Color { a: 0.45, ..Color::BLACK }, offset: Vector::new(0.0, 12.0), blur_radius: 32.0 },
+                    ..Default::default()
+                });
         let back = mouse_area(container(Space::new()).width(Length::Fill).height(Length::Fill)).on_press(Message::Escape);
-        Some(stack![back, container(iced::widget::opaque(panel)).width(Length::Fill).align_x(Alignment::Center).padding(Padding { top: 72.0 + 8.0 * (1.0 - t), ..Padding::ZERO })].into())
+        Some(
+            stack![
+                back,
+                container(iced::widget::opaque(panel))
+                    .width(Length::Fill)
+                    .align_x(Alignment::Center)
+                    .padding(Padding { top: 72.0 + 8.0 * (1.0 - t), ..Padding::ZERO })
+            ]
+            .into(),
+        )
     }
 }

@@ -46,7 +46,23 @@ fn lexical_abs(p: &Path, cwd: &Path) -> PathBuf {
 
 /// The innermost folder at or above `from` that looks like a project root.
 pub fn project_root(from: &Path) -> Option<PathBuf> {
-    const MARKERS: &[&str] = &[".git", "Cargo.toml", "package.json", "pyproject.toml", "go.mod", "build.gradle", "build.gradle.kts", "pom.xml", "Gemfile", "composer.json", "mix.exs", "deno.json", "Makefile", "CMakeLists.txt", ".hg"];
+    const MARKERS: &[&str] = &[
+        ".git",
+        "Cargo.toml",
+        "package.json",
+        "pyproject.toml",
+        "go.mod",
+        "build.gradle",
+        "build.gradle.kts",
+        "pom.xml",
+        "Gemfile",
+        "composer.json",
+        "mix.exs",
+        "deno.json",
+        "Makefile",
+        "CMakeLists.txt",
+        ".hg",
+    ];
     let mut best = None;
     for dir in from.ancestors() {
         if MARKERS.iter().any(|m| dir.join(m).exists()) {
@@ -158,7 +174,9 @@ pub fn build_search(a: &FindArgs) -> Result<Search, String> {
     }
     // Smart case is decided once for all patterns (with `--and`), as fd does.
     let case = match a.case {
-        crate::pattern::Case::Smart if a.pattern.iter().chain(&a.and).any(|p| crate::pattern::needs_case(p, syntax)) => crate::pattern::Case::Sensitive,
+        crate::pattern::Case::Smart if a.pattern.iter().chain(&a.and).any(|p| crate::pattern::needs_case(p, syntax)) => {
+            crate::pattern::Case::Sensitive
+        }
         crate::pattern::Case::Smart => crate::pattern::Case::Insensitive,
         c => c,
     };
@@ -221,7 +239,10 @@ pub fn build_search(a: &FindArgs) -> Result<Search, String> {
 }
 
 /// The search roots: (as typed, walked path, path for index lookup).
-fn roots(a: &FindArgs, settings: &Settings, cwd: &Path) -> Result<(Vec<(String, PathBuf, PathBuf)>, bool), String> {
+/// (root as written, absolute root, canonical root) for each search root.
+type Roots = Vec<(String, PathBuf, PathBuf)>;
+
+fn roots(a: &FindArgs, settings: &Settings, cwd: &Path) -> Result<(Roots, bool), String> {
     let cwd = &cwd.to_path_buf();
     let mut typed: Vec<String> = a.paths.clone();
     let mut everywhere = false;
@@ -259,7 +280,7 @@ pub struct Ran {
     pub total: usize,
     pub everywhere: bool,
     /// Where all the matches are (by folder, by type), taken before `-n` cut them.
-    pub breakdown: Option<(Vec<(String, usize)>, Vec<(String, usize)>)>,
+    pub breakdown: Option<output::Breakdown>,
     /// The indexed folder each root was answered from (`None` when read live).
     pub index_roots: Vec<Option<PathBuf>>,
     pub stale_note: Option<String>,
@@ -324,7 +345,10 @@ pub fn run_planned(a: &FindArgs, ctx: &Ctx, s: &Search, p: Plan) -> Result<Ran, 
                 index = None;
             } else {
                 let age = Indexes::age(m.root()).map(|d| units::ago(SystemTime::now() - d, SystemTime::now())).unwrap_or_default();
-                stale_note = Some(format!("index of {} (saved {age}; EchoFiles isn't running, so it may miss recent changes — add --live to read the disk)", config::tilde(m.root())));
+                stale_note = Some(format!(
+                    "index of {} (saved {age}; EchoFiles isn't running, so it may miss recent changes — add --live to read the disk)",
+                    config::tilde(m.root())
+                ));
             }
         }
         let exclusions = a.respect_settings.then(|| Options::from_search(&ctx.settings.search, canon));
@@ -338,13 +362,21 @@ pub fn run_planned(a: &FindArgs, ctx: &Ctx, s: &Search, p: Plan) -> Result<Ran, 
         specs.push(RootSpec { walk: walk.clone(), lookup: canon.clone(), index, exclusions, keep_best });
     }
     let mut outcome = engine::run(s, &specs);
-    let index_roots = specs.iter().zip(&outcome.roots).map(|(sp, r)| (r.source == Source::Index).then(|| sp.index.map(|m| m.root().to_path_buf())).flatten()).collect();
+    let index_roots = specs
+        .iter()
+        .zip(&outcome.roots)
+        .map(|(sp, r)| (r.source == Source::Index).then(|| sp.index.map(|m| m.root().to_path_buf())).flatten())
+        .collect();
     // Each root inside another searched root is searched on its own.
     if specs.len() > 1 {
         let walks: Vec<Vec<u8>> = specs.iter().map(|r| r.walk.as_os_str().as_bytes().to_vec()).collect();
         outcome.hits.retain(|h| {
             !walks.iter().enumerate().any(|(j, w)| {
-                j != h.root as usize && w.len() > walks[h.root as usize].len() && w.starts_with(&walks[h.root as usize]) && h.path.starts_with(w) && h.path.get(w.len()) == Some(&b'/')
+                j != h.root as usize
+                    && w.len() > walks[h.root as usize].len()
+                    && w.starts_with(&walks[h.root as usize])
+                    && h.path.starts_with(w)
+                    && h.path.get(w.len()) == Some(&b'/')
             })
         });
     }
@@ -373,11 +405,15 @@ pub fn sort_hits(hits: &mut Vec<Hit>, sort: Sort) {
     let size = |i: u32| h[i as usize].meta.as_ref().map_or(0, |m| m.size);
     let time = |i: u32| h[i as usize].meta.as_ref().map(|m| m.mtime);
     match sort {
-        Sort::Rank => order.sort_unstable_by(|&a, &b| h[a as usize].rank.cmp(&h[b as usize].rank).then_with(|| h[a as usize].path.cmp(&h[b as usize].path))),
+        Sort::Rank => order.sort_unstable_by(|&a, &b| {
+            h[a as usize].rank.cmp(&h[b as usize].rank).then_with(|| h[a as usize].path.cmp(&h[b as usize].path))
+        }),
         Sort::Path => order.sort_unstable_by(|&a, &b| h[a as usize].path.cmp(&h[b as usize].path)),
-        Sort::Name => order.sort_unstable_by(|&a, &b| h[a as usize].name().cmp(h[b as usize].name()).then_with(|| h[a as usize].path.cmp(&h[b as usize].path))),
-        Sort::Size => order.sort_by(|&a, &b| size(b).cmp(&size(a))),
-        Sort::Modified => order.sort_by(|&a, &b| time(b).cmp(&time(a))),
+        Sort::Name => order.sort_unstable_by(|&a, &b| {
+            h[a as usize].name().cmp(h[b as usize].name()).then_with(|| h[a as usize].path.cmp(&h[b as usize].path))
+        }),
+        Sort::Size => order.sort_by_key(|&a| std::cmp::Reverse(size(a))),
+        Sort::Modified => order.sort_by_key(|&a| std::cmp::Reverse(time(a))),
         Sort::None => return,
     }
     let mut slots: Vec<Option<Hit>> = std::mem::take(hits).into_iter().map(Some).collect();
@@ -674,4 +710,3 @@ fn finish(ctx: &Ctx, ran: Ran, code: u8) -> u8 {
     }
     code
 }
-
