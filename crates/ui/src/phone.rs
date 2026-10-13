@@ -1957,13 +1957,17 @@ impl App {
                         self.phone.signal = body["signalStrengths"].as_object().map(|signals| signals.values().map(|v| format!("{} · {}/4", v["networkType"].as_str().unwrap_or("Mobile"), v["signalStrength"].as_i64().unwrap_or(0))).collect::<Vec<_>>().join(" · ")).unwrap_or_default();
                     }
                     "echofiles.settings" => {
-                        if let Some(v) = body["backup"].as_bool() { self.settings.phone.backup = v; }
-                        if let Some(v) = body["dnd"].as_bool() { self.settings.phone.dnd_sync = v; }
-                        if let Some(v) = body["notifications"].as_bool() { if !v { self.settings.phone.notifications = PhoneNotifications::Off; self.phone.notifications.clear(); } else if self.settings.phone.notifications == PhoneNotifications::Off { self.settings.phone.notifications = PhoneNotifications::App; } }
-                        if let Some(v) = body["autolock"].as_bool() { self.settings.phone.autolock = v; }
-                        if let Some(v) = body["clipboard"].as_bool() { self.settings.phone.clipboard = v; }
-                        if let Some(v) = body["files"].as_bool() { self.settings.phone.files = v; }
-                        if let Some(v) = body["sms"].as_bool() { self.settings.phone.messages = v; }
+                        // The phone may only switch features off. Turning one on (sharing the
+                        // clipboard, accepting backups, locking this session) is a decision
+                        // made here, in Settings, never by a remote device.
+                        let off = |k: &str| body[k].as_bool() == Some(false);
+                        if off("backup") { self.settings.phone.backup = false; }
+                        if off("dnd") { self.settings.phone.dnd_sync = false; }
+                        if off("notifications") { self.settings.phone.notifications = PhoneNotifications::Off; self.phone.notifications.clear(); }
+                        if off("autolock") { self.settings.phone.autolock = false; }
+                        if off("clipboard") { self.settings.phone.clipboard = false; }
+                        if off("files") { self.settings.phone.files = false; }
+                        if off("sms") { self.settings.phone.messages = false; }
                         return self.persist_settings();
                     }
                     "kdeconnect.contacts.response_uids_timestamps" => {

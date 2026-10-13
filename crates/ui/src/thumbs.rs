@@ -286,14 +286,41 @@ fn decode(p: &Path) -> Option<Pixels> {
     Some(Pixels { width: t.width(), height: t.height(), rgba: std::sync::Arc::new(t.into_raw()) })
 }
 
+/// `bwrap`, when bubblewrap is installed.
+fn bwrap() -> Option<&'static Path> {
+    static BWRAP: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    BWRAP.get_or_init(|| ["/usr/bin/bwrap", "/bin/bwrap"].iter().map(PathBuf::from).find(|p| p.is_file())).as_deref()
+}
+
+/// The thumbnailer command, inside a bubblewrap sandbox like GNOME's: a thumbnailer parses
+/// whatever file was just downloaded, so it gets no network, no home folder except the one
+/// file it reads, a private /tmp with only its output folder writable, and no capabilities.
+/// Without bubblewrap it runs as before.
+fn sandboxed(args: &[String], input: &Path, work: &Path) -> Option<Command> {
+    let (prog, rest) = args.split_first()?;
+    let Some(bwrap) = bwrap() else {
+        let mut cmd = Command::new(prog);
+        cmd.args(rest);
+        return Some(cmd);
+    };
+    let mut cmd = Command::new(bwrap);
+    cmd.args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", "/run"]);
+    cmd.arg("--tmpfs").arg(ef_config::home());
+    cmd.arg("--ro-bind").arg(input).arg(input);
+    cmd.arg("--bind").arg(work).arg(work);
+    cmd.args(["--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--"]);
+    cmd.arg(prog).args(rest);
+    Some(cmd)
+}
+
 fn run_thumbnailer(p: &Path, uri: &str, cancel: &AtomicBool) -> Option<Pixels> {
     let exec = thumbnailer_for(mime(&ext(p))?)?;
     let work = tempfile::Builder::new().prefix("ef-thumb-").tempdir().ok()?;
     let out = work.path().join("result.png");
     let args: Vec<String> = parse_exec(exec)?.into_iter()
         .map(|a| expand_codes(&a, p, uri, &out)).collect();
-    let (prog, rest) = args.split_first()?;
-    let mut child = Command::new(prog).args(rest).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().ok()?;
+    let mut cmd = sandboxed(&args, p, work.path())?;
+    let mut child = cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().ok()?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     loop {
         match child.try_wait() {

@@ -164,6 +164,8 @@ pub struct App {
     /// Names changed in a watched folder since this moment: rebuild when it has settled,
     /// at most once a minute (a busy Downloads folder must not crawl ~ continuously).
     index_stale: Option<Instant>,
+    /// Watched folders whose names changed since the last index update.
+    index_changed: Vec<PathBuf>,
     last_index_build: Option<Instant>,
     watcher: Option<Arc<Watcher>>,
     // files
@@ -321,6 +323,7 @@ impl App {
             index_error: None,
             index_dirty: None,
             index_stale: None,
+            index_changed: Vec::new(),
             last_index_build: None,
             watcher,
             clip: None,
@@ -566,17 +569,42 @@ impl App {
 
     // ------------------------------------------------------------------ index
 
+    /// Crawl every indexed folder (first run, settings changed).
     pub(crate) fn build_index(&mut self) -> Task<Message> {
+        self.build_index_in(indexer::Scope::all())
+    }
+
+    /// Re-crawl only the watched folders that changed, in the roots holding them.
+    fn refresh_index(&mut self) -> Task<Message> {
+        let folders = std::mem::take(&mut self.index_changed);
+        if folders.is_empty() { self.index_stale = None; return Task::none(); }
+        let scope = indexer::Scope::changed(folders, &self.settings.search.roots());
+        // Changes outside every indexed root (an open folder elsewhere) need no crawl.
+        if scope.roots.as_ref().is_some_and(Vec::is_empty) { self.index_stale = None; return Task::none(); }
+        self.build_index_in(scope)
+    }
+
+    /// The periodic safety net for changes no watch saw: the configured roots, plus the
+    /// mounted drives not crawled for 6 hours (so an idle disk is left to spin down).
+    fn safety_net_index(&mut self) -> Task<Message> {
+        let configured: Vec<PathBuf> = self.settings.search.roots.iter().map(|r| ef_config::expand(r)).collect();
+        let old = |root: &PathBuf| self.roots.iter().find(|r| &r.root == root).and_then(|r| r.updated).and_then(|t| t.elapsed().ok()).is_none_or(|age| age >= Duration::from_secs(6 * 3600));
+        let roots = self.settings.search.roots().into_iter().filter(|r| configured.contains(r) || old(r)).collect();
+        self.build_index_in(indexer::Scope::roots(roots))
+    }
+
+    fn build_index_in(&mut self, scope: indexer::Scope) -> Task<Message> {
         if !self.settings.search.index || self.index_state == IndexState::Building {
             return Task::none();
         }
         self.index_state = IndexState::Building;
         self.index_dirty = None;
         self.index_stale = None;
+        if scope.roots.is_none() { self.index_changed.clear(); }
         self.last_index_build = Some(Instant::now());
         let generation = self.index_generation;
         let cfg = self.settings.search.clone();
-        background(move || indexer::build_all(&cfg, generation), move |roots| Message::IndexBuilt(generation, roots))
+        background(move || indexer::build_all(&cfg, generation, &scope), move |roots| Message::IndexBuilt(generation, roots))
     }
 
     /// Settings that change what's indexed: rebuild soon (debounced).
@@ -1091,7 +1119,7 @@ impl App {
                     return self.build_index();
                 }
                 if indexer::settled(self.index_stale, 10_000) && self.index_state != IndexState::Building && self.last_index_build.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
-                    return self.build_index();
+                    return self.refresh_index();
                 }
                 Task::none()
             }
@@ -1148,12 +1176,18 @@ impl App {
                 }
                 Task::none()
             }
-            Message::IndexTick => self.build_index(),
+            Message::IndexTick => self.safety_net_index(),
             Message::FsChanged(change) => {
                 if self.preview_want.as_ref().is_some_and(|p| p.parent() == Some(change.folder.as_path())) { self.preview_want = None; self.preview_generation += 1; }
                 if change.names_changed && self.settings.search.index {
-                    // The settings didn't change: don't invalidate the index, just refresh it.
-                    self.index_stale.get_or_insert_with(Instant::now);
+                    // The settings didn't change: don't invalidate the index, just refresh the
+                    // folder that changed. An empty folder means the watch overflowed.
+                    if change.folder.as_os_str().is_empty() {
+                        self.index_dirty.get_or_insert_with(Instant::now);
+                    } else {
+                        if !self.index_changed.contains(&change.folder) { self.index_changed.push(change.folder.clone()); }
+                        self.index_stale.get_or_insert_with(Instant::now);
+                    }
                 }
                 if !(change.visible || self.show_hidden) || self.mode != Mode::Files {
                     return Task::none();

@@ -35,64 +35,70 @@ use crate::{Device, Event, Notification, Sftp, Sms, Via, PORT_MAX, PORT_MIN, UDP
 const PROTOCOL: u32 = 8;
 const PAYLOAD_PORTS: std::ops::RangeInclusive<u16> = 1739..=PORT_MAX;
 const MAX_LINE: usize = 8 << 20;
+/// Before pairing only identity and pair packets are expected: small ones. Anyone on the
+/// network can open a link, so they don't get to make us buffer megabytes.
+const MAX_UNPAIRED_LINE: usize = 64 << 10;
 
-/// What a laptop sends, and so what a phone accepts (each side enables a feature when the
-/// other lists its packets). `echofiles.*` are EchoConnect's own; stock KDE Connect ignores them.
-const LAPTOP_SENDS: &[&str] = &[
-    "echofiles.clipboard.image.inline", "echofiles.clipboard.image", "echofiles.files.list", "echofiles.files.read", "echofiles.files.write", "echofiles.settings", "echofiles.call", "echofiles.backup", "echofiles.backup.ack", "echofiles.photos.read", "kdeconnect.mpris.request",
+/// Packet types both ends send. Most are a request and its reply sharing one type
+/// (`echofiles.files.list`, `echofiles.photos.read`…), or a feature that runs both ways
+/// (clipboard, battery, ping, file sharing).
+const BOTH_SEND: &[&str] = &[
+    "echofiles.backup",
+    "echofiles.backup.ack",
+    "echofiles.call",
+    "echofiles.clipboard.image",
+    "echofiles.clipboard.image.inline",
+    "echofiles.dnd",
+    "echofiles.files.list",
+    "echofiles.files.read",
+    "echofiles.files.write",
+    "echofiles.photos.read",
+    "echofiles.settings",
     "kdeconnect.battery",
     "kdeconnect.battery.request",
     "kdeconnect.clipboard",
     "kdeconnect.clipboard.connect",
+    "kdeconnect.mpris.request",
+    "kdeconnect.ping",
+    "kdeconnect.share.request",
+];
+/// What only a laptop sends (requests to the phone).
+const LAPTOP_ONLY: &[&str] = &[
+    "echofiles.call.request",
+    "echofiles.capture.request",
+    "echofiles.photos.request",
+    "echofiles.photos.thumb.request",
+    "echofiles.theme",
     "kdeconnect.contacts.request_all_uids_timestamps",
     "kdeconnect.contacts.request_vcards_by_uid",
     "kdeconnect.findmyphone.request",
-    "kdeconnect.mpris.request",
     "kdeconnect.notification.action",
     "kdeconnect.notification.reply",
     "kdeconnect.notification.request",
-    "kdeconnect.ping",
-    "kdeconnect.share.request",
     "kdeconnect.sftp.request",
     "kdeconnect.sms.request",
     "kdeconnect.sms.request_attachment",
     "kdeconnect.sms.request_conversation",
     "kdeconnect.sms.request_conversations",
     "kdeconnect.telephony.request_mute",
-    "echofiles.call.request",
-    "echofiles.capture.request",
-    "echofiles.dnd",
-    "echofiles.photos.request",
-    "echofiles.photos.thumb.request",
-    "echofiles.theme",
 ];
-/// What a phone sends, and so what a laptop accepts.
-const PHONE_SENDS: &[&str] = &[
-    "echofiles.clipboard.image.inline", "echofiles.clipboard.image", "echofiles.files.list", "echofiles.files.read", "echofiles.files.write", "echofiles.settings", "echofiles.call", "echofiles.backup", "echofiles.backup.ack", "echofiles.photos.read", "kdeconnect.mpris.request",
-    "kdeconnect.battery",
-    "kdeconnect.battery.request",
-    "kdeconnect.clipboard",
-    "kdeconnect.clipboard.connect",
+/// What only a phone sends (its state, replies and media).
+const PHONE_ONLY: &[&str] = &[
+    "echofiles.capture",
+    "echofiles.lock",
+    "echofiles.photos",
+    "echofiles.photos.error",
+    "echofiles.photos.file",
+    "echofiles.photos.thumb",
     "kdeconnect.connectivity_report",
     "kdeconnect.contacts.response_uids_timestamps",
     "kdeconnect.contacts.response_vcards",
     "kdeconnect.mpris",
     "kdeconnect.notification",
-    "kdeconnect.ping",
-    "kdeconnect.share.request",
     "kdeconnect.sftp",
     "kdeconnect.sms.attachment_file",
     "kdeconnect.sms.messages",
     "kdeconnect.telephony",
-    "echofiles.backup", "echofiles.backup.ack",
-    "echofiles.call",
-    "echofiles.capture",
-    "echofiles.dnd",
-    "echofiles.lock",
-    "echofiles.photos",
-    "echofiles.photos.thumb",
-    "echofiles.photos.file",
-    "echofiles.photos.error",
 ];
 
 /// Which end of the pair this service is.
@@ -103,16 +109,20 @@ pub enum Role {
 }
 
 impl Role {
-    fn sends(self) -> &'static [&'static str] {
-        match self {
-            Role::Laptop => LAPTOP_SENDS,
-            Role::Phone => PHONE_SENDS,
-        }
+    /// What this end sends, and so what the other end accepts (each side enables a
+    /// feature when the other lists its packets). `echofiles.*` are EchoConnect's own;
+    /// stock KDE Connect ignores them.
+    fn sends(self) -> Vec<&'static str> {
+        let own = match self {
+            Role::Laptop => LAPTOP_ONLY,
+            Role::Phone => PHONE_ONLY,
+        };
+        [BOTH_SEND, own].concat()
     }
-    fn accepts(self) -> &'static [&'static str] {
+    fn accepts(self) -> Vec<&'static str> {
         match self {
-            Role::Laptop => PHONE_SENDS,
-            Role::Phone => LAPTOP_SENDS,
+            Role::Laptop => Role::Phone.sends(),
+            Role::Phone => Role::Laptop.sends(),
         }
     }
 }
@@ -896,6 +906,9 @@ fn run_link<S: Sock>(inner: &Arc<Inner>, mut stream: Tls2<S>, ip: IpAddr, cert: 
     let revoked = Arc::new(AtomicBool::new(false));
     let mut device: Option<Device> = None;
     let mut buf: Vec<u8> = Vec::new();
+    // `buf[..scanned]` holds no newline: each byte is searched once, however many reads
+    // a long packet takes.
+    let mut scanned = 0;
     let mut tmp = vec![0u8; 64 * 1024];
     let started = Instant::now();
     // Older peers don't repeat the identity inside TLS: fall back to the plain one.
@@ -974,10 +987,12 @@ fn run_link<S: Sock>(inner: &Arc<Inner>, mut stream: Tls2<S>, ip: IpAddr, cert: 
             Ok(0) => break Ok(()),
             Ok(n) => {
                 buf.extend_from_slice(&tmp[..n]);
-                if buf.len() > MAX_LINE {
+                let paired = device.as_ref().is_some_and(|d| inner.authorized(&d.id, &cert, generation));
+                if buf.len() > if paired { MAX_LINE } else { MAX_UNPAIRED_LINE } {
                     break Err(io::Error::other("packet too large"));
                 }
-                while let Some(pos) = buf.iter().position(|&c| c == b'\n') {
+                while let Some(pos) = buf[scanned..].iter().position(|&c| c == b'\n').map(|p| scanned + p) {
+                    scanned = 0;
                     let raw: Vec<u8> = buf.drain(..=pos).collect();
                     let Ok(v) = serde_json::from_slice::<Value>(raw.trim_ascii()) else { continue };
                     if v["type"] == "kdeconnect.identity" {
@@ -997,6 +1012,7 @@ fn run_link<S: Sock>(inner: &Arc<Inner>, mut stream: Tls2<S>, ip: IpAddr, cert: 
                         handle(inner, &d.id, ip, generation, &cert, &v);
                     }
                 }
+                scanned = buf.len();
             }
             Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted) => {}
             Err(e) => break Err(e),
