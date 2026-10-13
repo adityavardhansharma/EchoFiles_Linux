@@ -37,6 +37,13 @@ impl Index {
     /// Write the index atomically (temp file + rename), so readers — including processes
     /// that have the old file mapped — never see a half-written index.
     pub fn save(&self, path: &Path) -> io::Result<()> {
+        self.save_if_changed(path).map(drop)
+    }
+
+    /// [`save`](Index::save), skipped when the file already holds exactly these bytes (a
+    /// periodic rebuild of an unchanged tree then costs no disk write or fsync). Returns
+    /// whether the file was written.
+    pub fn save_if_changed(&self, path: &Path) -> io::Result<bool> {
         let n = self.len();
         let v = self.view();
         let mut ooff = Vec::with_capacity(n);
@@ -56,8 +63,7 @@ impl Index {
         let excl = self.opts.exclude_names.iter().chain(&self.opts.exclude_paths).cloned().collect::<Vec<_>>().join(&0u8);
 
         let parent = path.parent().ok_or_else(|| io::Error::other("missing parent"))?;
-        let tmp = tempfile::NamedTempFile::new_in(parent)?;
-        let mut f = io::BufWriter::new(tmp);
+        let mut f: Vec<u8> = Vec::new();
         f.write_all(MAGIC)?;
         for x in [n, self.folded.len(), orig.len(), root.len(), excl.len(), self.opts.skip_cache_tagged as usize, 0] {
             f.write_all(&(x as u64).to_le_bytes())?;
@@ -71,10 +77,11 @@ impl Index {
         f.write_all(&self.flags)?;
         f.write_all(&self.folded)?;
         f.write_all(&orig)?;
-        let tmp = f.into_inner().map_err(|e| e.into_error())?;
-        tmp.as_file().sync_all()?;
-        tmp.persist(path).map_err(|e| e.error)?;
-        std::fs::File::open(parent)?.sync_all()
+        if same_contents(path, &f) {
+            return Ok(false);
+        }
+        write_atomically(path, parent, &f)?;
+        Ok(true)
     }
 
     /// Read a saved index onto the heap (for an index that will be updated with
@@ -106,10 +113,75 @@ impl Index {
     }
 }
 
+/// Write `bytes` to a fresh private file next to `path`, flush it, and rename it over
+/// `path`; then flush the folder so the rename survives a crash.
+fn write_atomically(path: &Path, parent: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    for _ in 0..16 {
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = parent.join(format!(".{name}.{}.{n}.tmp", std::process::id()));
+        let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(rustix::fs::OFlags::CLOEXEC.bits() as i32).open(&tmp) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+        let done = file.write_all(bytes).and_then(|_| file.sync_all()).and_then(|_| std::fs::rename(&tmp, path));
+        if let Err(e) = done {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        return std::fs::File::open(parent)?.sync_all();
+    }
+    Err(io::Error::other("couldn't create a temporary file"))
+}
+
+/// A read-only memory mapping of a whole file, unmapped on drop.
+struct Map {
+    ptr: *mut std::ffi::c_void,
+    len: usize,
+}
+
+// SAFETY: the mapping is read-only and never written through; it may be read from any
+// thread.
+unsafe impl Send for Map {}
+unsafe impl Sync for Map {}
+
+impl Map {
+    fn of(file: &std::fs::File) -> io::Result<Map> {
+        let len = file.metadata()?.len() as usize;
+        if len == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "empty file"));
+        }
+        // SAFETY: a fresh private read-only mapping of an open file; no existing memory is
+        // affected.
+        let ptr = unsafe { rustix::mm::mmap(std::ptr::null_mut(), len, rustix::mm::ProtFlags::READ, rustix::mm::MapFlags::SHARED, file, 0)? };
+        Ok(Map { ptr, len })
+    }
+}
+
+impl std::ops::Deref for Map {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        // SAFETY: `ptr` maps `len` readable bytes for as long as `self` lives.
+        unsafe { std::slice::from_raw_parts(self.ptr.cast::<u8>(), self.len) }
+    }
+}
+
+impl Drop for Map {
+    fn drop(&mut self) {
+        // SAFETY: unmapping exactly the range `of` mapped; no slices outlive `self`.
+        unsafe {
+            let _ = rustix::mm::munmap(self.ptr, self.len);
+        }
+    }
+}
+
 /// A saved index searched in place, without copying it onto the heap. Read-only: the
 /// indexer rewrites the file (atomically) and readers reopen it.
 pub struct MappedIndex {
-    map: memmap2::Mmap,
+    map: Map,
     root: PathBuf,
     opts: Options,
     n: usize,
@@ -121,9 +193,9 @@ pub struct MappedIndex {
 impl MappedIndex {
     pub fn open(path: &Path) -> io::Result<MappedIndex> {
         let file = std::fs::File::open(path)?;
-        // SAFETY: the indexer only ever replaces index files by rename, never truncates or
-        // writes them in place, so the mapped bytes can't change under us.
-        let map = unsafe { memmap2::Mmap::map(&file)? };
+        // The indexer only ever replaces index files by rename, never truncates or writes
+        // them in place, so the mapped bytes can't change under us.
+        let map = Map::of(&file)?;
         let bad = || io::Error::new(io::ErrorKind::InvalidData, "not an EchoFiles index");
         if map.len() < HEADER || &map[..8] != MAGIC {
             return Err(bad());
@@ -247,6 +319,31 @@ impl MappedIndex {
     pub fn search(&self, q: &Query) -> Vec<u32> {
         self.view().search(q)
     }
+
+    /// See [`Index::search_counted`](crate::Index::search_counted).
+    pub fn search_counted(&self, q: &Query) -> (usize, Vec<u32>) {
+        self.view().search_counted(q)
+    }
+
+    /// Number of entries below `id` (all depths).
+    pub fn descendants(&self, id: u32) -> usize {
+        self.view().descendants(id)
+    }
+}
+
+/// Whether the file at `path` holds exactly `bytes` (compared in chunks, no second copy).
+fn same_contents(path: &Path, bytes: &[u8]) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else { return false };
+    if file.metadata().map(|m| m.len()).ok() != Some(bytes.len() as u64) { return false; }
+    let mut buf = vec![0u8; 1 << 20];
+    let mut at = 0;
+    while at < bytes.len() {
+        let want = buf.len().min(bytes.len() - at);
+        if file.read_exact(&mut buf[..want]).is_err() || buf[..want] != bytes[at..at + want] { return false; }
+        at += want;
+    }
+    true
 }
 
 fn u32_bytes(v: &[u32]) -> &[u8] {

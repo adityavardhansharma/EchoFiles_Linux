@@ -342,7 +342,8 @@ impl App {
     pub(crate) fn preview_view(&self) -> Element<'_, Message> {
         let p = &self.palette;
         let pane = self.pane();
-        let sel = pane.selected_entries();
+        // Only "more than one?" matters here; don't list the whole selection every frame.
+        let several = pane.selected_bits().nth(1).is_some();
         let mut col = column![].spacing(style::SPACE_4);
         let Some((path, d)) = self.preview.as_ref().filter(|(path, _)| Some(path) == self.preview_target().as_ref()) else {
             let msg = if pane.loaded.is_some() { "Select something to see its details." } else { "" };
@@ -361,7 +362,7 @@ impl App {
         };
         col = col.push(pic);
         let mut head = column![text(d.name.clone()).size(15).font(style::FONT_BOLD).color(color(p.ink_strong)), text(d.kind.clone()).size(style::META).font(style::FONT).color(color(p.ink_muted))].spacing(2);
-        if sel.len() > 1 {
+        if several {
             let (files, dirs, bytes) = pane.selection_stats();
             let mut s = format!("{} selected", files + dirs);
             if files > 0 {

@@ -1,6 +1,7 @@
-//! Windows drives in EchoFiles (build plan §3; design system `DriveItem`, `DriveCard`,
-//! `Banner`, `StatePill`): mounting with ntfs3 through udisks, the password prompt,
-//! read-only states, and the Drives overview (Ctrl+Shift+D).
+//! Drives in EchoFiles (build plan §3; design system `DriveItem`, `DriveCard`, `Banner`,
+//! `StatePill`): Windows volumes mounted with ntfs3 and Linux drives mounted as they are,
+//! both through udisks; the password prompt, read-only states, and the Drives overview
+//! (Ctrl+Shift+D).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -45,19 +46,25 @@ pub enum DriveMsg {
     Prompt(Prompt),
 }
 
-/// "Windows (C:)", "AVS (D:)", "Local Disk (E:)"; the size tells two same-named drives
-/// apart until their letters are known.
-pub fn display_name(v: &Volume, all: &[Volume]) -> String {
-    let base = if !v.label.is_empty() {
+fn base_name(v: &Volume) -> String {
+    if !v.is_windows() {
+        v.display_name()
+    } else if !v.label.is_empty() {
         v.label.clone()
     } else if v.system {
         "Windows".to_string()
     } else {
         "Local Disk".to_string()
-    };
+    }
+}
+
+/// "Windows (C:)", "AVS (D:)", "Local Disk (E:)", "Marchy"; the size tells two same-named
+/// drives apart until their letters are known.
+pub fn display_name(v: &Volume, all: &[Volume]) -> String {
+    let base = base_name(v);
     match v.letter {
         Some(l) => format!("{base} ({l}:)"),
-        None if all.iter().filter(|o| o.label == v.label && o.letter.is_none()).count() > 1 => {
+        None if all.iter().filter(|o| o.letter.is_none() && base_name(o) == base).count() > 1 => {
             let mut s = format!("{base} · ");
             fmt::size(v.size, &mut s);
             s
@@ -145,8 +152,12 @@ impl App {
             }
             DriveMsg::Click(i) => {
                 let Some(v) = self.volumes.get(i) else { return Task::none() };
-                if v.locked {
+                if v.locked && v.is_bitlocker() {
                     self.push_toast(Tone::Accent, format!("{} is locked with BitLocker", display_name(v, &self.volumes)), Some("Unlock it in Windows (or turn BitLocker off there) to open it here. Unlocking from Linux is coming.".into()), None);
+                    return Task::none();
+                }
+                if v.locked {
+                    self.push_toast(Tone::Accent, format!("{} is encrypted and locked", display_name(v, &self.volumes)), Some(format!("Unlock it with `udisksctl unlock -b {}`, then click it again. Unlocking from EchoFiles is coming.", v.device)), None);
                     return Task::none();
                 }
                 match v.mount_points.first() {
@@ -251,7 +262,7 @@ impl App {
         }
     }
 
-    /// The Windows volume holding `path`, with its index.
+    /// The drive (Windows or Linux) holding `path`, with its index.
     pub(crate) fn volume_at(&self, path: &Path) -> Option<(usize, &Volume)> {
         self.volumes.iter().enumerate().find(|(_, v)| v.mount_points.iter().any(|m| path.starts_with(m)))
     }
@@ -311,7 +322,7 @@ impl App {
         }
         let mut lines = column![head].spacing(3);
         if let Some(f) = &fs {
-            lines = lines.push(w::usage_bar(p, f.used_fraction(), p.world_windows));
+            lines = lines.push(w::usage_bar(p, f.used_fraction(), if v.is_windows() { p.world_windows } else { p.world_linux }));
         }
         let mut meta_row = row![].spacing(style::SPACE_3).align_y(Alignment::Center);
         if st.mounting {
@@ -332,7 +343,7 @@ impl App {
         let item = w::row_button(p, container(r).padding([6, 0]).into(), active, Some(Message::Drive(DriveMsg::Click(i))));
         let tip = match v.mount_points.first() {
             Some(mp) => {
-                let mut t = format!("{mp} · {} · ", fs.as_ref().map_or("ntfs3", |f| f.fs_type));
+                let mut t = format!("{mp} · {} · ", fs.as_ref().map_or(v.kind(), |f| f.fs_type));
                 if let Some(f) = &fs {
                     fmt::size(f.free, &mut t);
                     t.push_str(" free of ");
@@ -340,7 +351,7 @@ impl App {
                 }
                 t
             }
-            None => format!("{} · {}", v.device, if v.locked { "BitLocker" } else { "NTFS" }),
+            None => format!("{} · {}{}", v.device, v.kind(), if v.locked { " · locked" } else { "" }),
         };
         let item = self.tip(item, &tip, None);
         w::context_area(item, move |at| Message::Drive(DriveMsg::Menu(i, at)))
@@ -390,7 +401,8 @@ impl App {
         }
     }
 
-    /// Every drive as a card: Linux first, then Windows by letter (design system `DriveCard`).
+    /// Every drive as a card: Linux first (the system, then your drives), then Windows by
+    /// letter (design system `DriveCard`).
     pub(crate) fn drives_view(&self) -> Element<'_, Message> {
         let p = &self.palette;
         let root = self.root_fs.clone();
@@ -405,7 +417,8 @@ impl App {
             Message::Navigate(PathBuf::from("/")),
             None,
         )];
-        for (i, v) in self.volumes.iter().enumerate() {
+        let linux_first = self.volumes.iter().enumerate().filter(|(_, v)| !v.is_windows()).chain(self.volumes.iter().enumerate().filter(|(_, v)| v.is_windows()));
+        for (i, v) in linux_first {
             let fs = self.volume_fs.get(i).cloned().flatten();
             let st = self.drive_state.get(&v.device).cloned().unwrap_or_default();
             let pill = if v.locked {
@@ -421,8 +434,12 @@ impl App {
             } else {
                 None
             };
-            let facts = format!("{} · {} · {}", if v.locked { "BitLocker" } else { "NTFS" }, fs.as_ref().map_or("ntfs3", |f| f.fs_type), if v.system { "Windows system" } else { "data" });
-            cards.push(self.drive_card(display_name(v, &self.volumes), if v.locked { "lock" } else { "drive" }, facts, fs, v.size, p.world_windows, pill, Message::Drive(DriveMsg::Click(i)), Some(i)));
+            let (facts, world) = if v.is_windows() {
+                (format!("{} · {} · {}", v.kind(), fs.as_ref().map_or("ntfs3", |f| f.fs_type), if v.system { "Windows system" } else { "data" }), p.world_windows)
+            } else {
+                (format!("{} · Linux · {}", fs.as_ref().map_or(v.kind(), |f| f.fs_type), v.device), p.world_linux)
+            };
+            cards.push(self.drive_card(display_name(v, &self.volumes), if v.locked { "lock" } else { "drive" }, facts, fs, v.size, world, pill, Message::Drive(DriveMsg::Click(i)), Some(i)));
         }
         let mut grid = column![].spacing(style::SPACE_4);
         let mut it = cards.into_iter().peekable();
@@ -437,7 +454,7 @@ impl App {
         }
         let head = column![
             text("Drives").size(22).font(style::FONT_BOLD).color(color(p.ink_strong)),
-            text("Click a drive to open it — Windows drives mount on the first click. Right-click for more.").size(style::META).font(style::FONT).color(color(p.ink_muted)),
+            text("Click a drive to open it — drives that aren't mounted mount on the first click. Right-click for more.").size(style::META).font(style::FONT).color(color(p.ink_muted)),
         ]
         .spacing(6);
         w::fill(scrollable(container(column![head, grid, Space::new().height(24)].spacing(style::SPACE_5)).padding([24, 28])).height(Length::Fill), p.bg).width(Length::Fill).height(Length::Fill).into()
@@ -445,7 +462,8 @@ impl App {
 }
 
 pub(crate) fn read_volumes() -> Result<(Vec<Volume>, Vec<Option<ef_core::volume::FsInfo>>, Option<ef_core::volume::FsInfo>), String> {
-    let volumes = ef_disks::windows_volumes().map_err(|e| e.to_string())?;
+    let mut volumes = ef_disks::windows_volumes().map_err(|e| e.to_string())?;
+    volumes.extend(ef_disks::linux_volumes().map_err(|e| e.to_string())?);
     let fs = volumes.iter().map(|v| v.mount_points.first().and_then(|m| fs_of(Path::new(m)))).collect();
     Ok((volumes, fs, fs_of(Path::new("/"))))
 }

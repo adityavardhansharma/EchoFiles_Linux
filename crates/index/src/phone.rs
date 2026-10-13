@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, io::BufRead, path::{Path, PathBuf}};
+use std::{io::BufRead, path::{Path, PathBuf}};
 use crate::{Kind, Query, fold, matcher::Matcher};
 
 #[derive(Clone)]
@@ -18,29 +18,73 @@ fn search_in(directory: &Path, q: &Query<'_>) -> Vec<Entry> {
     search_counted(directory, q).1
 }
 
+/// One validated cache line, with its name already folded for matching.
+struct Cached {
+    entry: Entry,
+    folded: Vec<u8>,
+    hidden: bool,
+}
+
+/// Parsed cache files, reused while their size and modification time are unchanged, so
+/// each keystroke searches memory rather than re-reading every JSONL file.
+type Parsed = std::sync::Arc<Vec<Cached>>;
+/// Cache file → (length, modification time, parsed lines).
+type ParsedFiles = std::collections::HashMap<PathBuf, (u64, std::time::SystemTime, Parsed)>;
+static PARSED: std::sync::Mutex<Option<ParsedFiles>> = std::sync::Mutex::new(None);
+
+fn parse(path: &Path) -> Vec<Cached> {
+    let Ok(file) = std::fs::File::open(path) else { return Vec::new() };
+    let mut out = Vec::new();
+    for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        let (Some(id), Some(path)) = (v["device"].as_str(), v["path"].as_str()) else { continue };
+        if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') || path.starts_with('/') || Path::new(path).components().any(|c| matches!(c, std::path::Component::ParentDir)) { continue; }
+        let directory = v["directory"].as_bool().unwrap_or(false);
+        out.push(Cached {
+            folded: fold::fold(path.rsplit('/').next().unwrap_or(path)),
+            hidden: path.split('/').any(|p| p.starts_with('.')),
+            entry: Entry { uri: PathBuf::from(format!("phone://{id}/{path}")), directory, size: v["size"].as_u64().unwrap_or(0), modified: v["modified"].as_i64().unwrap_or(0) / 1000 },
+        });
+    }
+    out
+}
+
+fn cached_files(directory: &Path) -> Vec<Parsed> {
+    let Ok(files) = std::fs::read_dir(directory) else { return Vec::new() };
+    let mut paths: Vec<PathBuf> = files.flatten().map(|f| f.path()).filter(|p| p.extension().is_some_and(|ext| ext == "jsonl")).collect();
+    paths.sort();
+    let mut guard = PARSED.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = guard.get_or_insert_with(Default::default);
+    cache.retain(|p, _| !p.starts_with(directory) || paths.contains(p));
+    paths.into_iter().filter_map(|path| {
+        let m = std::fs::metadata(&path).ok()?;
+        let (len, mtime) = (m.len(), m.modified().ok()?);
+        if let Some((l, t, parsed)) = cache.get(&path) && *l == len && *t == mtime {
+            return Some(parsed.clone());
+        }
+        let parsed: Parsed = std::sync::Arc::new(parse(&path));
+        cache.insert(path, (len, mtime, parsed.clone()));
+        Some(parsed)
+    }).collect()
+}
+
 fn search_counted(directory: &Path, q: &Query<'_>) -> (usize, Vec<Entry>) {
     let Some(matcher) = Matcher::new(q) else { return (0, Vec::new()) };
-    let mut entries = BTreeMap::new();
-    let Ok(files) = std::fs::read_dir(directory) else { return (0, Vec::new()) };
-    for file in files.flatten().filter(|f| f.path().extension().is_some_and(|ext| ext == "jsonl")) {
-        if let Ok(file) = std::fs::File::open(file.path()) {
-            for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
-                let (Some(id), Some(path)) = (v["device"].as_str(), v["path"].as_str()) else { continue };
-                if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') || path.starts_with('/') || Path::new(path).components().any(|c| matches!(c, std::path::Component::ParentDir)) { continue; }
-                if !q.hidden && path.split('/').any(|p| p.starts_with('.')) { continue; }
-                let directory = v["directory"].as_bool().unwrap_or(false);
-                let name = fold::fold(path.rsplit('/').next().unwrap_or(path));
-                if matcher.accepts(&name, if directory { Kind::Dir } else { Kind::File }) {
-                    let uri = PathBuf::from(format!("phone://{id}/{path}"));
-                    entries.insert(uri.clone(), (matcher.rank(&name), Entry { uri, directory, size: v["size"].as_u64().unwrap_or(0), modified: v["modified"].as_i64().unwrap_or(0) / 1000 }));
-                }
-            }
+    let files = cached_files(directory);
+    let mut seen = std::collections::HashSet::new();
+    let mut hits: Vec<(u64, &Entry)> = Vec::new();
+    for file in &files {
+        for c in file.iter() {
+            if (!q.hidden && c.hidden) || !matcher.accepts(&c.folded, if c.entry.directory { Kind::Dir } else { Kind::File }) { continue; }
+            if seen.insert(&c.entry.uri) { hits.push((matcher.rank(&c.folded), &c.entry)); }
         }
     }
-    let mut entries: Vec<_> = entries.into_values().collect();
-    entries.sort_by(|a,b| a.0.cmp(&b.0).then(a.1.uri.cmp(&b.1.uri)));
-    (entries.len(), entries.into_iter().take(q.limit.unwrap_or(usize::MAX)).map(|(_,e)| e).collect())
+    let total = hits.len();
+    let order = |a: &(u64, &Entry), b: &(u64, &Entry)| a.0.cmp(&b.0).then(a.1.uri.cmp(&b.1.uri));
+    let limit = q.limit.unwrap_or(usize::MAX);
+    if limit < hits.len() { hits.select_nth_unstable_by(limit, order); hits.truncate(limit); }
+    hits.sort_by(order);
+    (total, hits.into_iter().map(|(_, e)| e.clone()).collect())
 }
 
 #[cfg(test)] mod tests {

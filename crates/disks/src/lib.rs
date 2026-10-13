@@ -22,13 +22,17 @@ pub struct Volume {
     /// Filesystem UUID — the stable identity (labels can repeat, mount paths move).
     pub uuid: String,
     pub label: String,
+    /// GPT partition name (`Marchy`); for an unlocked LUKS volume, the name of the
+    /// partition it lives on.
+    pub part_name: String,
     /// `ntfs`, `btrfs`, …
     pub fs_type: String,
     pub size: u64,
     pub mount_points: Vec<String>,
     /// GPT partition GUID — how Windows' registry names the partition.
     pub part_uuid: String,
-    /// BitLocker-encrypted: nothing to mount until it's unlocked.
+    /// Encrypted and still locked (BitLocker, or LUKS with no cleartext device yet):
+    /// nothing to mount until it's unlocked.
     pub locked: bool,
     /// Windows drive letter, once known from the registry.
     pub letter: Option<char>,
@@ -41,9 +45,22 @@ impl Volume {
         self.fs_type.starts_with("ntfs")
     }
 
+    pub fn is_bitlocker(&self) -> bool {
+        self.fs_type == "BitLocker"
+    }
+
     /// Windows sees this partition (NTFS or BitLocker).
     pub fn is_windows(&self) -> bool {
-        self.is_ntfs() || self.locked
+        self.is_ntfs() || self.is_bitlocker()
+    }
+
+    /// "BitLocker", "LUKS", "btrfs" — what the drive is, for facts and tooltips.
+    pub fn kind(&self) -> &str {
+        match self.fs_type.as_str() {
+            "crypto_LUKS" => "LUKS",
+            t if t.starts_with("ntfs") => "NTFS",
+            t => t,
+        }
     }
 
     pub fn is_mounted(&self) -> bool {
@@ -51,12 +68,25 @@ impl Volume {
     }
 
     /// Name shown before drive letters are known (M2 reads them from the Windows registry).
+    /// A Linux drive goes by the partition name you gave it, then its filesystem label,
+    /// then where it's mounted.
     pub fn display_name(&self) -> String {
-        if !self.label.is_empty() {
-            self.label.clone()
-        } else {
-            format!("NTFS {}", &self.uuid[..self.uuid.len().min(8)])
+        if !self.is_windows() && !self.part_name.is_empty() && !generic_part_name(&self.part_name) {
+            return self.part_name.clone();
         }
+        if !self.label.is_empty() {
+            return self.label.clone();
+        }
+        if let Some(base) = self.mount_points.first().and_then(|m| m.rsplit('/').next()).filter(|b| !b.is_empty()) {
+            return base.to_string();
+        }
+        format!("{} {}", self.kind(), &self.uuid[..self.uuid.len().min(8)])
+    }
+
+    /// Part of the running system (/, /boot, /home, …) rather than a drive of its own.
+    fn is_system(&self) -> bool {
+        const SYSTEM: &[&str] = &["/boot", "/efi", "/home", "/nix", "/opt", "/root", "/snap", "/srv", "/tmp", "/usr", "/var"];
+        self.mount_points.iter().any(|m| m == "/" || SYSTEM.iter().any(|s| m == s || m.starts_with(&format!("{s}/"))))
     }
 }
 
@@ -70,6 +100,12 @@ impl std::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// Names partitioning tools give by default — not something anyone chose.
+fn generic_part_name(name: &str) -> bool {
+    let n = name.trim().to_ascii_lowercase();
+    n.starts_with("linux ") || n.starts_with("microsoft ") || n.starts_with("efi ") || matches!(n.as_str(), "basic data partition" | "primary" | "logical" | "extended" | "data" | "linux")
+}
 
 impl From<zbus::Error> for Error {
     fn from(e: zbus::Error) -> Self {
@@ -93,6 +129,14 @@ pub fn windows_volumes() -> Result<Vec<Volume>, Error> {
     Ok(out)
 }
 
+/// Linux drives: every filesystem that isn't Windows' or part of the running system
+/// (mounted at /, /boot, /home, …), plus LUKS partitions still waiting to be unlocked.
+pub fn linux_volumes() -> Result<Vec<Volume>, Error> {
+    let mut out: Vec<Volume> = all_volumes()?.into_iter().filter(|v| !v.is_windows() && !v.is_system() && v.fs_type != "squashfs").collect();
+    out.sort_by_cached_key(|v| (v.display_name().to_lowercase(), v.device.clone()));
+    Ok(out)
+}
+
 /// Every filesystem-bearing block device udisks knows, sorted by device path.
 pub fn all_volumes() -> Result<Vec<Volume>, Error> {
     let conn = Connection::system()?;
@@ -105,17 +149,21 @@ pub fn all_volumes() -> Result<Vec<Volume>, Error> {
     )?;
     let objects: HashMap<OwnedObjectPath, Interfaces> = reply.body().deserialize()?;
     let mut out: Vec<Volume> = objects
-        .into_iter()
-        .filter_map(|(path, ifaces)| volume(path.as_str(), &ifaces))
+        .iter()
+        .filter_map(|(path, ifaces)| volume(path.as_str(), ifaces, &objects))
         .collect();
     out.sort_by(|a, b| a.device.cmp(&b.device));
     Ok(out)
 }
 
-fn volume(object: &str, ifaces: &Interfaces) -> Option<Volume> {
+fn volume(object: &str, ifaces: &Interfaces, all: &HashMap<OwnedObjectPath, Interfaces>) -> Option<Volume> {
     let block = ifaces.get("org.freedesktop.UDisks2.Block")?;
     let fs_type = block.get("IdType").and_then(as_string).unwrap_or_default();
-    let locked = fs_type == "BitLocker";
+    // An unlocked LUKS container shows up again as its cleartext device; list that one.
+    let luks_locked = ifaces
+        .get("org.freedesktop.UDisks2.Encrypted")
+        .is_some_and(|e| e.get("CleartextDevice").and_then(as_object_path).is_none_or(|p| p == "/"));
+    let locked = fs_type == "BitLocker" || (fs_type == "crypto_LUKS" && luks_locked);
     let fs = ifaces.get("org.freedesktop.UDisks2.Filesystem");
     if fs.is_none() && !locked {
         return None;
@@ -135,11 +183,26 @@ fn volume(object: &str, ifaces: &Interfaces) -> Option<Volume> {
         fs_type,
         size,
         mount_points: fs.and_then(|f| f.get("MountPoints")).map(as_bytestrings).unwrap_or_default(),
+        part_name: part_name(ifaces).or_else(|| {
+            let backing = block.get("CryptoBackingDevice").and_then(as_object_path).filter(|p| p != "/")?;
+            all.iter().find(|(o, _)| o.as_str() == backing).and_then(|(_, i)| part_name(i))
+        }).unwrap_or_default(),
         part_uuid: ifaces.get("org.freedesktop.UDisks2.Partition").and_then(|p| p.get("UUID")).and_then(as_string).unwrap_or_default().to_lowercase(),
         locked,
         letter: None,
         system: false,
     })
+}
+
+fn part_name(ifaces: &Interfaces) -> Option<String> {
+    ifaces.get("org.freedesktop.UDisks2.Partition")?.get("Name").and_then(as_string).filter(|n| !n.is_empty())
+}
+
+fn as_object_path(v: &OwnedValue) -> Option<String> {
+    match &**v {
+        Value::ObjectPath(p) => Some(p.to_string()),
+        _ => None,
+    }
 }
 
 fn as_bool(v: &OwnedValue) -> Option<bool> {
@@ -252,12 +315,25 @@ unsafe extern "C" {
     fn getgid() -> u32;
 }
 
+/// A Linux filesystem mounts as itself, with no ntfs3 options; udisks picks the folder.
+fn call_mount_native(conn: &Connection, object: &str) -> Result<String, MountError> {
+    let options: HashMap<&str, Value> = HashMap::new();
+    let reply = conn
+        .call_method(Some("org.freedesktop.UDisks2"), object, Some("org.freedesktop.UDisks2.Filesystem"), "Mount", &(options,))
+        .map_err(udisks_error)?;
+    reply.body().deserialize::<String>().map_err(|e| MountError::Failed(e.to_string()))
+}
+
 /// Mount a Windows volume with ntfs3. The Windows system partition (C:) mounts read-only
 /// unless `write_system` is set; a volume Windows didn't shut down cleanly (Fast Startup,
 /// hibernation) falls back to read-only instead of failing. Reading the registry on the
 /// way records every partition's drive letter.
 pub fn mount(v: &Volume, write_system: bool) -> Result<Mounted, MountError> {
     let conn = Connection::system().map_err(|e| MountError::Failed(e.to_string()))?;
+    if !v.is_windows() {
+        let mp = call_mount_native(&conn, &v.object)?;
+        return Ok(Mounted { mount_point: mp, read_only: false, forced_read_only: None, system: false });
+    }
     let want_ro = !write_system;
     let (mp, forced) = match call_mount(&conn, &v.object, want_ro) {
         Ok(mp) => (mp, None),
@@ -310,4 +386,45 @@ pub fn remount(v: &Volume, read_only: bool) -> Result<Mounted, MountError> {
 pub fn unmount(v: &Volume) -> Result<(), MountError> {
     let conn = Connection::system().map_err(|e| MountError::Failed(e.to_string()))?;
     call_unmount(&conn, &v.object)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vol(fs_type: &str, part_name: &str, label: &str, mounts: &[&str]) -> Volume {
+        Volume {
+            object: String::new(),
+            device: "/dev/dm-1".into(),
+            uuid: "f2af5807-5436".into(),
+            label: label.into(),
+            part_name: part_name.into(),
+            fs_type: fs_type.into(),
+            size: 100 << 30,
+            mount_points: mounts.iter().map(|m| m.to_string()).collect(),
+            part_uuid: String::new(),
+            locked: false,
+            letter: None,
+            system: false,
+        }
+    }
+
+    #[test]
+    fn linux_drives_go_by_the_partition_name_you_chose() {
+        assert_eq!(vol("btrfs", "Marchy", "data106", &["/media/data106"]).display_name(), "Marchy");
+        assert_eq!(vol("ext4", "Linux filesystem", "Backup", &[]).display_name(), "Backup");
+        assert_eq!(vol("ext4", "", "", &["/run/media/me/stick"]).display_name(), "stick");
+        assert_eq!(vol("crypto_LUKS", "", "", &[]).display_name(), "LUKS f2af5807");
+        // Windows keeps its own naming: "Basic data partition" is never a name.
+        assert_eq!(vol("ntfs", "Basic data partition", "AVS", &[]).display_name(), "AVS");
+    }
+
+    #[test]
+    fn system_mounts_are_not_drives() {
+        assert!(vol("btrfs", "", "", &["/", "/home"]).is_system());
+        assert!(vol("vfat", "", "", &["/boot"]).is_system());
+        assert!(vol("ext4", "", "", &["/var/lib/docker"]).is_system());
+        assert!(!vol("btrfs", "", "", &["/media/data106"]).is_system());
+        assert!(!vol("ext4", "", "", &["/homework"]).is_system());
+    }
 }

@@ -156,42 +156,10 @@ pub fn starts_at_login() -> bool {
 // AI agent skill (the Omarchy way: one SKILL.md linked into global agent skill folders)
 // ---------------------------------------------------------------------------------------
 
-const SKILL: &str = r#"---
-name: echofiles
-description: >
-  Fast file search on this computer through EchoFiles. Use it to find files or folders by
-  name in indexed locations or search any accessible folder live with ef find --in, including
-  external drives and /tmp, before running find/fd/locate over large trees.
-  Triggers: find a file, where is, search files, locate, which folder, all PDFs, recent files.
----
-
-# EchoFiles — `ef`
-
-`ef` searches EchoFiles' index of the user's files. With `--in` on a folder outside the
-index, it searches that folder live without changing the indexed locations.
-
-```sh
-ef find report                      # names containing all words, best matches first
-ef find "annual report"             # exact phrase
-ef find '*' --ext pdf --limit 50    # every PDF, first 50
-ef find invoice --in ~/Documents    # only inside a folder
-ef find report --in /tmp             # live search outside the index
-ef find src --dirs                  # folders only (--files for files only)
-ef find config --hidden             # include dotfiles and hidden folders
-ef find report --count              # just the number of matches
-ef status                           # what's indexed and how fresh
-```
-
-- Matching ignores case and accents ("resume" finds "Résumé").
-- Results are full paths, one per line. Always pass `--limit` for broad queries.
-- `--in` accepts any accessible folder. Outside indexed locations it walks the folder live,
-  so searches there can take longer.
-- The index updates within seconds in Downloads, Desktop, Documents and the folder open in
-  EchoFiles, and at least every minute elsewhere. For a file created moments ago in some
-  other folder, confirm with `ls`.
-- If `ef` says it's turned off, the user disabled it in EchoFiles → Settings → AI agents:
-  fall back to `fd`/`find` and don't try to re-enable it.
-"#;
+/// The skill: a short SKILL.md agents always read, and the full reference they open when
+/// they need an option, a command or the JSON format.
+const SKILL: &str = include_str!("skill/SKILL.md");
+const SKILL_REFERENCE: &str = include_str!("skill/reference.md");
 
 fn skill_source_dir() -> PathBuf {
     std::env::var_os("XDG_DATA_HOME")
@@ -200,14 +168,62 @@ fn skill_source_dir() -> PathBuf {
         .join("echofiles/agents/skills/echofiles")
 }
 
-fn skill_links() -> [PathBuf; 4] {
+/// Where Omarchy keeps its global agent skills (`$OMARCHY_PATH/default/agents/skills`).
+fn omarchy_skills() -> PathBuf {
+    std::env::var_os("OMARCHY_PATH").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/usr/share/omarchy")).join("default/agents/skills")
+}
+
+/// The agent skill folders to put EchoFiles' skill in: every folder where Omarchy's global
+/// skills are linked (so every agent Omarchy sets up — now or after an update — finds
+/// it), found by looking, not from a fixed list. Without Omarchy, the shared
+/// `~/.agents/skills` that agents read.
+fn skill_links() -> Vec<PathBuf> {
+    let source = omarchy_skills();
+    let mut dirs: Vec<PathBuf> = skill_dirs().into_iter().filter(|d| links_into(d, &source)).collect();
+    if dirs.is_empty() {
+        dirs.push(config::home().join(".agents/skills"));
+    }
+    dirs.into_iter().map(|d| d.join("echofiles")).collect()
+}
+
+/// Folders named `skills` in the dot-folders of home, up to four levels down
+/// (`~/.claude/skills`, `~/.pi/agent/skills`, `~/.hermes/profiles/work/skills`, …).
+fn skill_dirs() -> Vec<PathBuf> {
+    const SKIP: [&str; 12] = [".cache", ".local", ".npm", ".cargo", ".rustup", ".gradle", ".m2", ".nvm", ".pnpm-store", ".yarn", ".mozilla", ".var"];
     let home = config::home();
-    [
-        home.join(".agents/skills/echofiles"),
-        home.join(".claude/skills/echofiles"),
-        home.join(".codex/skills/echofiles"),
-        home.join(".pi/agent/skills/echofiles"),
-    ]
+    let mut found = Vec::new();
+    let mut queue: Vec<(PathBuf, u32)> = std::fs::read_dir(&home)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            n.starts_with('.') && !SKIP.contains(&n.as_ref()) && e.file_type().is_ok_and(|t| t.is_dir())
+        })
+        .map(|e| (e.path(), 1))
+        .collect();
+    while let Some((dir, depth)) = queue.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            // Real folders only: a symlinked skill is a skill, not a place to look in.
+            if !e.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            if e.file_name() == "skills" {
+                found.push(e.path());
+            } else if depth < 4 && e.file_name() != "node_modules" {
+                queue.push((e.path(), depth + 1));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Whether `dir` holds a link to one of Omarchy's global skills.
+fn links_into(dir: &Path, source: &Path) -> bool {
+    std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| std::fs::read_link(e.path()).is_ok_and(|t| t.starts_with(source)))
 }
 
 fn is_our_link(link: &Path, source: &Path) -> bool {
@@ -224,8 +240,10 @@ pub fn set_skill(on: bool) -> Result<(), String> {
     let source = skill_source_dir();
     let links = skill_links();
     if !on {
-        // Never remove another agent skill with the same name.
-        for link in &links {
+        // Wherever our skill was linked (Omarchy's folders may have changed since); never
+        // remove another agent skill with the same name.
+        let ours = skill_dirs().into_iter().map(|d| d.join("echofiles")).chain(links.iter().cloned());
+        for link in ours.collect::<Vec<_>>().iter() {
             if is_our_link(link, &source) {
                 std::fs::remove_file(link).map_err(|e| format!("Couldn't remove {}: {e}", link.display()))?;
             }
@@ -243,6 +261,7 @@ pub fn set_skill(on: bool) -> Result<(), String> {
 
     std::fs::create_dir_all(&source)
         .and_then(|_| std::fs::write(source.join("SKILL.md"), SKILL))
+        .and_then(|_| std::fs::write(source.join("reference.md"), SKILL_REFERENCE))
         .map_err(|e| format!("Couldn't write the skill to {}: {e}", source.display()))?;
     for link in &links {
         if is_our_link(link, &source) {

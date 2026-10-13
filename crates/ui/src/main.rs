@@ -11,10 +11,12 @@
 
 mod actions;
 mod app;
+mod codec;
 mod drives;
 mod file_list;
 mod gpu;
 mod indexer;
+mod jpeg;
 mod network;
 mod kinds;
 mod overlay;
@@ -45,6 +47,10 @@ pub fn since_start_ms() -> f64 {
 
 fn main() -> iced::Result {
     START.get_or_init(Instant::now);
+    // The search index crawl runs in a child process (indexer::build_all).
+    if std::env::args_os().nth(1).is_some_and(|a| a == "--index-worker") {
+        std::process::exit(if indexer::worker_main() == std::process::ExitCode::SUCCESS { 0 } else { 1 });
+    }
     // Integrated GPU, Vulkan, and on hybrid laptops no NVIDIA driver load (see gpu.rs).
     // SAFETY: still single-threaded; nothing else reads the environment yet.
     unsafe { gpu::configure() };
@@ -79,6 +85,8 @@ fn main() -> iced::Result {
             eprintln!("Couldn't acquire the EchoFiles instance socket");
             return Ok(());
         }
+        // Answer `ef` from here: settings, index maps and threads stay loaded.
+        ef_index::cli::server::spawn();
     }
 
     // Iced parses every system font before it can draw text (714 files, ~450 ms here). Load

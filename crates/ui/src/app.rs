@@ -161,6 +161,10 @@ pub struct App {
     pub(crate) roots: Vec<RootIndex>,
     pub(crate) index_error: Option<String>,
     index_dirty: Option<Instant>,
+    /// Names changed in a watched folder since this moment: rebuild when it has settled,
+    /// at most once a minute (a busy Downloads folder must not crawl ~ continuously).
+    index_stale: Option<Instant>,
+    last_index_build: Option<Instant>,
     watcher: Option<Arc<Watcher>>,
     // files
     pub(crate) clip: Option<Clip>,
@@ -193,6 +197,9 @@ pub struct App {
     pub(crate) window_size: iced::Size,
     /// Background size of the selected folders: (what was measured, totals, cancel).
     pub(crate) sel_size: Option<(Vec<PathBuf>, Arc<ef_core::ops::DirSize>, Arc<AtomicBool>)>,
+    /// The selection `sel_size` was last derived from: (pane, listing, mode) and its bits.
+    /// Messages that leave it unchanged skip rebuilding up to 10,000 folder paths.
+    sel_seen: ((u64, usize, bool), Vec<u64>),
 }
 
 fn theme_stamp() -> Option<SystemTime> {
@@ -313,6 +320,8 @@ impl App {
             roots: Vec::new(),
             index_error: None,
             index_dirty: None,
+            index_stale: None,
+            last_index_build: None,
             watcher,
             clip: None,
             undo: Vec::new(),
@@ -340,6 +349,7 @@ impl App {
             modifiers: keyboard::Modifiers::default(),
             window_size: iced::Size::new(1280.0, 800.0),
             sel_size: None,
+            sel_seen: Default::default(),
             settings,
         };
         let mut tasks = vec![app.load_active(start)];
@@ -537,9 +547,7 @@ impl App {
 
     fn run_search(&mut self) -> Task<Message> {
         let hidden = self.show_hidden;
-        let use_index = self.settings.search.index && self.roots.iter().any(|r| r.map.is_some());
-        let roots = self.roots.clone();
-        let cfg = self.settings.search.clone();
+        let settings = self.settings.clone();
         let pane = self.pane_mut();
         pane.search_cancel.store(true, Ordering::Relaxed);
         pane.search_generation = crate::pane::next_id();
@@ -553,15 +561,7 @@ impl App {
         pane.searching = true;
         let cancel = Arc::new(AtomicBool::new(false));
         pane.search_cancel = cancel.clone();
-        if use_index {
-            let phones = self.settings.phone.phone_index;
-            return background(move || search::with_phone(search::combined(&roots, &cfg, &text, hidden, &cancel), &text, hidden, phones), move |results| Message::SearchDone { generation, results });
-        }
-        let cancel = Arc::new(AtomicBool::new(false));
-        pane.search_cancel = cancel.clone();
-        let dirs = cfg.roots();
-        let phones = self.settings.phone.phone_index;
-        background(move || search::with_phone(search::live(&dirs, &cfg, &text, hidden, &cancel), &text, hidden, phones), move |results| Message::SearchDone { generation, results })
+        background(move || search::run(&settings, &text, hidden, &cancel), move |results| Message::SearchDone { generation, results })
     }
 
     // ------------------------------------------------------------------ index
@@ -572,6 +572,8 @@ impl App {
         }
         self.index_state = IndexState::Building;
         self.index_dirty = None;
+        self.index_stale = None;
+        self.last_index_build = Some(Instant::now());
         let generation = self.index_generation;
         let cfg = self.settings.search.clone();
         background(move || indexer::build_all(&cfg, generation), move |roots| Message::IndexBuilt(generation, roots))
@@ -657,6 +659,8 @@ impl App {
             self.notice = Some("File operations are still running. Wait for them to finish, or cancel them before quitting.".into());
             return Task::none();
         }
+        // Replaced files kept for undo are not needed once the session ends.
+        for u in self.undo.drain(..) { u.discard(); }
         iced::exit()
     }
 
@@ -676,10 +680,16 @@ impl App {
     /// Count the selected folders' sizes in the background for the status bar.
     fn sync_selection_size(&mut self) {
         let pane = self.pane();
+        let key = (pane.id, pane.loaded.as_ref().map_or(0, |l| Arc::as_ptr(l) as usize), self.mode == Mode::Files);
+        if self.sel_seen.0 == key && self.sel_seen.1 == pane.selected {
+            return;
+        }
+        let seen = (key, pane.selected.clone());
         let dirs: Vec<PathBuf> = match pane.loaded.as_ref() {
             Some(l) if self.mode == Mode::Files => pane.selected_bits().filter(|&i| i < l.listing.len() && l.listing.is_dir(i)).take(10_000).map(|i| l.listing.path(i)).collect(),
             _ => Vec::new(),
         };
+        self.sel_seen = seen;
         if self.sel_size.as_ref().map(|s| &s.0) == Some(&dirs) || (dirs.is_empty() && self.sel_size.is_none()) {
             return;
         }
@@ -963,7 +973,7 @@ impl App {
             }
             Message::SearchDone { generation, results } => {
                 if let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.search_generation == generation) {
-                    if results.is_none() { self.notice = Some("Search could not read all requested locations. Reconnect unavailable locations and try again.".into()); }
+                    // `None`: the search was cancelled. Errors arrive as results with a note.
                     pane.searching = false;
                     pane.results = None;
                     pane.result_cursor = None;
@@ -1080,6 +1090,9 @@ impl App {
                 if indexer::settled(self.index_dirty, 1500) && self.index_state != IndexState::Building {
                     return self.build_index();
                 }
+                if indexer::settled(self.index_stale, 10_000) && self.index_state != IndexState::Building && self.last_index_build.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
+                    return self.build_index();
+                }
                 Task::none()
             }
             Message::MouseMove(p) => {
@@ -1138,8 +1151,9 @@ impl App {
             Message::IndexTick => self.build_index(),
             Message::FsChanged(change) => {
                 if self.preview_want.as_ref().is_some_and(|p| p.parent() == Some(change.folder.as_path())) { self.preview_want = None; self.preview_generation += 1; }
-                if change.names_changed {
-                    self.index_settings_changed();
+                if change.names_changed && self.settings.search.index {
+                    // The settings didn't change: don't invalidate the index, just refresh it.
+                    self.index_stale.get_or_insert_with(Instant::now);
                 }
                 if !(change.visible || self.show_hidden) || self.mode != Mode::Files {
                     return Task::none();
@@ -1567,7 +1581,9 @@ impl App {
                 iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => Some(Message::MouseUp),
                 _ => None,
             }),
-            iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick),
+            // Toasts, dates and the theme need a second's resolution only on screen; in the
+            // background the timers only drive debounced work.
+            iced::time::every(Duration::from_secs(if self.window.is_some() { 1 } else { 30 })).map(|_| Message::Tick),
             window::close_requests().map(Message::CloseRequested),
             window::close_events().map(Message::WindowClosed),
             window::resize_events().map(|(_, s)| Message::Resized(s)),
@@ -1584,7 +1600,8 @@ impl App {
             }));
         }
         if self.settings.search.index {
-            subs.push(iced::time::every(Duration::from_secs(60)).map(|_| Message::IndexTick));
+            // A safety net for folders without a watch; watched ones refresh within a minute.
+            subs.push(iced::time::every(Duration::from_secs(30 * 60)).map(|_| Message::IndexTick));
         }
         if self.bench.is_some() || !self.first_frame_logged || self.animating() {
             subs.push(window::frames().map(Message::Frame));
@@ -1604,7 +1621,8 @@ impl App {
     /// What the preview pane shows: the cursor item, else the single selected item.
     pub(crate) fn visible_dir(&self, path: &Path) -> bool {
         if self.pane().everywhere() { return self.pane().results.as_ref().is_some_and(|r| r.hits.iter().any(|h| h.path == path && h.is_dir)); }
-        self.pane().loaded.as_ref().is_some_and(|l| (0..l.listing.len()).any(|i| l.listing.path(i) == path && l.listing.is_dir(i)))
+        let Some(l) = self.pane().loaded.as_ref() else { return false };
+        path.parent() == Some(l.listing.dir.as_path()) && (0..l.listing.len()).any(|i| Some(l.listing.name(i)) == path.file_name() && l.listing.is_dir(i))
     }
 
     pub(crate) fn preview_target(&self) -> Option<PathBuf> {
@@ -1612,7 +1630,8 @@ impl App {
         if pane.special() { return None; }
         if pane.everywhere() { return pane.targets().into_iter().next(); }
         let l = pane.loaded.as_ref()?;
-        let i = pane.cursor.and_then(|c| pane.entry_at(c)).or_else(|| pane.selected_entries().first().copied())?;
+        // The first selected entry in display order, without listing them all.
+        let i = pane.cursor.and_then(|c| pane.entry_at(c)).or_else(|| pane.order.iter().map(|&i| i as usize).find(|&i| crate::file_list::is_selected(&pane.selected, i)))?;
         Some(l.listing.path(i))
     }
 
@@ -1638,7 +1657,7 @@ impl App {
         };
         let mut tasks = Vec::new();
         if thumbs::thumbnailable(&path) && self.thumbs.get(&path).is_none() {
-            let mtime = self.pane().loaded.as_ref().and_then(|l| (0..l.listing.len()).find(|&i| l.listing.path(i) == path).map(|i| l.listing.mtime[i])).unwrap_or(0);
+            let mtime = self.pane().loaded.as_ref().filter(|l| path.parent() == Some(l.listing.dir.as_path())).and_then(|l| (0..l.listing.len()).find(|&i| Some(l.listing.name(i)) == path.file_name()).map(|i| l.listing.mtime[i])).unwrap_or(0);
             let jobs = self.thumbs.want(vec![(path.clone(), mtime)]);
             tasks.push(self.start_thumbs(jobs));
         }

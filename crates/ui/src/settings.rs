@@ -62,6 +62,7 @@ pub enum SettingsMsg {
     AddCurrent(Field),
     Remove(Field, usize),
     SkipCache(bool),
+    IndexDrives(bool),
     ResetExclusions,
     Cli(bool),
     Skill(bool),
@@ -269,6 +270,11 @@ impl App {
             }
             SettingsMsg::SkipCache(on) => {
                 self.settings.search.skip_cache_folders = on;
+                self.index_settings_changed();
+                self.save_settings()
+            }
+            SettingsMsg::IndexDrives(on) => {
+                self.settings.search.index_drives = on;
                 self.index_settings_changed();
                 self.save_settings()
             }
@@ -717,6 +723,22 @@ impl App {
         roots.extend(self.path_list(Field::Roots, &s.roots, "", "Folder path, like ~/Projects"));
         let roots = self.group("Indexed folders", roots);
 
+        let mut drives = vec![self.setting(
+            "Include every drive",
+            "Drives mounted on this computer — other disks, partitions and USB drives — are searched and indexed too.",
+            self.toggle(s.index_drives, SettingsMsg::IndexDrives),
+        )];
+        if s.index_drives {
+            let found = ef_config::drives();
+            let listed = if found.is_empty() {
+                "No other drives are mounted.".to_string()
+            } else {
+                found.iter().map(|d| ef_config::tilde(d)).collect::<Vec<_>>().join("\n")
+            };
+            drives.push(self.block(text(listed).size(style::META).font(style::FONT).color(color(p.ink_muted))));
+        }
+        let drives = self.group("Drives", drives);
+
         let mut never = vec![self.block(
             text("Folders that never appear in search results — private or noisy places. Their contents aren't indexed at all.").size(style::META).font(style::FONT).color(color(p.ink_muted)),
         )];
@@ -737,7 +759,7 @@ impl App {
         skip.extend(self.name_chips());
         let skip = self.group("Skip contents of", skip);
 
-        self.page(self.page_head("Search & index", "What search covers, and the index that makes it instant."), vec![index, search, roots, never, skip])
+        self.page(self.page_head("Search & index", "What search covers, and the index that makes it instant."), vec![index, search, roots, drives, never, skip])
     }
 
     fn page_agents(&self) -> Element<'_, Message> {

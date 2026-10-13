@@ -335,6 +335,8 @@ struct Inner {
     transfer_slots: Arc<AtomicUsize>,
     pending: Mutex<HashSet<SocketAddr>>,
     stopped: AtomicBool,
+    /// Wakes sleeping service threads at shutdown (they wait on it instead of polling).
+    idle: (Mutex<()>, std::sync::Condvar),
 }
 
 /// The running phone service. Cheap to clone.
@@ -451,6 +453,7 @@ impl Service {
             transfer_slots: Arc::new(AtomicUsize::new(0)),
             pending: Mutex::new(HashSet::new()),
             stopped: AtomicBool::new(false),
+            idle: (Mutex::new(()), std::sync::Condvar::new()),
         });
         let mut startup = Startup { inner: inner.clone(), complete: false };
         // TCP: 1716 first (what phones try), then the rest of the range.
@@ -462,16 +465,17 @@ impl Service {
         };
         let port = listener.local_addr()?.port();
         *inner.port.lock().unwrap() = port;
-        listener.set_nonblocking(true)?;
-
+        // A blocking accept: the thread sleeps until a phone connects (shutdown wakes it
+        // with a connection of its own) instead of polling 20 times a second.
         let acc = inner.clone();
         std::thread::Builder::new().name("phone-accept".into()).spawn(move || {
             while !acc.stopped.load(Ordering::Acquire) {
                 let conn = match listener.accept() {
                     Ok((conn, _)) => conn,
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => { std::thread::sleep(Duration::from_millis(50)); continue; },
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 };
+                if acc.stopped.load(Ordering::Acquire) { break; }
                 let Some(permit) = Permit::take(&acc.connections, 32) else { continue };
                 let i = acc.clone();
                 std::thread::spawn(move || {
@@ -503,7 +507,12 @@ impl Service {
         // that came back to the Wi-Fi, or a laptop that woke up).
         let again = svc.clone();
         std::thread::Builder::new().name("phone-announce".into()).spawn(move || loop {
-            for _ in 0..150 { if again.inner.stopped.load(Ordering::Acquire) { return; } std::thread::sleep(Duration::from_millis(100)); }
+            {
+                let (lock, wake) = &again.inner.idle;
+                let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = wake.wait_timeout_while(guard, Duration::from_secs(15), |_| !again.inner.stopped.load(Ordering::Acquire));
+            }
+            if again.inner.stopped.load(Ordering::Acquire) { return; }
             let trusted = identity::trusted(&again.inner.dir);
             let links = again.inner.links.lock().unwrap();
             let missing = trusted.iter().any(|t| !links.get(&t.id).is_some_and(|ls| ls.iter().any(|l| l.via == Via::Lan)));
@@ -517,7 +526,14 @@ impl Service {
         Ok(svc)
     }
 
-    pub fn shutdown(&self) { self.inner.stopped.store(true, Ordering::Release); }
+    pub fn shutdown(&self) {
+        self.inner.stopped.store(true, Ordering::Release);
+        let _guard = self.inner.idle.0.lock();
+        self.inner.idle.1.notify_all();
+        // Wake the blocking accept.
+        let port = *self.inner.port.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)), Duration::from_millis(200));
+    }
 
     pub fn device_id(&self) -> &str {
         &self.inner.me.device_id
@@ -783,7 +799,8 @@ fn share_body(path: &Path, count: usize, total: u64) -> Value {
 // ------------------------------------------------------------------------------ discovery
 
 fn listen_udp(inner: &Arc<Inner>, sock: UdpSocket) {
-    let _ = sock.set_read_timeout(Some(Duration::from_millis(250)));
+    // Only shutdown is checked between datagrams: a slow timeout keeps an idle laptop idle.
+    let _ = sock.set_read_timeout(Some(Duration::from_secs(2)));
     let mut buf = vec![0u8; 64 * 1024];
     while !inner.stopped.load(Ordering::Acquire) {
         let Ok((n, from)) = sock.recv_from(&mut buf) else { continue };
@@ -1443,4 +1460,4 @@ impl<S: Write> Write for Deadline<S> {
 impl<S: Sock> Sock for Deadline<S> { fn timeout(&self, d: Option<Duration>) -> io::Result<()> { self.inner.timeout(d) } }
 
 struct Startup { inner: Arc<Inner>, complete: bool }
-impl Drop for Startup { fn drop(&mut self) { if !self.complete { self.inner.stopped.store(true, Ordering::Release); } } }
+impl Drop for Startup { fn drop(&mut self) { if !self.complete { Service { inner: self.inner.clone() }.shutdown(); } } }

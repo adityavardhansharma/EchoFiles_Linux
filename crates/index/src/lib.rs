@@ -15,10 +15,20 @@
 //! then prefix, then word start, then anywhere; shorter names first within each group.
 
 pub use ef_config as config;
+pub mod cli;
 pub mod corpus;
+pub mod filter;
+pub mod find;
 pub mod fold;
+mod fold_tables;
+pub mod gitignore;
+pub mod glob;
 pub mod live;
 mod matcher;
+pub mod pattern;
+pub mod suggest;
+pub mod units;
+mod walk;
 mod store;
 mod view;
 
@@ -139,7 +149,8 @@ impl Options {
         }
     }
 
-    fn excludes(&self, name: &[u8]) -> bool {
+    /// Whether folders named `name` have their contents skipped.
+    pub fn excludes(&self, name: &[u8]) -> bool {
         self.exclude_names.iter().any(|n| n == name)
     }
 
@@ -474,6 +485,12 @@ impl Index {
     pub fn search(&self, q: &Query) -> Vec<u32> {
         self.view().search(q)
     }
+
+    /// The number of matches and the best `q.limit` of them, best first, without
+    /// collecting every match: a one-letter query stays cheap however large the index.
+    pub fn search_counted(&self, q: &Query) -> (usize, Vec<u32>) {
+        self.view().search_counted(q)
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -581,11 +598,31 @@ pub mod phone;
 
 /// The common cross-root ranking key, also used when merging live and mapped results.
 pub fn rank_name(text: &str, name: &[u8]) -> u64 {
-    matcher::Matcher::new(&Query::new(text)).map_or(u64::MAX, |m| { let mut folded = Vec::new(); fold::fold_into(name, &mut folded); m.rank(&folded) })
+    Ranker::new(text).rank(name)
+}
+
+/// [`rank_name`] for many names of one query: the query is parsed once.
+pub struct Ranker {
+    matcher: Option<matcher::Matcher>,
+}
+
+impl Ranker {
+    pub fn new(text: &str) -> Ranker {
+        Ranker { matcher: matcher::Matcher::new(&Query::new(text)) }
+    }
+
+    pub fn rank(&self, name: &[u8]) -> u64 {
+        self.matcher.as_ref().map_or(u64::MAX, |m| {
+            let mut folded = Vec::new();
+            fold::fold_into(name, &mut folded);
+            m.rank(&folded)
+        })
+    }
 }
 
 pub fn rank_paths(paths: &mut Vec<PathBuf>, q: &Query) {
-    paths.sort_by_cached_key(|p| (rank_name(q.text, p.file_name().unwrap_or_default().as_bytes()), p.clone()));
+    let ranker = Ranker::new(q.text);
+    paths.sort_by_cached_key(|p| (ranker.rank(p.file_name().unwrap_or_default().as_bytes()), p.clone()));
     paths.dedup();
     if let Some(limit) = q.limit { paths.truncate(limit); }
 }

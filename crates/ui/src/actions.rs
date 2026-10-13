@@ -3,7 +3,7 @@
 //! Everything that touches the disk runs on a worker thread; results come back as
 //! [`FileMsg`]s and end in a toast — with Undo when the step can be reversed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -242,10 +242,11 @@ impl App {
             let Some(l) = pane.loaded.clone() else { continue };
             let mut bits = vec![0u64; l.listing.len().div_ceil(64)];
             if let Some(c) = clip.as_ref().filter(|c| c.cut) {
-                let names: Vec<&std::ffi::OsStr> = c.paths.iter().filter(|p| p.parent() == Some(pane.location.as_path())).filter_map(|p| p.file_name()).collect();
+                // A set: with everything cut, a Vec lookup per entry was O(n²) on every reload.
+                let names: HashSet<&std::ffi::OsStr> = c.paths.iter().filter(|p| p.parent() == Some(pane.location.as_path())).filter_map(|p| p.file_name()).collect();
                 if !names.is_empty() {
                     for i in 0..l.listing.len() {
-                        if names.contains(&l.listing.name(i)) {
+                        if names.contains(l.listing.name(i)) {
                             file_list::set_bit(&mut bits, i, true);
                         }
                     }
@@ -489,7 +490,7 @@ impl App {
                 background(move || ops::rename(&from, &name).map(|to| (from.clone(), to)).map_err(|e| e.to_string()), |res| Message::File(FileMsg::Renamed(res)))
             }
             FileMsg::Renamed(Ok((from, to))) => {
-                self.undo.push(Undo::Rename { from: from.clone(), to: to.clone() });
+                self.push_undo(Undo::Rename { from: from.clone(), to: to.clone() });
                 let dir = to.parent().map(Path::to_path_buf).unwrap_or_default();
                 if let Some(name) = to.file_name() {
                     for pane in self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).filter(|p| p.location == dir) {
@@ -525,7 +526,7 @@ impl App {
                 let mut dirs: Vec<PathBuf> = ok.iter().filter_map(|t| t.original.parent().map(Path::to_path_buf)).collect();
                 dirs.dedup();
                 if !ok.is_empty() {
-                    self.undo.push(Undo::Trash(ok.clone()));
+                    self.push_undo(Undo::Trash(ok.clone()));
                 }
                 if !failed.is_empty() {
                     // No trash on this drive (read-only, or no permission to make one): offer
@@ -563,7 +564,7 @@ impl App {
                 background(move || if folder { ops::new_folder(&dir) } else { ops::new_file(&dir) }.map_err(|e| e.to_string()), |r| Message::File(FileMsg::Created(r)))
             }
             FileMsg::Created(Ok(path)) => {
-                self.undo.push(Undo::Create(path.clone()));
+                self.push_undo(Undo::Create(path.clone()));
                 let id = self.pane().id;
                 let value = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
                 self.rename = Some(Rename { pane: id, path: path.clone(), value, error: None, fixed: None, pos: None });
@@ -583,7 +584,7 @@ impl App {
             },
             FileMsg::Undone(u, r) => {
                 self.undo_busy = false;
-                if let Err(e) = r { self.undo.push(u); self.toast_error("Couldn't undo".into(), e); }
+                if let Err(e) = r { self.push_undo(u); self.toast_error("Couldn't undo".into(), e); }
                 let dirs: Vec<PathBuf> = self.tabs[self.tab].panes.iter().map(|p| p.location.clone()).collect();
                 Task::batch(dirs.iter().map(|d| self.refresh(d)).collect::<Vec<_>>())
             }
@@ -647,7 +648,7 @@ impl App {
                 self.imported_copies(keys);
                 let ok = outcome.errors.is_empty() && !outcome.cancelled;
                 if !outcome.journal.is_empty() {
-                    self.undo.push(Undo::Journal(Arc::new(std::sync::Mutex::new(outcome.journal.clone()))));
+                    self.push_undo(Undo::Journal(Arc::new(std::sync::Mutex::new(outcome.journal.clone()))));
                 }
                 if outcome.cancelled && outcome.errors.is_empty() {
                     self.push_toast(Tone::Accent, if kind == Kind::Move { if outcome.errors.is_empty() { "Move cancelled — completed entries restored".into() } else { "Move cancelled — recovery needs attention".into() } } else { "Copy cancelled".into() }, None, None);
@@ -804,13 +805,25 @@ impl App {
         }
     }
 
+    /// Remember how to undo something. The history is bounded: the oldest entry is dropped
+    /// and whatever it kept for undo (replaced files) is deleted in the background.
+    pub(crate) fn push_undo(&mut self, u: Undo) {
+        self.undo.push(u);
+        if self.undo.len() > UNDO_LIMIT {
+            let old = self.undo.remove(0);
+            std::thread::spawn(move || old.discard());
+        }
+    }
+
     /// Before items disappear, put the cursor on the next item that stays.
     fn select_after_removal(&mut self) {
         let pane = self.pane_mut();
         let Some(l) = pane.loaded.clone() else { return };
-        let sel = pane.selected_entries();
         let start = pane.cursor.unwrap_or(0);
-        let keep = (start..pane.order.len()).chain((0..start).rev()).map(|p| pane.order[p] as usize).find(|i| !sel.contains(i) && Some(*i) != pane.cursor.and_then(|c| pane.entry_at(c)));
+        let current = pane.cursor.and_then(|c| pane.entry_at(c));
+        // The selection bitset answers "is it selected?" directly (a Vec scan per position
+        // was O(n²) after Select all).
+        let keep = (start..pane.order.len()).chain((0..start).rev()).map(|p| pane.order[p] as usize).find(|&i| !file_list::is_selected(&pane.selected, i) && Some(i) != current);
         if let Some(i) = keep {
             pane.reveal = vec![l.listing.name(i).to_os_string()];
         }
@@ -833,6 +846,9 @@ fn focus_rename(value: &str, is_dir: bool) -> Task<Message> {
     let stem = if is_dir { chars } else { value.rfind('.').filter(|&p| p > 0).map(|p| value[..p].chars().count()).unwrap_or(chars) };
     Task::batch([iced::widget::operation::focus(RENAME_ID), iced::widget::operation::select_range(RENAME_ID, 0, stem)])
 }
+
+/// Undo steps kept per session.
+const UNDO_LIMIT: usize = 50;
 
 static ACTIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 pub(crate) fn busy() -> bool { ACTIVE.load(Ordering::Acquire) != 0 }

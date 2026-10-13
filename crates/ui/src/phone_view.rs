@@ -209,7 +209,7 @@ impl App {
                 let storage = self.phone_storage().map(Path::to_path_buf);
                 let files_active = !pane.special() && storage.as_ref().is_some_and(|s| pane.location.starts_with(s));
                 col = col.push(self.phone_sub("folder", "Files", pm(PhoneMsg::Files(Want::Files)), files_active, None));
-                let new = self.photos_new().len();
+                let new = self.photos_new_count();
                 col = col.push(self.phone_sub("image", "Photos", pm(PhoneMsg::Open(PhonePage::Photos)), pane.phone == Some(PhonePage::Photos), (new > 0).then(|| format!("{new} new"))));
             }
         }
@@ -492,7 +492,7 @@ impl App {
             gauges = gauges.push(self.gauge("sd-card", "Storage", num, &unit, 1.0 - free as f32 / total.max(1) as f32, p.accent, format!("of {t}"), None));
         }
         if self.settings.phone.files {
-            let new = self.photos_new().len();
+            let new = self.photos_new_count();
             let (value, sub) = match &self.phone.photos {
                 Some(Ok(_)) if new > 0 => (new.to_string(), "Import →".to_string()),
                 Some(Ok(v)) => (v.len().to_string(), "All imported · open →".to_string()),
@@ -546,7 +546,7 @@ impl App {
             Some(Ok(v)) => format!("{} photos and videos", v.len()),
             _ => "Your phone's photos, by day".into(),
         };
-        let new = self.photos_new().len();
+        let new = self.photos_new_count();
         let tiles = column![
             row![
                 self.feature_tile("folder", "Files", "Internal storage".into(), None, !s.files, if s.files { pm(PhoneMsg::Files(Want::Files)) } else { Message::Settings(crate::settings::SettingsMsg::OpenPage(crate::settings::Page::Phone)) }),
@@ -722,7 +722,7 @@ impl App {
                 return container(column![w::glyph(&self.icons, "sync", 24.0, color(p.info.ink)), self.pt(msg, style::BODY, p.ink_muted)].spacing(style::SPACE_4).align_x(Alignment::Center)).center(Length::Fill).into();
             }
         };
-        let new = self.photos_new().len();
+        let new = self.photos_new_count();
         let f = self.phone.photo_filter;
         let filters = [("All", None), ("Camera", Some(Source::Camera)), ("Screenshots", Some(Source::Screenshots)), ("Chats", Some(Source::Chats))];
         let opts: Vec<(&str, Message)> = filters.iter().map(|(l, s)| (*l, pm(PhoneMsg::PhotosFilter(*s)))).collect();

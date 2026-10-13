@@ -17,6 +17,24 @@ object Files : Plugin {
         require(target == base || target.path.startsWith(base.path + "/")) { "Outside shared storage" }
         return target
     }
+    private class Snapshot(val dir: File, val stamp: Long, val made: Long, val files: List<File>)
+    @Volatile private var snapshot: Snapshot? = null
+
+    /** The sorted entries of [dir]. Later pages reuse the first page's snapshot while the
+     *  folder is unchanged, rather than listing, checking and sorting it again per page. */
+    private fun listing(dir: File, fresh: Boolean): List<File> {
+        val stamp = dir.lastModified()
+        if (!fresh) snapshot?.takeIf { it.dir == dir && it.stamp == stamp && System.currentTimeMillis() - it.made < 60_000 }?.let { return it.files }
+        val base = root()
+        // Only a symlink can lead outside shared storage; plain entries of a resolved folder
+        // are already inside it.
+        val files = dir.listFiles().orEmpty().filter { f ->
+            !java.nio.file.Files.isSymbolicLink(f.toPath()) || runCatching { resolve(f.relativeTo(base).path) == f.absoluteFile }.getOrDefault(false)
+        }.sortedBy { it.name }
+        snapshot = Snapshot(dir, stamp, System.currentTimeMillis(), files)
+        return files
+    }
+
     override fun onPacket(ctx: Context, laptop: String, type: String, body: JSONObject) {
         if (!Prefs.on(ctx, "files") || !allowed()) {
             Connect.send(type, JSONObject().put("requestId", body.optString("requestId")).put("error", "Enable Files and All files access on your phone"), laptop)
@@ -26,8 +44,8 @@ object Files : Plugin {
             try { when (type) {
                 "kdeconnect.sftp.request" -> Connect.startSftp(laptop, listOf(root().path), listOf("Internal storage"))
                 "echofiles.files.list" -> {
-                    val files = resolve(body.optString("path")).listFiles().orEmpty().filter { runCatching { resolve(it.relativeTo(root()).path) == it.absoluteFile }.getOrDefault(false) }.sortedBy { it.name }
                     val offset = body.optInt("offset").coerceAtLeast(0)
+                    val files = listing(resolve(body.optString("path")), offset == 0)
                     val entries = JSONArray()
                     files.drop(offset).take(500).forEach { entries.put(JSONObject().put("name", it.name).put("path", it.relativeTo(root()).path).put("directory", it.isDirectory).put("size", it.length()).put("modified", it.lastModified())) }
                     Connect.send("echofiles.files.list", JSONObject().put("requestId", body.optString("requestId")).put("path", body.optString("path")).put("entries", entries).put("next", if (offset + 500 < files.size) offset + 500 else -1), laptop)

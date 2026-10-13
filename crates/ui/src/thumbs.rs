@@ -254,6 +254,29 @@ fn write_cached(file: &Path, px: &Pixels, uri: &str, mtime: i64) {
 }
 
 fn decode(p: &Path) -> Option<Pixels> {
+    // Big JPEGs (photos): their 1/8-scale DC image is enough for a thumbnail and many
+    // times faster to get than a full decode.
+    if matches!(ext(p).as_str(), "jpg" | "jpeg" | "jfif")
+        && std::fs::metadata(p).is_ok_and(|m| m.len() <= 64 << 20)
+        && let Ok(data) = std::fs::read(p)
+    {
+        // The camera's own preview, when it is big enough and has the photo's shape (an
+        // edited photo can keep a stale one; then the shapes usually differ).
+        if let (Some(t), Some((w, h))) = (crate::jpeg::exif_thumbnail(&data), crate::jpeg::dimensions(&data))
+            && let Ok(img) = image::load_from_memory_with_format(t, image::ImageFormat::Jpeg)
+            && img.width().max(img.height()) >= SIZE
+            && ((img.width() as f64 / img.height().max(1) as f64) - (w as f64 / h.max(1) as f64)).abs() < 0.02
+        {
+            let t = img.thumbnail(SIZE, SIZE).to_rgba8();
+            return Some(Pixels { width: t.width(), height: t.height(), rgba: std::sync::Arc::new(t.into_raw()) });
+        }
+        if let Some(small) = crate::jpeg::decode_eighth(&data)
+            && small.width.max(small.height) >= SIZE
+        {
+            let (width, height, rgba) = crate::jpeg::shrink(&small, SIZE);
+            return Some(Pixels { width, height, rgba: std::sync::Arc::new(rgba) });
+        }
+    }
     let mut reader = image::ImageReader::open(p).ok()?.with_guessed_format().ok()?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(128 << 20);
@@ -287,7 +310,7 @@ fn run_thumbnailer(p: &Path, uri: &str, cancel: &AtomicBool) -> Option<Pixels> {
 pub fn load_cancellable(p: &Path, mtime: i64, cancel: &AtomicBool) -> Option<Pixels> {
     if cancel.load(Ordering::Relaxed) { return None; }
     let u = uri(p);
-    let name = format!("{:x}.png", md5::compute(u.as_bytes()));
+    let name = format!("{}.png", crate::codec::md5_hex(u.as_bytes()));
     let base = cache_dir();
     for size in ["normal", "large", "x-large"] {
         if let Some(px) = read_cached(&base.join(size).join(&name), mtime) {
