@@ -11,6 +11,8 @@
 
 mod actions;
 mod app;
+mod app_index;
+mod app_search;
 mod codec;
 mod connect;
 mod drives;
