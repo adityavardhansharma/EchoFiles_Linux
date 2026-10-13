@@ -30,7 +30,9 @@ divan = "0.1"
 [profile.release]
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+# Unwind, not abort: the app answers `ef` in-process, and `catch_unwind` around each
+# request keeps a bug in one query from closing the file manager.
+panic = "unwind"
 strip = true
 opt-level = 3
 

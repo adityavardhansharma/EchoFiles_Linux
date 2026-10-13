@@ -156,7 +156,7 @@ pub fn grant_clipboard(address: &str, code: &str, connect: &str) -> Result<(), S
     result.map(|_| ())
 }
 
-pub fn lock() { let _ = std::process::Command::new("loginctl").arg("lock-session").spawn(); }
+pub fn lock() { let _ = crate::system::spawn_detached(std::process::Command::new("loginctl").arg("lock-session")); }
 
 pub fn otp(text: &str) -> Option<String> {
     let lower = text.to_lowercase();
