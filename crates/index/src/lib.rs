@@ -333,10 +333,28 @@ impl Index {
         let ndirs = crawl.next_dir.load(Ordering::Relaxed) as usize;
         let batches = crawl.batches.into_inner().unwrap();
         let mut idx = assemble(root.to_path_buf(), &batches, ndirs);
+        // Offsets past 4 GiB would have wrapped while assembling; refuse the result.
+        if !idx.fits() {
+            return Err(too_large());
+        }
         idx.stats.unreadable = crawl.unreadable.load(Ordering::Relaxed);
         idx.stats.excluded = crawl.excluded.load(Ordering::Relaxed);
         idx.opts = opts.clone();
         Ok(idx)
+    }
+}
+
+/// The file format addresses entries and name bytes with `u32` (and reserves `NONE`).
+const LIMIT: usize = NONE as usize - 1;
+
+fn too_large() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "too many files to index in one place (an index holds at most 4 GiB of names); exclude some folders inside it")
+}
+
+impl Index {
+    /// Every id and offset fits the `u32` fields.
+    fn fits(&self) -> bool {
+        self.parent.len() <= LIMIT && self.names.len() <= LIMIT && self.folded.len() <= LIMIT
     }
 }
 
@@ -518,6 +536,10 @@ impl Index {
             match Index::crawl(&self.path(id), &self.opts, true) {
                 Ok(sub) => {
                     let stats = sub.stats;
+                    let grow = |a: usize, b: usize| a.checked_add(b).is_none_or(|v| v > LIMIT);
+                    if grow(self.len(), sub.len()) || grow(self.names.len(), sub.names.len()) || grow(self.folded.len(), sub.folded.len()) {
+                        return Err(too_large());
+                    }
                     self.splice(id, &sub);
                     return Ok(stats);
                 }
