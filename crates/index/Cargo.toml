@@ -25,7 +25,7 @@ mimalloc.workspace = true
 
 [[bin]]
 name = "ef"
-path = "src/bin/ef.rs"
+path = "src/bin/ef/main.rs"
 
 [[bench]]
 name = "search"

@@ -1,0 +1,55 @@
+ef — EchoFiles file search: fd's options, the index's speed, and answers built for agents.
+
+FIND
+  ef find PATTERN [PATH…] [options]   best matches first, absolute paths
+  ef PATTERN …                        same as ef find
+  ef fd …                             fd's exact defaults and output (drop-in for fd)
+
+  With no PATH, searches every indexed folder (and phones). The index answers in
+  milliseconds; folders outside it (or --live) are read from disk.
+
+  Patterns     words by default: all must appear, any order, ignoring case and accents
+               ("resume" finds "Résumé"); "quoted phrase"; '*' for everything
+    -r, --regex          regular expression        -g, --glob   glob (*.rs, test_*.py)
+    -F, --fixed-strings  literal text              -p, --full-path  match the whole path
+    -s / -i              case-sensitive / -insensitive (default: smart case)
+    --and PATTERN        another pattern that must also match
+  Filters
+    -e, --ext EXT        extension (repeatable)    -t, --type f|d|l|x|e|s|p|b|c
+    --files / --dirs     not folders / folders     -S, --size +1m|-500k|10KiB
+    --changed-within 2d  --changed-before 2024-01-05   -o, --owner user[:group]
+    -d, --max-depth N    --min-depth N  --exact-depth N
+  What's searched
+    -H, --hidden         include dotfiles          -I, --no-ignore  include .gitignored
+    -u                   both (-H -I)              -E, --exclude GLOB
+    --no-ignore-vcs  --no-require-git  --no-ignore-parent  --ignore-file F
+    --ignore-contain NAME   skip folders holding NAME
+    -L, --follow         follow symlinks           --one-file-system
+    --prune              don't descend into matched folders
+    --here               current folder            --project  current project root
+    --live / --indexed   force reading the disk / trust the index
+  Output
+    -n, --limit N        best N (default: all)     --count     just the number
+    --json               JSON with size, date, source and freshness
+    --details            add size, line count and tags (binary, lockfile, generated…)
+    --budget TOKENS      fit the output in ~TOKENS; the rest becomes a summary
+    --summary            where the results are, by folder and type
+    --sort rank|path|name|size|modified        -v   say where answers came from
+    -0, -l, -a, --relative, --format TEMPLATE, --color, --hyperlink, --path-separator
+    -x CMD ;  -X CMD ;   run a command per result / for all ({} {/} {//} {.} {/.})
+    -q                   exit 0 if anything matches, 1 if not
+
+  When nothing matches, ef says why on stderr: what would match with -H, -I, without
+  a filter, as a glob or regex — and close names ("did you mean").
+
+MORE
+  ef why PATH            why a file does or doesn't show up (hidden, which ignore rule,
+                         index status)
+  ef recent [PATH] [--within 1d] [-n 20]   files changed recently, newest first
+  ef related FILE        its tests, header/source, styles, docs, same-named files
+  ef map [PATH] [--depth 2]   the shape of a folder: biggest parts, counts and sizes
+  ef mark [PATH]  →  ef changed --since ID   what was added, removed or modified
+  ef wait PATTERN [PATH] [--timeout 2m]      block until a match appears
+  ef batch -c 'find x' -c 'recent'           several commands in one call (or stdin)
+  ef dupes [PATH] [--min-size 1k]            identical files, biggest waste first
+  ef index [PATH] [--all]   re-index          ef status   what's indexed, how fresh

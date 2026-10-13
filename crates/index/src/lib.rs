@@ -15,6 +15,7 @@
 //! then prefix, then word start, then anywhere; shorter names first within each group.
 
 pub use ef_config as config;
+pub mod cli;
 pub mod corpus;
 pub mod filter;
 pub mod find;
@@ -25,6 +26,7 @@ pub mod glob;
 pub mod live;
 mod matcher;
 pub mod pattern;
+pub mod suggest;
 pub mod units;
 mod walk;
 mod store;

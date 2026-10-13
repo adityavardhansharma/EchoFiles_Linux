@@ -1,0 +1,21 @@
+ef fd — fd's interface on EchoFiles' engine: same options, same defaults, same output.
+Indexed folders are answered from the index; everything else is read live.
+
+usage: ef fd [OPTIONS] [PATTERN] [PATH…]
+
+  PATTERN is a regex (smart case) matched against file names. Hidden files and files
+  in .gitignore/.ignore/.fdignore are skipped unless -H / -I / -u.
+
+  -H, --hidden  -I, --no-ignore  -u, --unrestricted  --no-ignore-vcs  --no-require-git
+  --no-ignore-parent  --no-global-ignore-file  --ignore-file PATH  --ignore-contain NAME
+  -s, --case-sensitive  -i, --ignore-case  -g, --glob  --regex  -F, --fixed-strings
+  --and PATTERN  -a, --absolute-path  -l, --list-details  -L, --follow  -p, --full-path
+  -d, --max-depth N  --min-depth N  --exact-depth N  -E, --exclude GLOB  --prune
+  -t, --type f|d|l|x|e|s|p|b|c  -e, --extension EXT  -S, --size [+-]N[bkmgt][i]
+  --changed-within T  --changed-before T  -o, --owner [!]user[:[!]group]
+  -x, --exec CMD [;]  -X, --exec-batch CMD [;]  --batch-size N  -j, --threads N
+  -0, --print0  --max-results N  -1  -q, --quiet  --show-errors  --base-directory DIR
+  --path-separator SEP  --format TEMPLATE  -c, --color auto|always|never
+  --hyperlink[=WHEN]  --strip-cwd-prefix[=WHEN]  --one-file-system  -h  -V
+
+  Run `ef help` for what ef adds (--json, --budget, ef why, ef recent, …).
