@@ -40,7 +40,7 @@ fn simultaneous_publication_keeps_mappings_immutable() {
 fn cli_wildcard_scoped_overlap_and_global_limit() {
     let root = tempfile::tempdir().unwrap(); let parent = root.path().join("files"); let child = parent.join("skip"); fs::create_dir_all(&child).unwrap();
     for i in 0..305 { fs::write(parent.join(format!("some-report-{i}")), b"").unwrap(); } fs::write(child.join("report"), b"").unwrap();
-    let mut cfg = ef_config::Settings::default(); cfg.search.roots = vec![parent.display().to_string(), child.display().to_string()]; cfg.search.exclude_names = vec!["skip".into()];
+    let mut cfg = ef_config::Settings::default(); cfg.search.roots = vec![parent.display().to_string(), child.display().to_string()]; cfg.search.exclude_names = vec!["skip".into()]; cfg.search.index_drives = false;
     cfg.save_to(&root.path().join("config/echofiles/settings.toml")).unwrap();
     let command = |args: &[&str]| {
         let out = std::process::Command::new(env!("CARGO_BIN_EXE_ef")).args(args).env("XDG_CONFIG_HOME", root.path().join("config")).env("XDG_CACHE_HOME", root.path().join("cache")).output().unwrap();

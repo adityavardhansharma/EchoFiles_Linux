@@ -8,7 +8,7 @@ license.workspace = true
 name = "ef_index"
 
 [dependencies]
-rustix = { workspace = true, features = ["net", "process", "mm"] }
+rustix = { workspace = true, features = ["net", "process", "mm", "system"] }
 rayon.workspace = true
 memchr = "2.8"
 ef-config.workspace = true

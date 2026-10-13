@@ -45,7 +45,8 @@ pub struct Search {
     /// Stop after this many hits (only when results aren't ranked).
     pub max_results: Option<usize>,
     pub show_errors: bool,
-    pub cancel: AtomicBool,
+    /// Set to stop the search early (from another thread).
+    pub cancel: Arc<AtomicBool>,
     pub threads: Option<usize>,
     /// Compute rank keys (only ranked output needs them).
     pub rank: bool,
@@ -66,6 +67,12 @@ pub struct RootSpec<'a> {
     pub lookup: PathBuf,
     /// The index to answer from, if any.
     pub index: Option<&'a MappedIndex>,
+    /// Leave out what the index leaves out (Settings → Search exclusions), also where the
+    /// folder is read live: what the app's search shows. `None`: every entry, like fd.
+    pub exclusions: Option<Options>,
+    /// Ranked search shown only in part: keep just the best this many hits from the index
+    /// (counting the rest in [`Outcome::dropped`]) instead of building every path.
+    pub keep_best: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +90,8 @@ pub struct Outcome {
     pub errors: Vec<String>,
     /// Indexed hits that no longer exist on disk (dropped).
     pub vanished: usize,
+    /// Matches counted but not kept (see [`RootSpec::keep_best`]).
+    pub dropped: usize,
 }
 
 struct Hole {
@@ -114,15 +123,23 @@ pub fn run(s: &Search, roots: &[RootSpec]) -> Outcome {
             let globals = Arc::new(Globals::new(s.ignore.clone(), root, &s.excludes, &s.ignore_files));
             let base = Stack::root(root, globals.clone(), None);
             let root_dev = rustix::fs::stat(root.as_path()).map(|st| st.st_dev).unwrap_or(0);
-            let walk = Walk::new(s, i as u16, root_dev, &found, &stop, &errors);
+            let mut walk = Walk::new(s, i as u16, root_dev, &found, &stop, &errors);
+            walk.skip = spec.exclusions.as_ref();
             let scope_id = spec.index.and_then(|m| m.lookup(&spec.lookup).filter(|&id| m.kind(id) == Kind::Dir));
             let (source, holes) = match (spec.index, scope_id) {
                 (Some(m), Some(id)) => {
                     let mut hits = Vec::new();
                     let mut holes = Vec::new();
                     let vanished = AtomicUsize::new(0);
-                    index_walk(s, m.view(), m.options(), id, &root_abs, base, i as u16, &found, &stop, &vanished, &mut hits, &mut holes);
+                    let dropped = AtomicUsize::new(0);
+                    let tally = Tally { vanished: &vanished, dropped: &dropped, keep: spec.keep_best, holes: spec.exclusions.is_none() };
+                    index_walk(s, m.view(), m.options(), id, &root_abs, base, i as u16, &found, &stop, &tally, &mut hits, &mut holes);
                     out.vanished += vanished.into_inner();
+                    out.dropped += dropped.into_inner();
+                    if spec.exclusions.is_some() {
+                        // What the index skipped stays skipped.
+                        holes.clear();
+                    }
                     let n = holes.len();
                     walk.hits.lock().unwrap().push(std::mem::take(&mut hits));
                     rayon::scope(|sc| {
@@ -251,6 +268,8 @@ struct IndexWalk<'a> {
     s: &'a Search,
     v: View<'a>,
     opts: &'a Options,
+    /// Look for folders the index skipped (to read them live); off when they stay out.
+    holes: bool,
 }
 
 impl IndexWalk<'_> {
@@ -283,7 +302,8 @@ impl IndexWalk<'_> {
 
     /// Hidden, ignore rules, `--ignore-contain`, max depth. `None` if `id` is out (and, for
     /// a folder, everything below it).
-    fn admit(&self, p: &DirState, id: u32) -> Option<(Vec<u8>, bool)> {
+    /// The entry's path comes back only if it had to be built.
+    fn admit(&self, p: &DirState, id: u32) -> Option<(Option<Vec<u8>>, bool)> {
         let f = &self.s.filters;
         let name = self.v.name(id);
         let is_dir = self.v.kind(id) == Kind::Dir;
@@ -295,6 +315,9 @@ impl IndexWalk<'_> {
         }
         if f.max_depth.is_some_and(|m| p.depth + 1 > m) {
             return None;
+        }
+        if !ignoring && (!is_dir || f.ignore_contain.is_empty()) {
+            return Some((None, is_dir));
         }
         let abs = join(&p.abs, name);
         if ignoring {
@@ -313,7 +336,7 @@ impl IndexWalk<'_> {
                 return None;
             }
         }
-        Some((abs, is_dir))
+        Some((Some(abs), is_dir))
     }
 
     /// Whether the index left out this folder's contents (excluded name or cache folder).
@@ -343,7 +366,7 @@ impl IndexWalk<'_> {
         let depth = p.depth + 1;
         let open = f.max_depth.is_none_or(|m| depth < m) && !(matched && f.prune);
         let stack = if open { self.rules(id, &abs, &p.stack) } else { p.stack.clone() };
-        if open {
+        if open && self.holes {
             for name in self.missing_children(&abs) {
                 holes.push(Hole { path: abs.clone(), entry: Some(name), depth, stack: stack.clone() });
             }
@@ -366,18 +389,18 @@ fn index_walk(
     root: u16,
     found: &AtomicUsize,
     stop: &AtomicBool,
-    vanished: &AtomicUsize,
+    tally: &Tally,
     hits: &mut Vec<Hit>,
     holes: &mut Vec<Hole>,
 ) {
-    let w = IndexWalk { s, v, opts };
+    let w = IndexWalk { s, v, opts, holes: tally.holes };
     let f = &s.filters;
     let root_stack = w.rules(scope, scope_abs, &base);
     let states = vec![DirState { id: scope, end: v.end[scope as usize], abs: scope_abs.to_vec(), depth: 0, stack: root_stack, open: true }];
-    for name in w.missing_children(scope_abs) {
+    for name in w.missing_children(scope_abs).into_iter().filter(|_| w.holes) {
         holes.push(Hole { path: scope_abs.to_vec(), entry: Some(name), depth: 0, stack: states[0].stack.clone() });
     }
-    if w.is_hole(scope, scope_abs) {
+    if w.holes && w.is_hole(scope, scope_abs) {
         holes.push(Hole { path: scope_abs.to_vec(), entry: None, depth: 0, stack: states[0].stack.clone() });
     }
     let (first, last) = (scope + 1, v.end[scope as usize]);
@@ -391,39 +414,14 @@ fn index_walk(
         .filter_map(|p| p.prefilter().map(<[u8]>::to_vec))
         .chain(f.exts.iter().filter(|e| e.is_ascii()).map(|e| [b".".as_slice(), &e.to_ascii_lowercase()].concat()).take((f.exts.len() == 1) as usize))
         .max_by_key(Vec::len);
-    let candidates: Option<Vec<u32>> = match &literal {
-        Some(lit) => {
-            let lo = v.foff[first as usize] as usize;
-            let hay = &v.folded[lo..v.foff[last as usize] as usize];
-            let finder = memchr::memmem::Finder::new(lit);
-            let foff = v.foff;
-            let mut cur = first as usize;
-            let mut prev = usize::MAX;
-            let mut ids = Vec::new();
-            for pos in finder.find_iter(hay) {
-                let abs = (lo + pos) as u32;
-                if abs >= foff[cur + 1] {
-                    cur += foff[cur + 1..=last as usize].partition_point(|&o| o <= abs);
-                }
-                if cur != prev && cur < last as usize {
-                    ids.push(cur as u32);
-                    prev = cur;
-                }
-            }
-            Some(ids)
-        }
-        None => None,
-    };
-    // Split the candidates into chunks walked in parallel; each chunk rebuilds the folder
-    // states it needs from the scope down, so chunks are independent.
+    let finder = literal.as_ref().map(|l| memchr::memmem::Finder::new(l));
+    // Split the id range into chunks searched in parallel; each finds its own candidates
+    // (names containing the literal, one SIMD scan of its slice of the folded arena) and
+    // rebuilds the folder states it needs from the scope down, so chunks are independent.
     let threads = rayon::current_num_threads().max(1);
-    let ids: Vec<u32> = match candidates {
-        Some(v) => v,
-        None => Vec::new(),
-    };
-    let total = if literal.is_some() { ids.len() } else { (last - first) as usize };
-    let per = total.div_ceil(threads * 4).max(4096);
-    let ranges: Vec<(usize, usize)> = (0..total).step_by(per).map(|a| (a, (a + per).min(total))).collect();
+    let span = (last - first) as usize;
+    let per = span.div_ceil(threads * 4).max(4096);
+    let ranges: Vec<(u32, u32)> = (first..last).step_by(per).map(|a| (a, (a as usize + per).min(last as usize) as u32)).collect();
     let root_state = &states[0];
     let parts: Vec<(Vec<Hit>, Vec<Hole>)> = ranges
         .into_par_iter()
@@ -431,16 +429,34 @@ fn index_walk(
             let mut hits = Vec::new();
             let mut holes = Vec::new();
             let mut st = vec![root_state.clone()];
-            if literal.is_some() {
-                walk_chunk(&w, ids[a..b].iter().copied(), &mut st, root, found, stop, &mut hits, &mut holes);
-            } else {
-                walk_chunk(&w, first + a as u32..first + b as u32, &mut st, root, found, stop, &mut hits, &mut holes);
+            match &finder {
+                Some(finder) => {
+                    let lo = v.foff[a as usize] as usize;
+                    let hay = &v.folded[lo..v.foff[b as usize] as usize];
+                    let foff = v.foff;
+                    let mut cur = a as usize;
+                    let mut prev = usize::MAX;
+                    let ids = finder.find_iter(hay).filter_map(move |pos| {
+                        let at = (lo + pos) as u32;
+                        if at >= foff[cur + 1] {
+                            cur += foff[cur + 1..=b as usize].partition_point(|&o| o <= at);
+                        }
+                        (cur != prev && cur < b as usize).then(|| {
+                            prev = cur;
+                            cur as u32
+                        })
+                    });
+                    walk_chunk(&w, ids, &mut st, root, found, stop, tally, &mut hits, &mut holes);
+                }
+                None => walk_chunk(&w, a..b, &mut st, root, found, stop, tally, &mut hits, &mut holes),
             }
-            // The index may be stale: check this chunk's hits against the disk now, in
-            // parallel with the other chunks.
-            vanished.fetch_add(verify(s, &mut hits), Ordering::Relaxed);
-            if let Some(sink) = &s.sink {
-                sink.take(std::mem::take(&mut hits));
+            if tally.keep.is_none() {
+                // The index may be stale: check this chunk's hits against the disk now, in
+                // parallel with the other chunks.
+                tally.vanished.fetch_add(verify(s, &mut hits), Ordering::Relaxed);
+                if let Some(sink) = &s.sink {
+                    sink.take(std::mem::take(&mut hits));
+                }
             }
             (hits, holes)
         })
@@ -449,24 +465,91 @@ fn index_walk(
         hits.append(&mut h);
         holes.append(&mut o);
     }
+    if let Some(k) = tally.keep {
+        tally.dropped.fetch_add(keep_best(hits, k), Ordering::Relaxed);
+        // A few hundred hits: one parallel `lstat` each, keeping what it returns.
+        let before = hits.len();
+        hits.par_iter_mut().for_each(|h| {
+            if h.meta.is_none() {
+                match Probe::new(None, &[], &h.path).lstat() {
+                    Some(m) => h.meta = Some(Box::new(m)),
+                    None => h.path.clear(),
+                }
+            }
+        });
+        hits.retain(|h| !h.path.is_empty());
+        tally.vanished.fetch_add(before - hits.len(), Ordering::Relaxed);
+        if let Some(sink) = &s.sink {
+            sink.take(std::mem::take(hits));
+        }
+    }
+}
+
+/// Counters shared by the chunks of one indexed root.
+struct Tally<'a> {
+    vanished: &'a AtomicUsize,
+    dropped: &'a AtomicUsize,
+    keep: Option<usize>,
+    holes: bool,
+}
+
+/// Keep the best `k` hits (by rank, then path); returns how many were removed.
+fn keep_best(hits: &mut Vec<Hit>, k: usize) -> usize {
+    if hits.len() <= k {
+        return 0;
+    }
+    let n = hits.len();
+    if k == 0 {
+        hits.clear();
+        return n;
+    }
+    hits.select_nth_unstable_by(k - 1, |a, b| (a.rank, &a.path).cmp(&(b.rank, &b.path)));
+    hits.truncate(k);
+    n - k
+}
+
+/// What [`hit_for`] decided about one entry.
+enum Judged {
+    No,
+    /// A match, but ranked below the hits already kept.
+    Counted,
+    Hit(Hit),
 }
 
 /// Judge and collect one entry whose parent folder state is `p`.
-fn hit_for(w: &IndexWalk, c: u32, abs: &[u8], d: u32, root: u16) -> Option<Hit> {
+///
+/// `abs` is the entry's path if the caller already built it; otherwise it is built only
+/// when a filter needs it or the hit is kept (most matches of a broad ranked search are
+/// counted, never turned into a path). Hits ranked worse than `cutoff` are only counted.
+fn hit_for(w: &IndexWalk, c: u32, abs: Option<&[u8]>, parent: &[u8], d: u32, root: u16, cutoff: u64) -> Judged {
     let f = &w.s.filters;
     if d < f.min_depth {
-        return None;
+        return Judged::No;
     }
     let v = &w.v;
     let name = v.name(c);
     let folded = v.folded_name(c as usize);
+    let listed = FType::from_kind(v.kind(c));
+    let built;
+    let abs: &[u8] = match abs {
+        Some(a) => a,
+        None if f.needs_path() || f.needs_stat() || listed == FType::Unknown => {
+            built = join(parent, name);
+            &built
+        }
+        None => &[],
+    };
     if !f.name_ok(name, Some(folded), abs) {
-        return None;
+        return Judged::No;
     }
     let mut probe = Probe::new(None, name, abs);
-    let (ft, meta) = f.rest_ok(FType::from_kind(v.kind(c)), &mut probe)?;
+    let Some((ft, meta)) = f.rest_ok(listed, &mut probe) else { return Judged::No };
     let rank = if w.s.rank { f.rank(name, Some(folded)) } else { 0 };
-    Some(Hit { path: abs.to_vec(), root, depth: d, ftype: ft, meta: meta.map(Box::new), rank })
+    if rank > cutoff {
+        return Judged::Counted;
+    }
+    let path = if abs.is_empty() { join(parent, name) } else { abs.to_vec() };
+    Judged::Hit(Hit { path, root, depth: d, ftype: ft, meta: meta.map(Box::new), rank })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -477,11 +560,14 @@ fn walk_chunk(
     root: u16,
     found: &AtomicUsize,
     stop: &AtomicBool,
+    tally: &Tally,
     hits: &mut Vec<Hit>,
     holes: &mut Vec<Hole>,
 ) {
     let (s, v, f) = (w.s, &w.v, &w.s.filters);
     let mut next = 0;
+    // With `keep`, hits past the best `k` so far are only counted.
+    let mut cutoff = u64::MAX;
     for c in candidates {
         if c < next {
             continue;
@@ -510,8 +596,9 @@ fn walk_chunk(
             }
             match w.admit(p, a) {
                 Some((abs, _)) => {
+                    let abs = abs.unwrap_or_else(|| join(&p.abs, v.name(a)));
                     // A pruned ancestor (matched in another chunk) must stay closed here too.
-                    let matched = f.prune && hit_for(w, a, &abs, p.depth + 1, root).is_some();
+                    let matched = f.prune && !matches!(hit_for(w, a, Some(&abs), &p.abs, p.depth + 1, root, u64::MAX), Judged::No);
                     let st = w.open_dir(p, a, abs, matched, holes);
                     states.push(st);
                 }
@@ -535,18 +622,32 @@ fn walk_chunk(
             continue;
         };
         let d = p.depth + 1;
-        let hit = hit_for(w, c, &abs, d, root);
-        let matched = hit.is_some();
-        if let Some(h) = hit {
-            hits.push(h);
-            if let Some(max) = s.max_results
-                && found.fetch_add(1, Ordering::Relaxed) + 1 >= max
-            {
-                stop.store(true, Ordering::Relaxed);
-                return;
+        let abs = if is_dir { Some(abs.unwrap_or_else(|| join(&p.abs, v.name(c)))) } else { abs };
+        let matched = match hit_for(w, c, abs.as_deref(), &p.abs, d, root, cutoff) {
+            Judged::No => false,
+            Judged::Counted => {
+                tally.dropped.fetch_add(1, Ordering::Relaxed);
+                true
             }
-        }
+            Judged::Hit(h) => {
+                hits.push(h);
+                if let Some(k) = tally.keep
+                    && hits.len() >= 2 * k.max(1)
+                {
+                    tally.dropped.fetch_add(keep_best(hits, k), Ordering::Relaxed);
+                    cutoff = hits.iter().map(|h| h.rank).max().unwrap_or(u64::MAX);
+                }
+                if let Some(max) = s.max_results
+                    && found.fetch_add(1, Ordering::Relaxed) + 1 >= max
+                {
+                    stop.store(true, Ordering::Relaxed);
+                    return;
+                }
+                true
+            }
+        };
         if is_dir {
+            let abs = abs.unwrap();
             let st = w.open_dir(p, c, abs, matched, holes);
             if !st.open {
                 next = st.end;

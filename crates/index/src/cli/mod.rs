@@ -23,6 +23,7 @@ pub mod args;
 pub mod exec;
 pub mod find;
 pub mod output;
+pub mod query;
 pub mod server;
 pub mod tools;
 
@@ -90,8 +91,17 @@ pub fn help(ctx: &Ctx, flavor: Flavor) {
 /// caller's environment), read stdin, or wait.
 pub fn runs_locally(argv: &[String]) -> bool {
     let cmd = argv.first().map(String::as_str).unwrap_or("");
-    matches!(cmd, "batch" | "wait" | "index")
-        || argv.iter().any(|a| a == "-x" || a == "-X" || a == "--exec" || a == "--exec-batch" || (a.starts_with('-') && !a.starts_with("--") && (a.ends_with('x') || a.ends_with('X'))))
+    if matches!(cmd, "batch" | "wait" | "index") {
+        return true;
+    }
+    // Searches that run a command (-x, -X, and -l, which runs `ls`).
+    let (flavor, rest) = match cmd {
+        "fd" => (Flavor::Fd, &argv[1..]),
+        "find" | "f" => (Flavor::Ef, &argv[1..]),
+        "why" | "map" | "tree" | "recent" | "related" | "mark" | "changed" | "dupes" | "status" | "help" | "version" => return false,
+        _ => (Flavor::Ef, argv),
+    };
+    args::parse(flavor, rest).is_ok_and(|a| a.exec.is_some() || a.list_details)
 }
 
 /// Run one `ef` command line. Returns the exit code.
@@ -127,6 +137,13 @@ pub fn run(argv: &[String], ctx: &Ctx) -> u8 {
         // `ef report` is `ef find report`.
         _ => find::main(Flavor::Ef, argv, ctx),
     }
+}
+
+/// The open index files for this process: in the app, shared by its search box and by
+/// `ef` requests, so each index is mapped and validated once.
+pub fn shared_indexes() -> Arc<find::Indexes> {
+    static SHARED: std::sync::OnceLock<Arc<find::Indexes>> = std::sync::OnceLock::new();
+    SHARED.get_or_init(Default::default).clone()
 }
 
 /// Whether `path` is under `root` (both absolute).

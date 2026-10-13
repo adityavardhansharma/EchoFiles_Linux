@@ -70,6 +70,8 @@ pub fn app_running() -> bool {
 #[derive(Default)]
 pub struct Indexes {
     slots: Mutex<Vec<Slot>>,
+    /// Fixed maps instead of the files from Settings (tests).
+    preloaded: Option<Vec<(PathBuf, Arc<MappedIndex>)>>,
 }
 
 struct Slot {
@@ -83,6 +85,9 @@ struct Slot {
 impl Indexes {
     /// (indexed folder with symlinks resolved, its index) for every usable index.
     pub fn current(&self, settings: &Settings) -> Vec<(PathBuf, Arc<MappedIndex>)> {
+        if let Some(p) = &self.preloaded {
+            return p.clone();
+        }
         if !settings.search.index {
             return Vec::new();
         }
@@ -110,6 +115,11 @@ impl Indexes {
             out.push((canon, map));
         }
         out
+    }
+
+    /// These maps, whatever Settings says (for tests).
+    pub fn preloaded(maps: Vec<(PathBuf, Arc<MappedIndex>)>) -> Indexes {
+        Indexes { slots: Mutex::default(), preloaded: Some(maps) }
     }
 
     /// How long ago the index file for `root` was last written.
@@ -145,9 +155,15 @@ pub fn build_search(a: &FindArgs) -> Result<Search, String> {
             }
         }
     }
+    // Smart case is decided once for all patterns (with `--and`), as fd does.
+    let case = match a.case {
+        crate::pattern::Case::Smart if a.pattern.iter().chain(&a.and).any(|p| crate::pattern::needs_case(p, syntax)) => crate::pattern::Case::Sensitive,
+        crate::pattern::Case::Smart => crate::pattern::Case::Insensitive,
+        c => c,
+    };
     for p in a.pattern.iter().chain(&a.and) {
         let text = if a.flavor == Flavor::Ef && p.trim() == "*" && syntax == Syntax::Words { "" } else { p.as_str() };
-        let pat = Pattern::new(text, syntax, a.case, full_path).map_err(|e| {
+        let pat = Pattern::new(text, syntax, case, full_path).map_err(|e| {
             if syntax == Syntax::Regex {
                 format!("{e}\n\nNote: search for literal text with '--fixed-strings' (-F), or for a glob with '--glob' (-g).")
             } else {
@@ -179,7 +195,7 @@ pub fn build_search(a: &FindArgs) -> Result<Search, String> {
     f.prune = a.prune;
     f.one_file_system = a.one_fs;
     f.ignore_contain = a.ignore_contain.iter().map(|s| s.as_bytes().to_vec()).collect();
-    f.want_meta = a.json || a.list_details || a.details || matches!(a.sort, Some(Sort::Size | Sort::Modified));
+    f.want_meta = a.json || a.details || matches!(a.sort, Some(Sort::Size | Sort::Modified));
     s.ignore = IgnoreOptions {
         vcs: !(a.no_ignore || a.no_ignore_vcs),
         dot: !a.no_ignore,
@@ -241,6 +257,8 @@ pub struct Ran {
     /// Hits before the result limit.
     pub total: usize,
     pub everywhere: bool,
+    /// Where all the matches are (by folder, by type), taken before `-n` cut them.
+    pub breakdown: Option<(Vec<(String, usize)>, Vec<(String, usize)>)>,
     /// The indexed folder each root was answered from (`None` when read live).
     pub index_roots: Vec<Option<PathBuf>>,
     pub stale_note: Option<String>,
@@ -308,7 +326,15 @@ pub fn run_planned(a: &FindArgs, ctx: &Ctx, s: &Search, p: Plan) -> Result<Ran, 
                 stale_note = Some(format!("index of {} (saved {age}; EchoFiles isn't running, so it may miss recent changes — add --live to read the disk)", config::tilde(m.root())));
             }
         }
-        specs.push(RootSpec { walk: walk.clone(), lookup: canon.clone(), index });
+        let exclusions = a.respect_settings.then(|| Options::from_search(&ctx.settings.search, canon));
+        // Ranked and cut to `-n`: only the best that many are needed from this root — unless
+        // another searched root overlaps it (its hits would be removed afterwards).
+        let ranked = a.flavor == Flavor::Ef && matches!(a.sort, None | Some(Sort::Rank));
+        let overlaps = p.roots.iter().filter(|(_, w, _)| w.starts_with(walk) || walk.starts_with(w)).count() > 1;
+        // Summaries describe every match, so they need them all.
+        let summarised = a.json || a.summary || a.budget.is_some();
+        let keep_best = a.max_results.filter(|_| ranked && !overlaps && !a.quiet && !a.count && !summarised);
+        specs.push(RootSpec { walk: walk.clone(), lookup: canon.clone(), index, exclusions, keep_best });
     }
     let mut outcome = engine::run(s, &specs);
     let index_roots = specs.iter().zip(&outcome.roots).map(|(sp, r)| (r.source == Source::Index).then(|| sp.index.map(|m| m.root().to_path_buf())).flatten()).collect();
@@ -321,8 +347,8 @@ pub fn run_planned(a: &FindArgs, ctx: &Ctx, s: &Search, p: Plan) -> Result<Ran, 
             })
         });
     }
-    let total = outcome.hits.len();
-    Ok(Ran { outcome, views: p.views, total, everywhere: p.everywhere, index_roots, stale_note })
+    let total = outcome.hits.len() + outcome.dropped;
+    Ok(Ran { outcome, views: p.views, total, everywhere: p.everywhere, breakdown: None, index_roots, stale_note })
 }
 
 fn relative_to(p: &Path, base: &Path) -> Vec<u8> {
@@ -371,7 +397,6 @@ struct Streamer {
     views: Vec<RootView>,
     style: Style,
     end: u8,
-    format: Option<String>,
     max: Option<usize>,
     count_only: bool,
     printed: AtomicUsize,
@@ -395,13 +420,7 @@ impl Sink for Streamer {
         }
         let mut buf = Vec::with_capacity(keep * 64);
         for h in &hits[..keep] {
-            match &self.format {
-                Some(f) => {
-                    let p = output::with_separator(output::display(h, &self.views, false), &self.style.separator);
-                    buf.extend_from_slice(&output::expand(f, &p));
-                }
-                None => output::line(h, &self.views, &self.style, &mut buf),
-            }
+            output::line(h, &self.views, &self.style, &mut buf);
             buf.push(self.end);
         }
         let ok = {
@@ -423,17 +442,27 @@ fn style(a: &FindArgs, ctx: &Ctx) -> Style {
     Style {
         trailing_slash: a.flavor == Flavor::Fd && a.format.is_none(),
         separator: a.path_separator.clone(),
-        color: color.then(|| output::LsColors::parse(ctx.ls_colors.as_deref().unwrap_or(""))),
+        color: color.then(|| output::LsColors::parse(ctx.ls_colors.as_deref())),
         hyperlink: match a.hyperlink {
             When::Always => Some(output::hostname()),
             When::Auto if ctx.out_tty => Some(output::hostname()),
             _ => None,
         },
+        format: a.format.as_deref().map(output::Template::parse),
+        tty: ctx.out_tty,
     }
 }
 
 pub fn main(flavor: Flavor, argv: &[String], ctx: &Ctx) -> u8 {
-    let a = match super::args::parse(flavor, argv) {
+    let a = match super::args::parse(flavor, argv).and_then(|mut a| {
+        // `ef find 'report ext:pdf size:>1m'`: the search-box language.
+        if flavor == Flavor::Ef
+            && let Some(p) = a.pattern.clone().filter(|p| super::query::has_filters(p))
+        {
+            super::query::apply(&p, &mut a)?;
+        }
+        Ok(a)
+    }) {
         Ok(a) => a,
         Err(e) => {
             err(ctx, flavor, e);
@@ -449,6 +478,13 @@ pub fn main(flavor: Flavor, argv: &[String], ctx: &Ctx) -> u8 {
         outln!(ctx, "ef {}", env!("CARGO_PKG_VERSION"));
         return 0;
     }
+    // fd's -l: GNU `ls -lhd` on all results at once, coloured like the rest of the output.
+    let mut a = a;
+    if a.list_details {
+        let color = if use_color(a.color, ctx) { "--color=always" } else { "--color=never" };
+        a.exec = Some(super::args::Exec { batch: true, cmd: ["ls", "-l", "-h", "-d", color].map(String::from).to_vec() });
+    }
+    let a = a;
     // `--base-directory`: a new working directory for this run only.
     let based;
     let ctx = match &a.base_dir {
@@ -502,7 +538,6 @@ pub fn main(flavor: Flavor, argv: &[String], ctx: &Ctx) -> u8 {
             views: plan.views.iter().map(|v| RootView { walk: v.walk.clone(), shown: v.shown.clone() }).collect(),
             style: style(&a, ctx),
             end: if a.print0 { 0 } else { b'\n' },
-            format: a.format.clone(),
             max: a.max_results,
             count_only: a.count,
             printed: AtomicUsize::new(0),
@@ -544,12 +579,15 @@ pub fn main(flavor: Flavor, argv: &[String], ctx: &Ctx) -> u8 {
     if flavor == Flavor::Ef {
         ran.outcome.hits.sort_unstable_by(|x, y| x.path.cmp(&y.path));
         ran.outcome.hits.dedup_by(|x, y| x.path == y.path);
-        ran.total = ran.outcome.hits.len();
+        ran.total = ran.outcome.hits.len() + ran.outcome.dropped;
     }
     sort_hits(&mut ran.outcome.hits, sort);
     if a.quiet {
         let code = if ran.outcome.hits.is_empty() { 1 } else { 0 };
         return finish(ctx, ran, code);
+    }
+    if a.json || a.summary || a.budget.is_some() {
+        ran.breakdown = Some(output::summary(&ran.outcome.hits, &ran.views));
     }
     if let Some(n) = a.max_results {
         ran.outcome.hits.truncate(n);
@@ -560,8 +598,9 @@ pub fn main(flavor: Flavor, argv: &[String], ctx: &Ctx) -> u8 {
         return finish(ctx, ran, 0);
     }
     if let Some(x) = &a.exec {
-        let paths: Vec<Vec<u8>> = ran.outcome.hits.iter().map(|h| output::with_separator(output::display(h, &ran.views, false), &a.path_separator)).collect();
-        let code = exec::run(x, &paths, a.threads, a.batch_size, a.print0, ctx);
+        // Commands get real paths: fd doesn't apply --path-separator to them.
+        let paths: Vec<Vec<u8>> = ran.outcome.hits.iter().map(|h| output::display(h, &ran.views, false)).collect();
+        let code = exec::run(x, &paths, a.path_separator.as_deref(), a.threads, a.batch_size, a.print0, ctx);
         return finish(ctx, ran, code);
     }
     let style = style(&a, ctx);
@@ -569,12 +608,9 @@ pub fn main(flavor: Flavor, argv: &[String], ctx: &Ctx) -> u8 {
     let mut shown = ran.outcome.hits.len();
     if a.json {
         agent::write_json(&a, &ran, ctx, &mut out);
-    } else if a.list_details {
-        output::list_details(&ran.outcome.hits, &ran.views, &style, &mut out);
-    } else if let Some(fmt) = &a.format {
+    } else if a.format.is_some() {
         for h in &ran.outcome.hits {
-            let p = output::with_separator(output::display(h, &ran.views, false), &a.path_separator);
-            out.extend_from_slice(&output::expand(fmt, &p));
+            output::line(h, &ran.views, &style, &mut out);
             out.push(if a.print0 { 0 } else { b'\n' });
         }
     } else {
@@ -605,7 +641,8 @@ pub fn main(flavor: Flavor, argv: &[String], ctx: &Ctx) -> u8 {
             if shown < ran.outcome.hits.len() {
                 let _ = writeln!(out, "# … showing {shown} of {} — narrow the search, or see where they are:", ran.total);
             }
-            output::write_summary(&ran.outcome.hits, &ran.views, &mut out);
+            let b = ran.breakdown.take().unwrap_or_else(|| output::summary(&ran.outcome.hits, &ran.views));
+            output::write_summary(&b, ran.total, &mut out);
         }
     }
     if ctx.write_out(&out).is_err() {

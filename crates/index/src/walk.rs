@@ -35,6 +35,8 @@ pub(crate) struct Walk<'a> {
     pub hits: Mutex<Vec<Vec<Hit>>>,
     /// Fold names (word patterns or word ranking need it).
     pub fold: bool,
+    /// Skip what these index options skip (see `RootSpec::exclusions`).
+    pub skip: Option<&'a crate::Options>,
     pub found: &'a AtomicUsize,
     pub stop: &'a AtomicBool,
     pub errors: &'a Mutex<Vec<String>>,
@@ -69,7 +71,7 @@ impl<'a> Walk<'a> {
     }
 
     pub fn new(s: &'a Search, root: u16, root_dev: u64, found: &'a AtomicUsize, stop: &'a AtomicBool, errors: &'a Mutex<Vec<String>>) -> Walk<'a> {
-        Walk { s, root, root_dev, hits: Mutex::new(Vec::new()), fold: s.filters.needs_fold(s.rank), found, stop, errors }
+        Walk { s, root, root_dev, hits: Mutex::new(Vec::new()), fold: s.filters.needs_fold(s.rank), skip: None, found, stop, errors }
     }
 
     fn error(&self, path: &[u8], e: impl std::fmt::Display) {
@@ -197,6 +199,9 @@ impl<'a> Walk<'a> {
             return;
         }
         let abs = join(path, name);
+        if self.skip.is_some_and(|o| o.excludes_path(std::path::Path::new(OsStr::from_bytes(&abs)))) {
+            return;
+        }
         let stat = |follow: bool| {
             let flags = if follow { AtFlags::empty() } else { AtFlags::SYMLINK_NOFOLLOW };
             match fd {
@@ -256,7 +261,11 @@ impl<'a> Walk<'a> {
                 }
             }
         }
+        let skipped = |o: &crate::Options| {
+            o.excludes(name) || (o.skip_cache_tagged && rustix::fs::statat(rustix::fs::CWD, OsStr::from_bytes(&join(&abs, b"CACHEDIR.TAG")), AtFlags::SYMLINK_NOFOLLOW).is_ok())
+        };
         let descend = is_dir
+            && !self.skip.is_some_and(skipped)
             && f.max_depth.is_none_or(|m| d < m)
             && !(matched && f.prune)
             && (!f.one_file_system || stat(f.follow).is_ok_and(|s| s.st_dev == self.root_dev));

@@ -149,7 +149,8 @@ impl Options {
         }
     }
 
-    fn excludes(&self, name: &[u8]) -> bool {
+    /// Whether folders named `name` have their contents skipped.
+    pub fn excludes(&self, name: &[u8]) -> bool {
         self.exclude_names.iter().any(|n| n == name)
     }
 

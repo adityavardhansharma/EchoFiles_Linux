@@ -107,6 +107,8 @@ pub struct FindArgs {
     pub here: bool,
     pub verbose: bool,
     pub details: bool,
+    /// Leave out what Settings → Search excludes from the index, even where read live.
+    pub respect_settings: bool,
     pub help: bool,
     pub version: bool,
 }
@@ -168,6 +170,7 @@ impl FindArgs {
             here: false,
             verbose: false,
             details: false,
+            respect_settings: false,
             help: false,
             version: false,
         }
@@ -227,6 +230,10 @@ pub fn parse(flavor: Flavor, argv: &[String]) -> Result<FindArgs, String> {
     let mut i = 0;
     let mut only_positional = false;
     let mut exact_depth = None;
+    // fd's pattern flags: --regex and --glob override each other (last wins); -F and
+    // --exact are separate switches.
+    let (mut glob, mut fixed, mut exact) = (None::<bool>, false, false);
+    let (mut one, mut max_given, mut search_path, mut strip_given) = (false, false, false, false);
     while i < argv.len() {
         let arg = &argv[i];
         i += 1;
@@ -326,13 +333,22 @@ pub fn parse(flavor: Flavor, argv: &[String]) -> Result<FindArgs, String> {
                 "changed-before" | "change-older-than" | "older" => a.older = Some(v),
                 "color" => a.color = When::parse(&v)?,
                 "hyperlink" => a.hyperlink = if v.is_empty() { When::Auto } else { When::parse(&v)? },
-                "strip-cwd-prefix" => a.strip_cwd_prefix = Some(if v.is_empty() { When::Always } else { When::parse(&v)? }),
+                "strip-cwd-prefix" => {
+                    strip_given = true;
+                    a.strip_cwd_prefix = Some(if v.is_empty() { When::Always } else { When::parse(&v)? });
+                }
                 "threads" => a.threads = Some(parse_num(&name, &v)?),
-                "max-results" | "limit" => a.max_results = Some(parse_num(&name, &v)?),
+                "max-results" | "limit" => {
+                    max_given = true;
+                    a.max_results = Some(parse_num(&name, &v)?);
+                }
                 "batch-size" => a.batch_size = Some(parse_num(&name, &v)?),
                 "base-directory" => a.base_dir = Some(PathBuf::from(v)),
                 "path-separator" => a.path_separator = Some(v),
-                "search-path" | "in" => a.paths.push(v),
+                "search-path" | "in" => {
+                    search_path |= name == "search-path";
+                    a.paths.push(v);
+                }
                 "format" => a.format = Some(v),
                 "and" => a.and.push(v),
                 "budget" => a.budget = Some(parse_num(&name, &v)?),
@@ -363,9 +379,10 @@ pub fn parse(flavor: Flavor, argv: &[String]) -> Result<FindArgs, String> {
                 "no-global-ignore-file" => a.no_global_ignore_file = true,
                 "case-sensitive" => a.case = Case::Sensitive,
                 "ignore-case" => a.case = Case::Insensitive,
-                "glob" => a.syntax = Some(Syntax::Glob),
-                "regex" => a.syntax = Some(Syntax::Regex),
-                "fixed-strings" | "literal" => a.syntax = Some(Syntax::Fixed),
+                "glob" => glob = Some(true),
+                "regex" => glob = Some(false),
+                "fixed-strings" | "literal" => fixed = true,
+                "exact" => exact = true,
                 "words" => a.syntax = Some(Syntax::Words),
                 "absolute-path" => a.absolute = true,
                 "relative-path" | "relative" => {
@@ -377,7 +394,10 @@ pub fn parse(flavor: Flavor, argv: &[String]) -> Result<FindArgs, String> {
                 "no-follow" => a.follow = false,
                 "full-path" => a.full_path = true,
                 "print0" => a.print0 = true,
-                "1" => a.max_results = Some(1),
+                "1" => {
+                    one = true;
+                    a.max_results = Some(1);
+                }
                 "quiet" | "has-results" => a.quiet = true,
                 "show-errors" => a.show_errors = true,
                 "one-file-system" | "mount" | "xdev" => a.one_fs = true,
@@ -394,7 +414,14 @@ pub fn parse(flavor: Flavor, argv: &[String]) -> Result<FindArgs, String> {
                     if cmd.is_empty() {
                         return Err(format!("--{name} needs a command"));
                     }
-                    a.exec = Some(Exec { batch: name == "exec-batch", cmd });
+                    let batch = name == "exec-batch";
+                    if flavor == Flavor::Fd
+                        && let Some(prev) = &a.exec
+                        && prev.batch != batch
+                    {
+                        return Err("the argument '--exec-batch <cmd>...' cannot be used with '--exec <cmd>...'".into());
+                    }
+                    a.exec = Some(Exec { batch, cmd });
                 }
                 // EchoFiles additions
                 "dirs" => a.types.add("d")?,
@@ -408,13 +435,50 @@ pub fn parse(flavor: Flavor, argv: &[String]) -> Result<FindArgs, String> {
                 "here" => a.here = true,
                 "verbose" | "meta" => a.verbose = true,
                 "details" => a.details = true,
+                "respect-settings" => a.respect_settings = true,
                 _ => return Err(format!("unknown option '--{name}'")),
             }
+        }
+    }
+    if flavor == Flavor::Fd {
+        // fd's argument conflicts, checked in the order clap reports them.
+        let clash = |cond: bool, a1: &str, a2: &str| -> Result<(), String> {
+            if cond { Err(format!("the argument '{a1}' cannot be used with '{a2}'")) } else { Ok(()) }
+        };
+        let batch = a.exec.as_ref().is_some_and(|x| x.batch);
+        let runs = a.exec.is_some() || a.list_details;
+        let run_name = if a.list_details { "--list-details" } else if batch { "--exec-batch <cmd>..." } else { "--exec <cmd>..." };
+        clash(glob == Some(true) && fixed, "--glob", "--fixed-strings")?;
+        clash(exact && glob == Some(true), "--exact", "--glob")?;
+        clash(exact && fixed, "--exact", "--fixed-strings")?;
+        clash(a.list_details && a.absolute, "--list-details", "--absolute-path")?;
+        clash(a.list_details && a.print0, "--print0", "--list-details")?;
+        clash(a.list_details && a.format.is_some(), "--format <fmt>", "--list-details")?;
+        clash(a.list_details && a.exec.is_some(), if batch { "--exec-batch <cmd>..." } else { "--exec <cmd>..." }, "--list-details")?;
+        clash(a.quiet && max_given, "--quiet", "--max-results <count>")?;
+        clash(runs && max_given, run_name, "--max-results <count>")?;
+        clash(runs && one, run_name, "-1")?;
+        clash(runs && a.quiet, run_name, "--quiet")?;
+        clash(search_path && !positional.is_empty() && positional.len() > 1, "--search-path <search-path>", "[path]...")?;
+        clash(strip_given && (search_path || positional.len() > 1), "--strip-cwd-prefix[=<when>]", "[path]...")?;
+        if a.batch_size.is_some() && !batch {
+            return Err("the following required arguments were not provided:\n  --exec-batch <cmd>...".into());
         }
     }
     if a.prune && (!a.sizes.is_empty() || exact_depth.is_some()) {
         return Err(format!("the argument '--prune' cannot be used with '{}'", if a.sizes.is_empty() { "--exact-depth" } else { "--size" }));
     }
+    a.syntax = a.syntax.or(if glob == Some(true) {
+        Some(Syntax::Glob)
+    } else if exact {
+        Some(Syntax::Exact)
+    } else if fixed {
+        Some(Syntax::Fixed)
+    } else if glob == Some(false) {
+        Some(Syntax::Regex)
+    } else {
+        None
+    });
     if let Some(d) = exact_depth {
         if a.max_depth.is_some() || a.min_depth.is_some() {
             return Err("--exact-depth can't be used with --max-depth or --min-depth".into());
@@ -441,13 +505,17 @@ mod tests {
 
     #[test]
     fn clusters_values_and_exec() {
-        let a = p(&["-HIe", "rs", "main", "src", "-d3", "--max-results=4", "-x", "echo", "{}", ";", "-t", "f"]);
+        let a = p(&["-HIe", "rs", "main", "src", "-d3", "-x", "echo", "{}", ";", "-t", "f"]);
         assert!(a.hidden && a.no_ignore);
         assert_eq!(a.exts, vec!["rs"]);
         assert_eq!(a.pattern.as_deref(), Some("main"));
         assert_eq!(a.paths, vec!["src"]);
         assert_eq!(a.max_depth, Some(3));
-        assert_eq!(a.max_results, Some(4));
+        assert_eq!(p(&["--max-results=4"]).max_results, Some(4));
+        // fd's conflicts.
+        for bad in [&["-x", "echo", ";", "-1"][..], &["-l", "-0"], &["-l", "--format", "{}"], &["-l", "-q"], &["--prune", "-S", "+1k"]] {
+            assert!(parse(Flavor::Fd, &bad.iter().map(|s| s.to_string()).collect::<Vec<_>>()).is_err(), "{bad:?}");
+        }
         assert_eq!(a.exec.as_ref().unwrap().cmd, vec!["echo", "{}"]);
         assert!(a.types.file);
         let a = p(&["-1", "--exact-depth", "2", "--", "-x"]);

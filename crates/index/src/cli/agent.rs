@@ -100,7 +100,8 @@ pub fn notes(a: &FindArgs, ctx: &Ctx, s: &Search, ran: &Ran, shown: usize) {
 }
 
 /// Re-run relaxed versions of a search that found nothing, and fuzzy-match the name.
-fn why_nothing(a: &FindArgs, ctx: &Ctx, _s: &Search) -> Vec<String> {
+/// Why a search found nothing: counts for relaxed versions of it, and close names.
+pub fn why_nothing(a: &FindArgs, ctx: &Ctx, _s: &Search) -> Vec<String> {
     let mut out = Vec::new();
     let t0 = std::time::Instant::now();
     let count = |f: &dyn Fn(&mut FindArgs)| -> Option<usize> {
@@ -266,7 +267,7 @@ pub fn write_json(a: &FindArgs, ran: &Ran, ctx: &Ctx, out: &mut Vec<u8>) {
     }
     let _ = write!(out, "],\"shown\":{shown}");
     if shown < ran.total {
-        let (dirs, exts) = output::summary(hits, &ran.views);
+        let (dirs, exts) = ran.breakdown.clone().unwrap_or_else(|| output::summary(hits, &ran.views));
         let j = |v: &[(String, usize)]| v.iter().take(10).map(|(k, n)| format!("{{\"{}\":{n}}}", k.replace('\\', "\\\\").replace('"', "\\\""))).collect::<Vec<_>>().join(",");
         let _ = write!(out, ",\"by_folder\":[{}],\"by_type\":[{}]", j(&dirs), j(&exts));
     }

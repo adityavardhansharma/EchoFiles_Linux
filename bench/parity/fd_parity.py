@@ -96,9 +96,15 @@ FLAGS = [[], ["-H"], ["-I"], ["-u"], ["--no-ignore-vcs"], ["--no-require-git"], 
          ["-e", "rs", "-e", "md"], ["-S", "+1k"], ["-S", "-100b"], ["-d", "2"], ["--min-depth", "2"],
          ["--exact-depth", "1"], ["-E", "src"], ["-E", "*.md"], ["--prune"], ["-L"], ["-a"],
          ["-s"], ["-i"], ["--ignore-contain", "README"], ["--no-ignore-parent"], ["-0"],
-         ["--format", "{/}|{//}|{.}"], ["-t", "f", "-x", "echo", "{/.}"]]
+         ["--format", "{/}|{//}|{.}"], ["--color=always"], ["--color=always", "-L"], ["-l"],
+         ["-o", os.environ.get("USER", "root")], ["-o", "!root"], ["--changed-within", "1h"],
+         ["--changed-before", "1h"], ["--one-file-system"], ["-j", "1"], ["--hyperlink=always"],
+         ["--path-separator", "\\"], ["-t", "f", "-x", "echo", "{/.}"]]
 PATTERNS = [[], ["a"], ["^a"], [r"\.rs$"], ["A"], ["-g", "*.txt"], ["-g", "**/src/**", "-p"],
-            ["-F", "."], ["-p", "deep"], ["main", "--and", "rs"], ["e"], ["résumé"], ["x y"]]
+            ["-F", "."], ["-p", "deep"], ["main", "--and", "rs"], ["e"], ["résumé"], ["x y"],
+            ["--exact", "README"], ["--exact", "readme"], ["-p", "--exact", "x"], ["-F", "a.", "--regex"],
+            ["-g", "*.txt", "--regex", "txt"], ["--regex", "-g", "*.TXT"], ["a", "--and", "R"],
+            ["[A-Z]"], [r"\S+\.rs$"], ["-q", "a"], ["-a", "-l", "x"], ["-g", "-F", "x"]]
 
 
 def run(cmd, cwd, env):
@@ -130,12 +136,16 @@ def main():
             env["XDG_STATE_HOME"] = os.path.join(base, f"state{t}")
             env["XDG_RUNTIME_DIR"] = os.path.join(base, f"run{t}")
             env["HOME"] = os.path.join(base, f"home{t}")  # no global git/fd ignore files
-            env.pop("LS_COLORS", None)
+            # Alternate between fd's own palette and a custom LS_COLORS.
+            if t % 2:
+                env["LS_COLORS"] = "di=01;34:ln=36:or=31:ex=01;32:*.rs=4;38;5;48:*.RS=1:*.txt=0;33:pi=40;33"
+            else:
+                env.pop("LS_COLORS", None)
             for k in ["XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "HOME"]:
                 os.makedirs(env[k], exist_ok=True)
             os.makedirs(os.path.join(env["XDG_CONFIG_HOME"], "echofiles"), exist_ok=True)
             with open(os.path.join(env["XDG_CONFIG_HOME"], "echofiles", "settings.toml"), "w") as f:
-                f.write(f'[search]\nroots = ["{tree}"]\nexclude_names = ["node_modules", ".git"]\n')
+                f.write(f'[search]\nroots = ["{tree}"]\nexclude_names = ["node_modules", ".git"]\nindex_drives = false\n')
             subprocess.run([EF, "index"], env=env, check=True, capture_output=True)
             server = None
             if a.served:

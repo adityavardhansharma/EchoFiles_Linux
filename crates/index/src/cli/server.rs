@@ -8,9 +8,9 @@
 //! code. If the app isn't running, `ef` runs the same code in its own process.
 //!
 //! Request: `u32` length, then NUL-separated fields — protocol version, settings file,
-//! working folder, flags (`t` stdout is a terminal, `n` NO_COLOR set), LS_COLORS, then the
-//! arguments — with the two file descriptors attached (SCM_RIGHTS). Reply: one byte, the exit code;
-//! [`DECLINE`] means "run it yourself".
+//! working folder, flags (`t` stdout is a terminal, `n` NO_COLOR set, `l` LS_COLORS set),
+//! LS_COLORS, then the arguments — with the two file descriptors attached (SCM_RIGHTS).
+//! Reply: one byte, the exit code; [`DECLINE`] means "run it yourself".
 
 use std::io::{IoSlice, IoSliceMut, Read, Write};
 use std::mem::MaybeUninit;
@@ -55,7 +55,8 @@ pub fn client(argv: &[String], cwd: &std::path::Path, out_tty: bool) -> Option<u
     // XDG_CONFIG_HOME elsewhere run locally).
     let cfg = Settings::path();
     let mut fields: Vec<&[u8]> = vec![VERSION.as_bytes(), cfg.as_os_str().as_bytes(), cwd.as_os_str().as_bytes()];
-    let flags = format!("{}{}", if out_tty { "t" } else { "" }, if std::env::var_os("NO_COLOR").is_some() { "n" } else { "" });
+    let ls_set = std::env::var_os("LS_COLORS").is_some();
+    let flags = format!("{}{}{}", if out_tty { "t" } else { "" }, if std::env::var_os("NO_COLOR").is_some() { "n" } else { "" }, if ls_set { "l" } else { "" });
     fields.push(flags.as_bytes());
     let ls = std::env::var_os("LS_COLORS").unwrap_or_default();
     fields.push(ls.as_bytes());
@@ -123,7 +124,7 @@ pub fn spawn() -> bool {
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
         let Ok(pool) = rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("ef-query-{i}")).build() else { return false };
-        let warm = Arc::new(Warm { settings: Mutex::new((None, Arc::new(Settings::load().unwrap_or_default()))), indexes: Arc::new(Indexes::default()), pool });
+        let warm = Arc::new(Warm { settings: Mutex::new((None, Arc::new(Settings::load().unwrap_or_default()))), indexes: super::shared_indexes(), pool });
         // Load now, not on the first query: index maps, users, groups, time zone.
         let w = warm.clone();
         std::thread::spawn(move || {
@@ -200,7 +201,7 @@ fn serve(stream: UnixStream, warm: &Warm) {
         out: super::stream(std::fs::File::from(out)),
         err: super::stream(std::fs::File::from(err)),
         out_tty: flags.contains(&b't'),
-        ls_colors: (!ls.is_empty()).then(|| String::from_utf8_lossy(ls).into_owned()),
+        ls_colors: flags.contains(&b'l').then(|| String::from_utf8_lossy(ls).into_owned()),
         no_color: flags.contains(&b'n'),
         settings: warm.settings(),
         indexes: warm.indexes.clone(),

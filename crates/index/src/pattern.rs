@@ -18,6 +18,8 @@ pub enum Syntax {
     Glob,
     /// The pattern as a literal substring.
     Fixed,
+    /// The pattern as the whole name (or path), literally (fd's `--exact`).
+    Exact,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -34,6 +36,7 @@ enum Engine {
     Regex(Regex),
     Glob(Glob),
     Fixed(Finder<'static>),
+    Exact(Vec<u8>),
     /// The empty pattern: matches everything.
     All,
 }
@@ -48,29 +51,30 @@ pub struct Pattern {
     prefilter: Option<Vec<u8>>,
 }
 
-/// Whether `pattern` has an uppercase letter that isn't part of an escape like `\S` or `\W`.
-fn has_uppercase(pattern: &str, syntax: Syntax) -> bool {
-    let mut chars = pattern.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\\' && syntax == Syntax::Regex {
-            // `\p{Lu}`, `\P{..}`: skip the class name too.
-            if let Some(n) = chars.next()
-                && (n == 'p' || n == 'P')
-                && chars.peek() == Some(&'{')
-            {
-                for c in chars.by_ref() {
-                    if c == '}' {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        if c.is_uppercase() {
-            return true;
-        }
+/// fd's smart-case test: whether the pattern, read as the regex fd builds from it, has an
+/// uppercase letter in a literal or a character class (`\S` and `\p{Lu}` don't count).
+pub fn needs_case(pattern: &str, syntax: Syntax) -> bool {
+    match syntax {
+        Syntax::Regex => regex_syntax::ParserBuilder::new().utf8(false).build().parse(pattern).is_ok_and(|h| hir_upper(&h)),
+        // Globs, literal text and words become literals (and classes) of their own characters.
+        _ => pattern.chars().any(char::is_uppercase),
     }
-    false
+}
+
+fn hir_upper(h: &Hir) -> bool {
+    use regex_syntax::hir::Class;
+    match h.kind() {
+        HirKind::Literal(l) => match std::str::from_utf8(&l.0) {
+            Ok(s) => s.chars().any(char::is_uppercase),
+            Err(_) => l.0.iter().any(|&b| char::from(b).is_uppercase()),
+        },
+        HirKind::Class(Class::Unicode(c)) => c.ranges().iter().any(|r| r.start().is_uppercase() || r.end().is_uppercase()),
+        HirKind::Class(Class::Bytes(c)) => c.ranges().iter().any(|r| char::from(r.start()).is_uppercase() || char::from(r.end()).is_uppercase()),
+        HirKind::Capture(c) => hir_upper(&c.sub),
+        HirKind::Repetition(r) => hir_upper(&r.sub),
+        HirKind::Concat(v) | HirKind::Alternation(v) => v.iter().any(hir_upper),
+        _ => false,
+    }
 }
 
 pub fn is_regex_like(s: &str) -> bool {
@@ -121,7 +125,7 @@ impl Pattern {
         let ci = match case {
             Case::Sensitive => false,
             Case::Insensitive => true,
-            Case::Smart => !has_uppercase(source, syntax),
+            Case::Smart => !needs_case(source, syntax),
         };
         let lit_ok = |l: &[u8]| l.is_ascii() && l.len() >= 2;
         let (engine, prefilter) = if source.is_empty() {
@@ -155,6 +159,11 @@ impl Pattern {
                         .map_err(|e| format!("invalid glob: {e}"))?;
                     let lit = g.required_literal().map(|l| l.to_ascii_lowercase());
                     (Engine::Glob(g), lit.filter(|l| lit_ok(l) && !full_path))
+                }
+                Syntax::Exact => {
+                    let needle = if ci { source.to_lowercase().into_bytes() } else { source.as_bytes().to_vec() };
+                    let pre = Some(needle.to_ascii_lowercase()).filter(|l| lit_ok(l) && !full_path);
+                    (Engine::Exact(needle), pre)
                 }
                 Syntax::Fixed => {
                     let needle = if ci { source.to_lowercase().into_bytes() } else { source.as_bytes().to_vec() };
@@ -194,6 +203,13 @@ impl Pattern {
             }
             Engine::Regex(r) => r.is_match(subject),
             Engine::Glob(g) => g.matches(subject),
+            Engine::Exact(n) => {
+                if self.case_insensitive {
+                    lowercase(subject) == *n
+                } else {
+                    subject == n.as_slice()
+                }
+            }
             Engine::Fixed(f) => {
                 if self.case_insensitive {
                     f.find(&lowercase(subject)).is_some()

@@ -1,5 +1,5 @@
 //! `-x`/`--exec` (one command per result, in parallel) and `-X`/`--exec-batch` (one
-//! command for many results), with fd's placeholders.
+//! command for many results), with fd's templates and fd's rules for where the paths go.
 
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
@@ -8,34 +8,28 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::args::Exec;
-use super::output::{expand, has_placeholder};
+use super::output::Template;
 
-fn command(cmd: &[String], paths: &[&[u8]]) -> Command {
-    let mut c = Command::new(&cmd[0]);
-    let any = cmd.iter().any(|a| has_placeholder(a));
-    for arg in &cmd[1..] {
-        if has_placeholder(arg) {
-            for p in paths {
-                c.arg(OsStr::from_bytes(&expand(arg, p)));
-            }
-        } else {
-            c.arg(arg);
-        }
+/// The command's templates, with `{}` appended when none has a placeholder.
+fn templates(cmd: &[String]) -> Vec<Template> {
+    let mut t: Vec<Template> = cmd.iter().map(|a| Template::parse(a)).collect();
+    if !t.iter().any(Template::has_tokens) {
+        t.push(Template::placeholder());
     }
-    if !any {
-        for p in paths {
-            c.arg(OsStr::from_bytes(p));
-        }
-    }
-    c
+    t
 }
 
-/// `print0`: like fd, end each command's output with a NUL.
-pub fn run(x: &Exec, paths: &[Vec<u8>], threads: Option<usize>, batch_size: Option<usize>, print0: bool, ctx: &super::Ctx) -> u8 {
+/// `print0`: like fd, end each command's output with a NUL. `sep` replaces `/` in the
+/// paths given to the command (fd's `--path-separator`).
+pub fn run(x: &Exec, paths: &[Vec<u8>], sep: Option<&str>, threads: Option<usize>, batch_size: Option<usize>, print0: bool, ctx: &super::Ctx) -> u8 {
+    let t = templates(&x.cmd);
     if x.batch {
-        return run_batch(x, paths, batch_size, ctx);
+        if t[0].has_tokens() {
+            ctx.write_err(b"[ef error]: First argument of --exec-batch must be a fixed executable, not a placeholder\n");
+            return 1;
+        }
+        return run_batch(&t, paths, sep, batch_size, ctx);
     }
-    // `{}` in the command name itself is expanded too.
     let jobs = threads.unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get())).max(1);
     let failed = AtomicBool::new(false);
     let next = AtomicUsize::new(0);
@@ -46,11 +40,10 @@ pub fn run(x: &Exec, paths: &[Vec<u8>], threads: Option<usize>, batch_size: Opti
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(p) = paths.get(i) else { break };
-                    let mut cmd_v = x.cmd.clone();
-                    if has_placeholder(&cmd_v[0]) {
-                        cmd_v[0] = String::from_utf8_lossy(&expand(&cmd_v[0], p)).into_owned();
-                    }
-                    let mut c = command(&cmd_v, &[p.as_slice()]);
+                    let args: Vec<Vec<u8>> = t.iter().map(|a| a.generate(p, sep)).collect();
+                    let mut c = Command::new(OsStr::from_bytes(&args[0]));
+                    c.args(args[1..].iter().map(|a| OsStr::from_bytes(a)));
+                    let name = String::from_utf8_lossy(&args[0]).into_owned();
                     if jobs == 1 {
                         let st = c.status();
                         if print0 {
@@ -60,7 +53,7 @@ pub fn run(x: &Exec, paths: &[Vec<u8>], threads: Option<usize>, batch_size: Opti
                             Ok(st) if st.success() => {}
                             Ok(_) => failed.store(true, Ordering::Relaxed),
                             Err(e) => {
-                                errln!(ctx, "[ef error]: Command not found: {} ({e})", cmd_v[0]);
+                                ctx.write_err(format!("[ef error]: Command not found: {name} ({e})\n").as_bytes());
                                 failed.store(true, Ordering::Relaxed);
                             }
                         }
@@ -80,7 +73,7 @@ pub fn run(x: &Exec, paths: &[Vec<u8>], threads: Option<usize>, batch_size: Opti
                             }
                         }
                         Err(e) => {
-                            errln!(ctx, "[ef error]: Command not found: {} ({e})", cmd_v[0]);
+                            ctx.write_err(format!("[ef error]: Command not found: {name} ({e})\n").as_bytes());
                             failed.store(true, Ordering::Relaxed);
                         }
                     }
@@ -88,35 +81,57 @@ pub fn run(x: &Exec, paths: &[Vec<u8>], threads: Option<usize>, batch_size: Opti
             });
         }
     });
-    if failed.load(Ordering::Relaxed) { 1 } else { 0 }
+    u8::from(failed.load(Ordering::Relaxed))
 }
 
-fn run_batch(x: &Exec, paths: &[Vec<u8>], batch_size: Option<usize>, ctx: &super::Ctx) -> u8 {
+/// fd's batch layout: the fixed arguments before the (last) argument with a placeholder,
+/// that argument once per path, then the fixed arguments after it.
+fn run_batch(t: &[Template], paths: &[Vec<u8>], sep: Option<&str>, batch_size: Option<usize>, ctx: &super::Ctx) -> u8 {
     if paths.is_empty() {
         return 0;
     }
+    let (mut pre, mut post): (Vec<Vec<u8>>, Vec<Vec<u8>>) = (Vec::new(), Vec::new());
+    let mut path_arg: Option<&Template> = None;
+    for a in t {
+        if a.has_tokens() {
+            path_arg = Some(a);
+        } else if path_arg.is_none() {
+            pre.push(a.generate(b"", None));
+        } else {
+            post.push(a.generate(b"", None));
+        }
+    }
+    let path_arg = path_arg.expect("a placeholder was appended");
     // Keep each command line well under ARG_MAX.
     const MAX_BYTES: usize = 1 << 20;
     let limit = batch_size.filter(|&n| n > 0).unwrap_or(usize::MAX);
+    let fixed: usize = pre.iter().chain(&post).map(|a| a.len() + 1).sum();
     let mut failed = false;
     let mut start = 0;
     while start < paths.len() {
+        let mut args: Vec<Vec<u8>> = Vec::new();
+        let mut bytes = fixed;
         let mut end = start;
-        let mut bytes = 0;
-        while end < paths.len() && end - start < limit && (end == start || bytes + paths[end].len() + 1 < MAX_BYTES) {
-            bytes += paths[end].len() + 1;
+        while end < paths.len() && end - start < limit {
+            let a = path_arg.generate(&paths[end], sep);
+            if end > start && bytes + a.len() + 1 >= MAX_BYTES {
+                break;
+            }
+            bytes += a.len() + 1;
+            args.push(a);
             end += 1;
         }
-        let batch: Vec<&[u8]> = paths[start..end].iter().map(Vec::as_slice).collect();
-        match command(&x.cmd, &batch).status() {
+        let mut c = Command::new(OsStr::from_bytes(&pre[0]));
+        c.args(pre[1..].iter().chain(&args).chain(&post).map(|a| OsStr::from_bytes(a)));
+        match c.status() {
             Ok(st) if st.success() => {}
             Ok(_) => failed = true,
             Err(e) => {
-                errln!(ctx, "[ef error]: Command not found: {} ({e})", x.cmd[0]);
+                ctx.write_err(format!("[ef error]: Command not found: {} ({e})\n", String::from_utf8_lossy(&pre[0])).as_bytes());
                 return 1;
             }
         }
         start = end;
     }
-    if failed { 1 } else { 0 }
+    u8::from(failed)
 }
