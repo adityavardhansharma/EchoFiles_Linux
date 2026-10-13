@@ -17,8 +17,10 @@
 pub use ef_config as config;
 pub mod corpus;
 pub mod fold;
+pub mod glob;
 pub mod live;
 mod matcher;
+pub mod units;
 mod store;
 mod view;
 
