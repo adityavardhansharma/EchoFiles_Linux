@@ -37,6 +37,13 @@ impl Index {
     /// Write the index atomically (temp file + rename), so readers — including processes
     /// that have the old file mapped — never see a half-written index.
     pub fn save(&self, path: &Path) -> io::Result<()> {
+        self.save_if_changed(path).map(drop)
+    }
+
+    /// [`save`](Index::save), skipped when the file already holds exactly these bytes (a
+    /// periodic rebuild of an unchanged tree then costs no disk write or fsync). Returns
+    /// whether the file was written.
+    pub fn save_if_changed(&self, path: &Path) -> io::Result<bool> {
         let n = self.len();
         let v = self.view();
         let mut ooff = Vec::with_capacity(n);
@@ -56,8 +63,7 @@ impl Index {
         let excl = self.opts.exclude_names.iter().chain(&self.opts.exclude_paths).cloned().collect::<Vec<_>>().join(&0u8);
 
         let parent = path.parent().ok_or_else(|| io::Error::other("missing parent"))?;
-        let tmp = tempfile::NamedTempFile::new_in(parent)?;
-        let mut f = io::BufWriter::new(tmp);
+        let mut f: Vec<u8> = Vec::new();
         f.write_all(MAGIC)?;
         for x in [n, self.folded.len(), orig.len(), root.len(), excl.len(), self.opts.skip_cache_tagged as usize, 0] {
             f.write_all(&(x as u64).to_le_bytes())?;
@@ -71,10 +77,15 @@ impl Index {
         f.write_all(&self.flags)?;
         f.write_all(&self.folded)?;
         f.write_all(&orig)?;
-        let tmp = f.into_inner().map_err(|e| e.into_error())?;
+        if same_contents(path, &f) {
+            return Ok(false);
+        }
+        let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+        tmp.write_all(&f)?;
         tmp.as_file().sync_all()?;
         tmp.persist(path).map_err(|e| e.error)?;
-        std::fs::File::open(parent)?.sync_all()
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok(true)
     }
 
     /// Read a saved index onto the heap (for an index that will be updated with
@@ -247,6 +258,31 @@ impl MappedIndex {
     pub fn search(&self, q: &Query) -> Vec<u32> {
         self.view().search(q)
     }
+
+    /// See [`Index::search_counted`](crate::Index::search_counted).
+    pub fn search_counted(&self, q: &Query) -> (usize, Vec<u32>) {
+        self.view().search_counted(q)
+    }
+
+    /// Number of entries below `id` (all depths).
+    pub fn descendants(&self, id: u32) -> usize {
+        self.view().descendants(id)
+    }
+}
+
+/// Whether the file at `path` holds exactly `bytes` (compared in chunks, no second copy).
+fn same_contents(path: &Path, bytes: &[u8]) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else { return false };
+    if file.metadata().map(|m| m.len()).ok() != Some(bytes.len() as u64) { return false; }
+    let mut buf = vec![0u8; 1 << 20];
+    let mut at = 0;
+    while at < bytes.len() {
+        let want = buf.len().min(bytes.len() - at);
+        if file.read_exact(&mut buf[..want]).is_err() || buf[..want] != bytes[at..at + want] { return false; }
+        at += want;
+    }
+    true
 }
 
 fn u32_bytes(v: &[u32]) -> &[u8] {

@@ -135,40 +135,94 @@ fn numbered(name: &[u8], n: usize) -> Vec<u8> {
 
 /// Move `path` to the trash.
 pub fn trash(path: &Path) -> io::Result<Trashed> {
-    let path = if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir()?.join(path) };
-    let (dir, recorded, root_fd) = trash_for(&path)?;
-    let (files, info) = (dir.join("files"), dir.join("info"));
-    let pinned = PathBuf::from(format!("/proc/self/fd/{}", root_fd.as_raw_fd()));
+    trash_many(&[path.to_path_buf()]).pop().unwrap_or_else(|| Err(io::Error::other("nothing to trash")))
+}
+
+/// One filesystem's trash, resolved and validated once per batch.
+struct Bin {
+    files: PathBuf,
+    info: PathBuf,
+    /// The mount point `Path=` is relative to (`None`: the home trash records full paths).
+    top: Option<PathBuf>,
+    /// Descriptors pinning `files` and `info` (and the trash root) for the whole batch.
+    _root: File,
+    files_fd: File,
+    info_fd: File,
+}
+
+impl Bin {
+    fn pinned(fd: &File) -> PathBuf {
+        PathBuf::from(format!("/proc/self/fd/{}", fd.as_raw_fd()))
+    }
+}
+
+fn bin_for(path: &Path) -> io::Result<Bin> {
+    let (dir, recorded, root) = trash_for(path)?;
+    let top = (recorded != path).then(|| topdir(path));
+    let pinned = Bin::pinned(&root);
     let files_fd = secure_dir(&pinned.join("files"))?;
     let info_fd = secure_dir(&pinned.join("info"))?;
-    let pinned_files = PathBuf::from(format!("/proc/self/fd/{}", files_fd.as_raw_fd()));
-    let pinned_info = PathBuf::from(format!("/proc/self/fd/{}", info_fd.as_raw_fd()));
-    let base = path.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "can't trash a filesystem root"))?.as_bytes().to_vec();
-    let body = format!("[Trash Info]\nPath={}\nDeletionDate={}\n", encode(&recorded), now_local());
-    for n in 1..10_000 {
-        let name = OsString::from_vec(numbered(&base, n));
-        let mut info_name = name.clone(); info_name.push(".trashinfo");
-        let info_path = pinned_info.join(&info_name);
-        let target = pinned_files.join(&name);
-        if fs::symlink_metadata(&target).is_ok() {
-            continue;
-        }
-        // The info file is created exclusively first: it reserves the name (spec).
-        match OpenOptions::new().write(true).create_new(true).mode(0o600).open(&info_path) {
-            Ok(mut f) => {
-                f.write_all(body.as_bytes())?;
-                f.sync_all()?;
-                if let Err(e) = crate::ops::rename_noreplace(&path, &target) {
-                    let _ = fs::remove_file(&info_path);
-                    return Err(e);
+    Ok(Bin { files: dir.join("files"), info: dir.join("info"), top, _root: root, files_fd, info_fd })
+}
+
+/// Move many paths to their trash. Each filesystem's trash is found once, numbered names
+/// continue from the last one used (not from 1 for every item), every `.trashinfo` is
+/// written before any item moves, and the batch has one durability barrier. Results are in
+/// input order.
+pub fn trash_many(paths: &[PathBuf]) -> Vec<io::Result<Trashed>> {
+    let small = paths.len() <= 64;
+    let date = now_local();
+    let mut bins: std::collections::HashMap<u64, Result<Bin, (io::ErrorKind, String)>> = Default::default();
+    let mut next: std::collections::HashMap<(u64, Vec<u8>), usize> = Default::default();
+    // Phase 1: reserve a name and write the info file for every item.
+    let mut reserved: Vec<io::Result<(u64, PathBuf, OsString, OsString)>> = Vec::with_capacity(paths.len());
+    for path in paths {
+        reserved.push((|| {
+            let path = if path.is_absolute() { path.clone() } else { std::env::current_dir()?.join(path) };
+            let dev = fs::symlink_metadata(&path)?.dev();
+            let bin = bins.entry(dev).or_insert_with(|| bin_for(&path).map_err(|e| (e.kind(), e.to_string())));
+            let bin = bin.as_ref().map_err(|(k, m)| io::Error::new(*k, m.clone()))?;
+            let base = path.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "can't trash a filesystem root"))?.as_bytes().to_vec();
+            let recorded = bin.top.as_ref().and_then(|t| path.strip_prefix(t).ok()).unwrap_or(&path);
+            let body = format!("[Trash Info]\nPath={}\nDeletionDate={}\n", encode(recorded), date);
+            let (files, info) = (Bin::pinned(&bin.files_fd), Bin::pinned(&bin.info_fd));
+            let info_of = |n: usize| { let mut i = OsString::from_vec(numbered(&base, n)); i.push(".trashinfo"); i };
+            let taken = |n: u32| fs::symlink_metadata(files.join(OsString::from_vec(numbered(&base, n as usize)))).is_ok() || fs::symlink_metadata(info.join(info_of(n as usize))).is_ok();
+            let mut from = *next.get(&(dev, base.clone())).unwrap_or(&1);
+            loop {
+                let n = crate::ops::free_number(from as u32, taken) as usize;
+                if n >= 1_000_000 { return Err(io::Error::other("too many items with this name in the trash")); }
+                let name = OsString::from_vec(numbered(&base, n));
+                // The info file is created exclusively first: it reserves the name (spec).
+                match OpenOptions::new().write(true).create_new(true).mode(0o600).open(info.join(info_of(n))) {
+                    Ok(mut f) => {
+                        f.write_all(body.as_bytes())?;
+                        if small { f.sync_all()?; }
+                        let info_name = info_of(n);
+                        next.insert((dev, base.clone()), n + 1);
+                        return Ok((dev, path, name, info_name));
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => from = n + 1,
+                    Err(e) => return Err(e),
                 }
-                return Ok(Trashed { original: path, file: files.join(name), info: info.join(info_name) });
             }
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
-        }
+        })());
     }
-    Err(io::Error::other("too many items with this name in the trash"))
+    // Phase 2: every info file is durable before any item moves.
+    for bin in bins.values().flatten() {
+        let _ = if small { bin.info_fd.sync_all() } else { rustix::fs::syncfs(&bin.info_fd).map_err(io::Error::from) };
+    }
+    // Phase 3: move the items.
+    reserved.into_iter().map(|r| {
+        let (dev, path, name, info_name) = r?;
+        let Some(Ok(bin)) = bins.get(&dev) else { return Err(io::Error::other("trash unavailable")) };
+        let info_path = Bin::pinned(&bin.info_fd).join(&info_name);
+        if let Err(e) = crate::ops::rename_noreplace(&path, &Bin::pinned(&bin.files_fd).join(&name)) {
+            let _ = fs::remove_file(&info_path);
+            return Err(e);
+        }
+        Ok(Trashed { original: path, file: bin.files.join(name), info: bin.info.join(PathBuf::from(info_name)) })
+    }).collect()
 }
 
 /// Put a trashed item back. Returns where it landed (a new name if the original is taken).

@@ -78,7 +78,9 @@ fn main() -> ExitCode {
             let mut hits = Vec::new();
             let targets = within.clone().map(|p| vec![p]).unwrap_or_else(|| roots.clone());
             let mut any_index = false;
+            let count = flag(&args, "--count");
             for root in &targets {
+                let nested = config::nested_roots(&targets, root);
                 // Explicit scopes may fall inside excluded index subtrees; a live walk is
                 // complete and honours the user's requested location in that case.
                 let indexed = if within.is_none() && settings.search.index {
@@ -86,7 +88,9 @@ fn main() -> ExitCode {
                 } else { None };
                 let found = if let Some(idx) = indexed {
                     any_index = true;
-                    idx.search(&q).into_iter().map(|id| idx.path(id)).collect()
+                    // A root with nothing nested inside only needs its own best `limit`.
+                    let bounded = if nested.is_empty() && !count { limit } else { None };
+                    idx.search(&Query { limit: bounded, ..q }).into_iter().map(|id| idx.path(id)).collect()
                 } else {
                     let opts = if within.is_some() { Options::everything() } else { Options::from_search(&settings.search, root) };
                     match ef_index::live::search_with(root, &q, &opts, &AtomicBool::new(false), &|_| {}) {
@@ -94,14 +98,13 @@ fn main() -> ExitCode {
                         Err(e) => { eprintln!("Couldn't search {}: {e}", root.display()); return ExitCode::FAILURE; },
                     }
                 };
-                let nested = config::nested_roots(&targets, root);
                 hits.extend(found.into_iter().filter(|p| !nested.iter().any(|n| p.starts_with(n))));
             }
             if within.is_none() && settings.phone.phone_index { hits.extend(ef_index::phone::search(&q)); }
             ef_index::rank_paths(&mut hits, &Query { limit, ..q });
             let total = hits.len();
-            if !flag(&args, "--count") { for path in hits { let _ = writeln!(out, "{}", path.display()); } }
-            if flag(&args, "--count") {
+            if !count { for path in hits { let _ = writeln!(out, "{}", path.display()); } }
+            if count {
                 let _ = writeln!(out, "{total}");
             }
             let _ = out.flush();

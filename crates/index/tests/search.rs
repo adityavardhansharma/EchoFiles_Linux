@@ -369,6 +369,8 @@ fn parallel_search_with_limit_equals_the_top_of_the_full_ranking() {
         for k in [1, 50, 1000] {
             let top = idx.search(&Query { hidden: true, limit: Some(k), ..Query::new(text) });
             assert_eq!(top, all[..k], "{text} top {k}");
+            let (total, counted) = idx.search_counted(&Query { hidden: true, limit: Some(k), ..Query::new(text) });
+            assert_eq!((total, counted.as_slice()), (all.len(), &all[..k]), "{text} counted top {k}");
         }
     }
 }

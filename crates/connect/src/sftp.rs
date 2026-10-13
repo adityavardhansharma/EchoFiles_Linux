@@ -152,6 +152,11 @@ struct Sftp {
     next: u64,
 }
 
+/// Storage calls block; let the runtime move other sessions off this worker meanwhile.
+fn blocking<T>(f: impl FnOnce() -> T) -> T {
+    tokio::task::block_in_place(f)
+}
+
 fn ok(id: u32) -> Status {
     Status { id, status_code: StatusCode::Ok, error_message: "Ok".into(), language_tag: "en-US".into() }
 }
@@ -245,12 +250,15 @@ impl russh_sftp::server::Handler for Sftp {
 
     async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, StatusCode> {
         let p = self.inside(&path)?;
-        let mut files = Vec::new();
-        for e in std::fs::read_dir(&p).map_err(code)?.flatten() {
-            if let Ok(m) = e.metadata() {
-                files.push(File::new(e.file_name().to_string_lossy(), attrs(&m)));
+        let files = blocking(|| -> Result<Vec<File>, StatusCode> {
+            let mut files = Vec::new();
+            for e in std::fs::read_dir(&p).map_err(code)?.flatten() {
+                if let Ok(m) = e.metadata() {
+                    files.push(File::new(e.file_name().to_string_lossy(), attrs(&m)));
+                }
             }
-        }
+            Ok(files)
+        })?;
         Ok(Handle { id, handle: self.handle(Open::Dir(files.into(), false)) })
     }
 
@@ -285,15 +293,14 @@ impl russh_sftp::server::Handler for Sftp {
         } else if flags.contains(OpenFlags::CREATE) {
             o.create(true);
         }
-        let f = o.open(&p).map_err(code)?;
+        let f = blocking(|| o.open(&p)).map_err(code)?;
         Ok(Handle { id, handle: self.handle(Open::File(f)) })
     }
 
     async fn read(&mut self, id: u32, handle: String, offset: u64, len: u32) -> Result<Data, StatusCode> {
         let Some(Open::File(f)) = self.open.get_mut(&handle) else { return Err(StatusCode::Failure) };
-        f.seek(SeekFrom::Start(offset)).map_err(code)?;
         let mut data = vec![0u8; len.min(256 * 1024) as usize];
-        let n = f.read(&mut data).map_err(code)?;
+        let n = blocking(|| { f.seek(SeekFrom::Start(offset))?; f.read(&mut data) }).map_err(code)?;
         if n == 0 {
             return Err(StatusCode::Eof);
         }
@@ -303,14 +310,13 @@ impl russh_sftp::server::Handler for Sftp {
 
     async fn write(&mut self, id: u32, handle: String, offset: u64, data: Vec<u8>) -> Result<Status, StatusCode> {
         let Some(Open::File(f)) = self.open.get_mut(&handle) else { return Err(StatusCode::Failure) };
-        f.seek(SeekFrom::Start(offset)).map_err(code)?;
-        f.write_all(&data).map_err(code)?;
+        blocking(|| { f.seek(SeekFrom::Start(offset))?; f.write_all(&data) }).map_err(code)?;
         Ok(ok(id))
     }
 
     async fn close(&mut self, id: u32, handle: String) -> Result<Status, StatusCode> {
         if let Some(Open::File(f)) = self.open.remove(&handle) {
-            let _ = f.sync_all();
+            let _ = blocking(|| f.sync_all());
         }
         Ok(ok(id))
     }

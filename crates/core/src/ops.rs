@@ -4,8 +4,8 @@
 //! space are known before a byte is written. Execution reports through [`Progress`]
 //! atomics that the UI reads at frame rate. Copies try a reflink (`FICLONE`, instant on
 //! btrfs), then `copy_file_range`, then a plain read/write loop; nothing is fsynced per
-//! file. Staged commits and cross-filesystem source removal have durability barriers,
-//! followed by a final `syncfs` before reporting completion.
+//! file. A batch has one durability barrier: a `syncfs` after every entry is committed and
+//! before any cross-filesystem source is removed.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -117,18 +117,35 @@ pub fn unique_path(path: &Path, naming: Naming) -> PathBuf {
     let name = path.file_name().map(|n| n.as_bytes().to_vec()).unwrap_or_default();
     let is_dir = fs::symlink_metadata(path).is_ok_and(|m| m.is_dir());
     let (stem, ext) = split_ext(&name, is_dir);
-    for n in 1.. {
+    let candidate = |n: u32| {
         let tag = match (naming, n) {
             (Naming::Numbered, _) => format!(" ({})", n + 1),
             (Naming::Copy, 1) => " (copy)".to_string(),
             (Naming::Copy, _) => format!(" (copy {n})"),
         };
-        let candidate = parent.join(OsString::from_vec([stem, tag.as_bytes(), ext].concat()));
-        if fs::symlink_metadata(&candidate).is_err() {
-            return candidate;
-        }
+        parent.join(OsString::from_vec([stem, tag.as_bytes(), ext].concat()))
+    };
+    candidate(free_number(1, |n| fs::symlink_metadata(candidate(n)).is_ok()))
+}
+
+/// A number ≥ `from` for which `taken` is false, found in O(log n) probes: doubling steps
+/// to a free number, then a binary search back towards the last taken one. Numbered names
+/// are normally taken from 1 upwards, so this is the first gap; with holes it may skip one.
+pub(crate) fn free_number(from: u32, taken: impl Fn(u32) -> bool) -> u32 {
+    if !taken(from) { return from; }
+    let (mut lo, mut step) = (from, 1u32);
+    let mut hi = loop {
+        let next = lo.saturating_add(step);
+        if next == u32::MAX || !taken(next) { break next; }
+        lo = next;
+        step = step.saturating_mul(2);
+    };
+    // Invariant: `lo` is taken and `hi` is free.
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if taken(mid) { lo = mid } else { hi = mid }
     }
-    unreachable!()
+    hi
 }
 
 /// `rename` that never replaces an existing file, including on case-insensitive filesystems.
@@ -158,7 +175,19 @@ pub fn rename(path: &Path, new_name: &str) -> io::Result<PathBuf> {
     if to == path {
         return Ok(to);
     }
-    rename_noreplace(path, &to)?;
+    match rename_noreplace(path, &to) {
+        // A case-only change on a case-insensitive filesystem (FAT, exFAT) finds the
+        // file itself at the new name. Go through a free temporary name instead.
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists && same_file(path, &to) => {
+            let step = unique_path(&path.with_file_name(".echofiles-rename"), Naming::Numbered);
+            rename_noreplace(path, &step)?;
+            if let Err(e) = rename_noreplace(&step, &to) {
+                let _ = rename_noreplace(&step, path);
+                return Err(e);
+            }
+        }
+        r => r?,
+    }
     Ok(to)
 }
 
@@ -348,11 +377,12 @@ pub fn plan(kind: Kind, sources: &[PathBuf], dest: &Path, progress: &Progress) -
     let mut conflicts = Vec::new();
     let mut cross_fs_bytes = 0u64;
     let mut totals = Tally::default();
+    let dest_real = fs::canonicalize(dest).map_err(|e| e.to_string())?;
     for src in sources {
         let sm = fs::symlink_metadata(src).map_err(|e| format!("{}: {e}", src.display()))?;
         let Some(name) = src.file_name() else { continue };
         let mut dst = dest.join(name);
-        if sm.is_dir() && fs::canonicalize(dest).map_err(|e| e.to_string())?.starts_with(fs::canonicalize(src).map_err(|e| e.to_string())?) {
+        if sm.is_dir() && dest_real.starts_with(fs::canonicalize(src).map_err(|e| e.to_string())?) {
             return Err(format!("You can't {} “{}” into itself.", if kind == Kind::Copy { "copy" } else { "move" }, name.to_string_lossy()));
         }
         if src == &dst || same_file(src, &dst) {
@@ -429,7 +459,10 @@ pub fn execute(plan: &Plan, choices: &HashMap<PathBuf, Resolution>, default: Res
     progress.set_phase(Phase::Running);
     let mut out = Outcome::default();
     let fixes: HashMap<&Path, &str> = if fix_names { plan.bad_names.iter().map(|(p, _, f)| (p.as_path(), f.as_str())).collect() } else { HashMap::new() };
-    let mut links = HashMap::new();
+    // A few plain files are made durable one by one; anything bigger syncs the filesystem
+    // once (cheaper than thousands of fsyncs, but it also flushes unrelated dirty data).
+    let small = plan.items.len() <= SMALL_BATCH && plan.items.iter().all(|i| fs::symlink_metadata(&i.src).is_ok_and(|m| m.is_file()));
+    let mut cx = Transfer { kind: plan.kind, fixes: &fixes, progress, links: HashMap::new(), recovery_parent: PathBuf::new(), removals: Vec::new(), stages: HashMap::new(), stage_dirs: Vec::new(), fsync: small };
     for item in &plan.items {
         if fs::symlink_metadata(&item.src).ok().map(|m| Identity::of(&m)) != Some(item.source_identity.clone()) {
             out.errors.push(format!("{} changed since planning; please retry", item.src.display())); continue;
@@ -439,33 +472,131 @@ pub fn execute(plan: &Plan, choices: &HashMap<PathBuf, Resolution>, default: Res
         }
         let dst = fixes.get(item.src.as_path()).map(|n| item.dst.with_file_name(n)).unwrap_or_else(|| item.dst.clone());
         let choice = choices.get(&item.dst).copied().unwrap_or(default);
-        match transfer_entry(plan.kind, &item.src, &dst, choice, &fixes, progress, &mut out, &mut links, item.src.parent().unwrap_or(Path::new("."))) {
+        cx.recovery_parent = item.src.parent().unwrap_or(Path::new(".")).to_path_buf();
+        match transfer_entry(&mut cx, &item.src, &dst, choice, &mut out) {
             Ok(()) => {},
             Err(e) if e.kind() == io::ErrorKind::Interrupted => { out.cancelled = true; break; },
             Err(e) => out.errors.push(format!("{}: {e}", item.src.display())),
         }
     }
     if out.cancelled && plan.kind == Kind::Move {
-        while let Some(step) = out.journal.last() {
-            match step.apply() {
-                Ok(_) => { out.journal.pop(); },
-                Err(e) => { out.errors.push(format!("Cancellation recovery incomplete: {e}")); break; },
-            }
-        }
+        // Sources of cross-filesystem moves are still in place: their copies are undone
+        // like any other completed step.
+        let journal = std::sync::Arc::new(Mutex::new(std::mem::take(&mut out.journal)));
+        if let Err(e) = Undo::Journal(journal.clone()).apply() { out.errors.push(format!("Cancellation recovery incomplete: {e}")); }
+        out.journal = std::mem::take(&mut *journal.lock().unwrap_or_else(|e| e.into_inner()));
         if out.journal.is_empty() { out.done.clear(); }
     }
+    // Staging folders that ended up holding no replaced entries are not needed.
+    for dir in std::mem::take(&mut cx.stage_dirs) { let _ = fs::remove_dir(dir); }
     progress.set_phase(Phase::Syncing);
-    match File::open(&plan.dest).and_then(|d| rustix::fs::syncfs(&d).map_err(Into::into)) {
+    // One durability barrier for the whole batch: every copy reaches the disk before any
+    // cross-filesystem source is removed.
+    let synced = if small {
+        // The files themselves were fsynced as they were written; make their names durable.
+        let mut dirs: Vec<&Path> = out.done.iter().flat_map(|(s, d)| [s.parent(), d.parent()]).flatten().collect();
+        dirs.sort(); dirs.dedup();
+        dirs.iter().try_for_each(|d| File::open(d).and_then(|f| f.sync_all()).or_else(|e| if e.kind() == io::ErrorKind::NotFound { Ok(()) } else { Err(e) }))
+    } else {
+        File::open(&plan.dest).and_then(|d| rustix::fs::syncfs(&d).map_err(Into::into))
+    };
+    match synced {
         Ok(()) => out.synced = true,
         Err(e) => out.errors.push(format!("Couldn't sync the destination: {e}")),
+    }
+    if !out.cancelled {
+        for removal in std::mem::take(&mut cx.removals) {
+            match removal {
+                Removal::Source { src, tree, journal } => {
+                    let Some(Undo::Checked { path, action, .. }) = out.journal.get_mut(journal) else { continue };
+                    if !out.synced {
+                        out.errors.push(format!("Copy saved at {}; original retained at {}", path.display(), src.display()));
+                        continue;
+                    }
+                    match remove_copied_source(&src, &tree) {
+                        Ok(()) => **action = Undo::Move(vec![(src, path.clone())]),
+                        Err(e) => out.errors.push(format!("Copy saved at {}; original retained at {}: {e}", path.display(), src.display())),
+                    }
+                }
+                Removal::EmptiedDir { src, ino, recovery_parent } => {
+                    if let Err(e) = retire_emptied_dir(&src, ino, &recovery_parent, &mut out) {
+                        out.errors.push(format!("{}: {e}", src.display()));
+                    }
+                }
+            }
+        }
     }
     progress.set_phase(Phase::Done);
     out
 }
 
+/// State shared by every entry of one [`execute`] run.
+struct Transfer<'a> {
+    kind: Kind,
+    fixes: &'a HashMap<&'a Path, &'a str>,
+    progress: &'a Progress,
+    /// Hard-linked sources already copied: (dev, ino) → their copy.
+    links: HashMap<(u64, u64), PathBuf>,
+    recovery_parent: PathBuf,
+    /// Cross-filesystem move sources, removed after the batch's single sync.
+    removals: Vec<Removal>,
+    /// One staging folder per destination folder: (folder as addressed, staging folder,
+    /// entries staged so far). Shared so a merge doesn't create a folder per file.
+    stages: HashMap<PathBuf, (PathBuf, u32)>,
+    /// Every staging folder made, removed at the end if nothing was retained in it.
+    stage_dirs: Vec<PathBuf>,
+    /// fsync each copied file (small batches; see [`execute`]).
+    fsync: bool,
+}
+
+/// Up to this many plain files are made durable with targeted fsyncs instead of `syncfs`.
+const SMALL_BATCH: usize = 64;
+
+impl Transfer<'_> {
+    /// A fresh slot in `parent`'s staging folder: (folder, slot number).
+    fn stage(&mut self, parent: &Path) -> io::Result<(PathBuf, u32)> {
+        if let Some((dir, n)) = self.stages.get_mut(parent) {
+            *n += 1;
+            return Ok((dir.clone(), *n));
+        }
+        let dir = tempfile::Builder::new().prefix(".echofiles-recovery-").tempdir_in(parent)?.keep();
+        self.stage_dirs.push(dir.clone());
+        self.stages.insert(parent.to_path_buf(), (dir.clone(), 0));
+        Ok((dir, 0))
+    }
+}
+
+/// Source cleanup that waits for the batch's sync, in the order it was queued: a merged
+/// folder's children come before the folder itself.
+enum Removal {
+    /// A copied source; `journal` indexes its `Undo::Checked` copy step, upgraded to a
+    /// move once the source is gone.
+    Source { src: PathBuf, tree: Vec<(PathBuf, Identity)>, journal: usize },
+    /// A merged-away source folder, retired once its children have moved.
+    EmptiedDir { src: PathBuf, ino: u64, recovery_parent: PathBuf },
+}
+
+/// Keep an emptied merged folder (with its ACLs and attributes) in a recovery directory
+/// rather than deleting it; undo restores it before its children.
+fn retire_emptied_dir(src: &Path, ino: u64, recovery_parent: &Path, out: &mut Outcome) -> io::Result<()> {
+    if fs::read_dir(src)?.next().is_some() { return Ok(()); }
+    let recovery = tempfile::Builder::new().prefix(".echofiles-recovery-").tempdir_in(recovery_parent)?;
+    let saved = recovery.path().join("directory");
+    let mut record = File::create(recovery.path().join("RECOVERY.txt"))?;
+    writeln!(record, "Empty merged directory from {:?}; restore directory there before undoing its children.", src.as_os_str().as_bytes())?;
+    rename_noreplace(src, &saved)?;
+    let recovery = recovery.keep();
+    out.journal.push(Undo::Retained { original: src.to_path_buf(), kept: saved.clone() });
+    if fs::symlink_metadata(&saved)?.ino() != ino || fs::read_dir(&saved)?.next().is_some() {
+        return Err(io::Error::other(format!("Source changed during the move; retained in {} for undo", recovery.display())));
+    }
+    Ok(())
+}
+
 /// Each merged entry commits separately. Existing destinations are retained in a private
 /// recovery directory until their journal entry has been undone.
-fn transfer_entry(kind: Kind, src: &Path, dst: &Path, choice: Resolution, fixes: &HashMap<&Path, &str>, progress: &Progress, out: &mut Outcome, links: &mut HashMap<(u64, u64), PathBuf>, recovery_parent: &Path) -> io::Result<()> {
+fn transfer_entry(cx: &mut Transfer, src: &Path, dst: &Path, choice: Resolution, out: &mut Outcome) -> io::Result<()> {
+    let (kind, progress) = (cx.kind, cx.progress);
     if !progress.proceed() { return Err(cancelled_err()); }
     let sm = fs::symlink_metadata(src)?;
     if same_file(src, dst) { return Err(io::Error::other("source and destination are the same file")); }
@@ -486,29 +617,24 @@ fn transfer_entry(kind: Kind, src: &Path, dst: &Path, choice: Resolution, fixes:
                 for e in fs::read_dir(src)? {
                     let e = e?;
                     let from = e.path();
-                    let name = fixes.get(from.as_path()).map(OsString::from).unwrap_or_else(|| e.file_name());
-                    let start = out.journal.len();
-                    let result = transfer_entry(kind, &from, &pinned.join(&name), choice, fixes, progress, out, links, recovery_parent);
-                    // Journal paths must survive closing the directory descriptor.
+                    let name = cx.fixes.get(from.as_path()).map(OsString::from).unwrap_or_else(|| e.file_name());
+                    let (start, done_start) = (out.journal.len(), out.done.len());
+                    let result = transfer_entry(cx, &from, &pinned.join(&name), choice, out);
+                    // Journal paths must survive closing the directory descriptor. Only
+                    // what this entry added can mention it (rebasing everything was O(n²)).
                     for step in &mut out.journal[start..] { step.rebase(&pinned, dst); }
-                    for (_, landed) in &mut out.done { if let Ok(rel) = landed.strip_prefix(&pinned) { *landed = dst.join(rel); } }
-                    for path in links.values_mut() { if let Ok(rel) = path.strip_prefix(&pinned) { *path = dst.join(rel); } }
+                    for (_, landed) in &mut out.done[done_start..] { if let Ok(rel) = landed.strip_prefix(&pinned) { *landed = dst.join(rel); } }
                     result?;
                 }
-                if kind == Kind::Move && fs::read_dir(src)?.next().is_none() {
-                    // Keep the original empty directory (including ACLs and attributes)
-                    // outside the traversed tree. Undo restores it before its children.
-                    let recovery = tempfile::Builder::new().prefix(".echofiles-recovery-").tempdir_in(recovery_parent)?;
-                    let saved = recovery.path().join("directory");
-                    let mut record = File::create(recovery.path().join("RECOVERY.txt"))?;
-                    writeln!(record, "Empty merged directory from {:?}; restore directory there before undoing its children.", src.as_os_str().as_bytes())?;
-                    record.sync_all()?;
-                    rename_noreplace(src, &saved)?;
-                    let recovery = recovery.keep();
-                    out.journal.push(Undo::Rename { from: src.to_path_buf(), to: saved.clone() });
-                    if fs::symlink_metadata(&saved)?.ino() != sm.ino() || fs::read_dir(&saved)?.next().is_some() {
-                        return Err(io::Error::other(format!("Source changed during the move; retained in {} for undo", recovery.display())));
-                    }
+                // Hard links and staging folders addressed through the descriptor get real
+                // paths before it closes (a later descriptor may reuse the number).
+                for path in cx.links.values_mut() { if let Ok(rel) = path.strip_prefix(&pinned) { *path = dst.join(rel); } }
+                cx.stages.retain(|parent, _| !parent.starts_with(&pinned));
+                for d in &mut cx.stage_dirs { if let Ok(rel) = d.strip_prefix(&pinned) { *d = dst.join(rel); } }
+                if kind == Kind::Move {
+                    // Checked once the batch's sources are gone (children of a
+                    // cross-filesystem merge are removed after the sync).
+                    cx.removals.push(Removal::EmptiedDir { src: src.to_path_buf(), ino: sm.ino(), recovery_parent: cx.recovery_parent.clone() });
                 }
                 return Ok(());
             },
@@ -516,106 +642,103 @@ fn transfer_entry(kind: Kind, src: &Path, dst: &Path, choice: Resolution, fixes:
         }
     } else { dst.to_path_buf() };
     let parent = dst.parent().ok_or_else(|| io::Error::other("missing destination parent"))?;
-    let stage = tempfile::Builder::new().prefix(".echofiles-recovery-").tempdir_in(parent)?;
-    let staged = stage.path().join("new");
-    let backup = stage.path().join("previous");
-    // Prepare a complete copy before touching an existing destination. A same-device
-    // move can instead commit with rename and keep its original until that point.
+    let replaced = choice == Resolution::Replace && dm.is_some();
+    // A same-device move commits with one rename and keeps its original until then.
     let direct_move = kind == Kind::Move && sm.dev() == fs::metadata(parent)?.dev();
+    if direct_move && !replaced {
+        let files = tally(src, false, &Progress::default())?.files;
+        rename_noreplace(src, &dst)?;
+        out.journal.push(Undo::Checked { path: dst.clone(), identity: Identity::of(&fs::symlink_metadata(&dst)?), action: Box::new(Undo::Move(vec![(src.to_path_buf(), dst.clone())])) });
+        out.done.push((src.to_path_buf(), dst));
+        progress.files_done.fetch_add(files, Ordering::Relaxed);
+        return Ok(());
+    }
+    // Prepare a complete copy beside the destination before touching an existing entry,
+    // in this folder's staging folder; a failed or cancelled copy removes its partial copy.
+    let (stage, slot) = cx.stage(parent)?;
+    let staged = stage.join(format!("new-{slot}"));
+    let backup = stage.join(format!("previous-{slot}"));
     let renamed_files = if direct_move { tally(src, false, &Progress::default())?.files } else { 0 };
     let source_tree = if kind == Kind::Move && !direct_move { Some(snapshot(src)?) } else { None };
-    let mut new_links = links.clone();
-    if !direct_move { copy_tree_inner(src, &staged, false, fixes, progress, &mut new_links)?; rustix::fs::syncfs(&File::open(stage.path())?)?; }
-    // This record and any previous destination survive a crash. Paths are escaped raw
-    // byte strings so non-UTF-8 names can be recovered without guessing.
-    let mut record = OpenOptions::new().write(true).create_new(true).mode(0o600).open(stage.path().join("RECOVERY.txt"))?;
-    writeln!(record, "EchoFiles {:?}\nsource={:?}\ndestination={:?}\nprevious holds the destination before replacement; new holds a prepared copy.\nDo not discard previous until recovery or undo is no longer needed.", kind, src.as_os_str().as_bytes(), dst.as_os_str().as_bytes())?;
-    record.sync_all()?;
-    File::open(stage.path())?.sync_all()?;
-    if !progress.proceed() { return Err(cancelled_err()); }
-    let replaced = choice == Resolution::Replace && dm.is_some();
+    let mut new_links = HashMap::new();
+    if !direct_move
+        && let Err(e) = copy_tree_inner(src, &staged, cx.fixes, progress, (&cx.links, &mut new_links), cx.fsync) {
+            let _ = remove_any(&staged);
+            return Err(e);
+        }
+    if replaced {
+        // This record and the previous destination survive a crash. Paths are escaped raw
+        // byte strings so non-UTF-8 names can be recovered without guessing.
+        let mut record = OpenOptions::new().append(true).create(true).mode(0o600).open(stage.join("RECOVERY.txt"))?;
+        writeln!(record, "EchoFiles {:?}\nsource={:?}\ndestination={:?}\nprevious-{slot} holds the destination before replacement; new-{slot} holds a prepared copy.\nDo not discard previous-{slot} until recovery or undo is no longer needed.\n", kind, src.as_os_str().as_bytes(), dst.as_os_str().as_bytes())?;
+    }
+    if !progress.proceed() { let _ = remove_any(&staged); return Err(cancelled_err()); }
     if replaced {
         // Preserve, never delete, the old entry. Unexpected replacements are recoverable.
         rename_noreplace(&dst, &backup)?;
         if fs::symlink_metadata(&backup).ok().map(|m| Identity::of(&m)) != dm.as_ref().map(Identity::of) {
-            let recovery = stage.keep();
-            if let Err(e) = rename_noreplace(&recovery.join("previous"), &dst) { return Err(io::Error::other(format!("Destination changed; retained at {}: {e}", recovery.display()))); }
+            if let Err(e) = rename_noreplace(&backup, &dst) { return Err(io::Error::other(format!("Destination changed; retained at {}: {e}", backup.display()))); }
             return Err(io::Error::other("destination changed before replacement; please retry"));
         }
     }
     let from = if direct_move { src } else { &staged };
     if let Err(e) = rename_noreplace(from, &dst) {
-        if replaced {
-            if let Err(restore) = rename_noreplace(&backup, &dst) {
-                let recovery = stage.keep();
-                return Err(io::Error::other(format!("{e}; original retained in {} ({restore})", recovery.display())));
+        if replaced
+            && let Err(restore) = rename_noreplace(&backup, &dst) {
+                return Err(io::Error::other(format!("{e}; original retained at {} ({restore})", backup.display())));
             }
-        }
+        if !direct_move { let _ = remove_any(&staged); }
         return Err(e);
     }
     if replaced {
-        let recovery = stage.keep();
-        out.journal.push(Undo::Rename { from: dst.clone(), to: recovery.join("previous") });
+        out.journal.push(Undo::Retained { original: dst.clone(), kept: backup });
     }
-    let mut moved = direct_move;
-    if kind == Kind::Move && !direct_move {
-        match File::open(parent).and_then(|f| rustix::fs::syncfs(&f).map_err(io::Error::from)).and_then(|_| remove_copied_source(src, source_tree.as_ref().unwrap())) {
-            Ok(()) => moved = true,
-            Err(e) => out.errors.push(format!("Copy saved at {}; original retained at {}: {e}", dst.display(), src.display())),
-        }
+    let action = if direct_move { Undo::Move(vec![(src.to_path_buf(), dst.clone())]) } else { Undo::Copy(vec![dst.clone()]) };
+    if let Some(tree) = source_tree {
+        // Upgraded to a move once the batch is synced and the source removed.
+        cx.removals.push(Removal::Source { src: src.to_path_buf(), tree, journal: out.journal.len() });
     }
-    let action = if moved { Undo::Move(vec![(src.to_path_buf(), dst.clone())]) } else { Undo::Copy(vec![dst.clone()]) };
     out.journal.push(Undo::Checked { path: dst.clone(), identity: Identity::of(&fs::symlink_metadata(&dst)?), action: Box::new(action) });
-    for path in new_links.values_mut() { if let Ok(rel) = path.strip_prefix(&staged) { *path = dst.join(rel); } }
-    *links = new_links;
+    for (key, mut path) in new_links { if let Ok(rel) = path.strip_prefix(&staged) { path = dst.join(rel); } cx.links.insert(key, path); }
     out.done.push((src.to_path_buf(), dst));
     progress.files_done.fetch_add(renamed_files, Ordering::Relaxed);
     Ok(())
 }
 
-fn copy_tree(src: &Path, dst: &Path, merge: bool, fixes: &HashMap<&Path, &str>, progress: &Progress) -> io::Result<()> {
-    copy_tree_inner(src, dst, merge, fixes, progress, &mut HashMap::new())
+fn copy_tree(src: &Path, dst: &Path, progress: &Progress) -> io::Result<()> {
+    copy_tree_inner(src, dst, &HashMap::new(), progress, (&HashMap::new(), &mut HashMap::new()), false)
 }
 
-fn copy_tree_inner(src: &Path, dst: &Path, merge: bool, fixes: &HashMap<&Path, &str>, progress: &Progress, links: &mut HashMap<(u64, u64), PathBuf>) -> io::Result<()> {
+/// Hard links already copied: (earlier entries' copies, this entry's copies so far).
+type Links<'a> = (&'a HashMap<(u64, u64), PathBuf>, &'a mut HashMap<(u64, u64), PathBuf>);
+
+fn copy_tree_inner(src: &Path, dst: &Path, fixes: &HashMap<&Path, &str>, progress: &Progress, links: Links, fsync: bool) -> io::Result<()> {
     if !progress.proceed() {
         return Err(cancelled_err());
     }
     let m = fs::symlink_metadata(src)?;
     let ft = m.file_type();
     if ft.is_symlink() {
-        let target = fs::read_link(src)?;
-        if merge {
-            let _ = fs::remove_file(dst);
-        }
-        std::os::unix::fs::symlink(target, dst)?;
+        std::os::unix::fs::symlink(fs::read_link(src)?, dst)?;
         set_times(dst, &m)?;
         copy_xattrs(src, dst)?;
         progress.files_done.fetch_add(1, Ordering::Relaxed);
     } else if ft.is_dir() {
-        match fs::create_dir(dst) {
-            Ok(()) => {}
-            Err(e) if merge && e.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e),
-        }
+        fs::create_dir(dst)?;
         for e in fs::read_dir(src)? {
             let e = e?;
             let from = e.path();
             let name = fixes.get(from.as_path()).map(OsString::from).unwrap_or_else(|| e.file_name());
-            let to = dst.join(name);
-            let child_merge = merge && fs::symlink_metadata(&to).is_ok();
-            if child_merge && !e.file_type().is_ok_and(|t| t.is_dir()) {
-                remove_any(&to)?;
-            }
-            copy_tree_inner(&from, &to, child_merge, fixes, progress, links)?;
+            copy_tree_inner(&from, &dst.join(name), fixes, progress, (links.0, &mut *links.1), fsync)?;
         }
         fs::set_permissions(dst, fs::Permissions::from_mode(m.mode() & 0o7777))?;
         set_times(dst, &m)?;
         copy_xattrs(src, dst)?;
     } else if ft.is_file() {
         progress.set_current(src);
-        if let Some(existing) = links.get(&(m.dev(), m.ino())) { fs::hard_link(existing, dst)?; }
-        else { copy_file(src, dst, &m, progress)?; if m.nlink() > 1 { links.insert((m.dev(), m.ino()), dst.to_path_buf()); } }
+        let key = (m.dev(), m.ino());
+        if let Some(existing) = links.1.get(&key).or_else(|| links.0.get(&key)) { fs::hard_link(existing, dst)?; }
+        else { copy_file(src, dst, &m, progress, fsync)?; if m.nlink() > 1 { links.1.insert(key, dst.to_path_buf()); } }
         progress.files_done.fetch_add(1, Ordering::Relaxed);
     }
     else { return Err(io::Error::new(io::ErrorKind::Unsupported, "cannot copy a socket, FIFO or device")); }
@@ -658,7 +781,7 @@ fn copy_xattrs(src: &Path, dst: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn copy_file(src: &Path, dst: &Path, m: &fs::Metadata, progress: &Progress) -> io::Result<()> {
+fn copy_file(src: &Path, dst: &Path, m: &fs::Metadata, progress: &Progress, fsync: bool) -> io::Result<()> {
     let mut from = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(src)?;
     if from.metadata()?.ino() != m.ino() || from.metadata()?.dev() != m.dev() { return Err(io::Error::other("source changed while copying")); }
     let mut to = OpenOptions::new().write(true).create_new(true).mode(0o600).open(dst)?;
@@ -713,6 +836,7 @@ fn copy_file(src: &Path, dst: &Path, m: &fs::Metadata, progress: &Progress) -> i
     };
     rustix::fs::futimens(&to, &ts)?;
     copy_xattrs(src, dst)?;
+    if fsync { to.sync_all()?; }
     Ok(())
 }
 
@@ -750,8 +874,8 @@ pub fn delete(paths: &[PathBuf], progress: &Progress) -> Vec<String> {
 pub fn trash_all(paths: &[PathBuf]) -> (Vec<Trashed>, Vec<(PathBuf, String)>) {
     let mut ok = Vec::new();
     let mut failed = Vec::new();
-    for p in paths {
-        match trash::trash(p) {
+    for (p, r) in paths.iter().zip(trash::trash_many(paths)) {
+        match r {
             Ok(t) => ok.push(t),
             Err(e) => failed.push((p.clone(), describe_io(&e))),
         }
@@ -765,6 +889,9 @@ pub fn trash_all(paths: &[PathBuf]) -> (Vec<Trashed>, Vec<(PathBuf, String)>) {
 #[derive(Clone, Debug)]
 pub enum Undo {
     Rename { from: PathBuf, to: PathBuf },
+    /// An entry the operation set aside in a `.echofiles-recovery-*` folder (a replaced
+    /// destination, a merged-away folder). Undo puts it back; [`Undo::discard`] deletes it.
+    Retained { original: PathBuf, kept: PathBuf },
     Journal(std::sync::Arc<Mutex<Vec<Undo>>>),
     Checked { path: PathBuf, identity: Identity, action: Box<Undo> },
     /// (original, where it is now)
@@ -790,6 +917,7 @@ impl Undo {
         let rebase = |p: &mut PathBuf| { if let Ok(rel) = p.strip_prefix(old) { *p = new.join(rel); } };
         match self {
             Undo::Rename { from, to } => { rebase(from); rebase(to); },
+            Undo::Retained { original, kept } => { rebase(original); rebase(kept); },
             Undo::Move(pairs) => for (a, b) in pairs { rebase(a); rebase(b); },
             Undo::Copy(paths) => for p in paths { rebase(p); },
             Undo::Checked { path, action, .. } => { rebase(path); action.rebase(old, new); },
@@ -803,6 +931,7 @@ impl Undo {
             Undo::Journal(_) => "transfer",
             Undo::Checked { action, .. } => action.label(),
             Undo::Rename { .. } => "rename",
+            Undo::Retained { .. } => "replacement",
             Undo::Move(_) => "move",
             Undo::Trash(_) => "move to Trash",
             Undo::Copy(_) => "copy",
@@ -821,12 +950,37 @@ impl Undo {
             }
             Undo::Journal(journal) => {
                 let mut journal = journal.lock().unwrap();
-                while let Some(step) = journal.last() { step.apply()?; journal.pop(); }
-                Ok("Transfer undone".into())
+                let mut kept_in = Vec::new();
+                let result = (|| {
+                    while let Some(step) = journal.last() {
+                        // A run of copies (or moves) at the end is undone as one batch: one
+                        // Trash lookup and one sync rather than one per entry.
+                        if let Some(kind) = step.batch() {
+                            let start = journal.iter().rposition(|s| s.batch() != Some(kind) && !s.is_backup()).map_or(0, |i| i + 1);
+                            let results = undo_batch(&journal[start..], kind);
+                            let mut first_error = None;
+                            let failed: Vec<Undo> = journal.drain(start..).zip(results).filter_map(|(step, r)| r.err().map(|e| { first_error.get_or_insert(e); step })).collect();
+                            journal.extend(failed);
+                            if let Some(e) = first_error { return Err(e); }
+                            continue;
+                        }
+                        if let Undo::Retained { kept, .. } = step { kept_in.extend(kept.parent().map(Path::to_path_buf)); }
+                        step.apply()?;
+                        journal.pop();
+                    }
+                    Ok(())
+                })();
+                tidy_recovery(kept_in);
+                result.map(|()| "Transfer undone".into())
             }
             Undo::Rename { from, to } => {
                 rename_noreplace(to, from).map_err(|e| err(to, e))?;
                 Ok(format!("Renamed back to {}", from.file_name().unwrap_or_default().to_string_lossy()))
+            }
+            Undo::Retained { original, kept } => {
+                rename_noreplace(kept, original).map_err(|e| err(kept, e))?;
+                tidy_recovery(kept.parent().map(Path::to_path_buf));
+                Ok(format!("Restored {}", original.file_name().unwrap_or_default().to_string_lossy()))
             }
             Undo::Move(pairs) => {
                 let mut n = 0;
@@ -839,8 +993,9 @@ impl Undo {
                             let source_tree = snapshot(now).map_err(|e| err(now, e))?;
                             let stage = tempfile::Builder::new().prefix(".echofiles-restore-").tempdir_in(parent).map_err(|e| err(orig, e))?;
                             let prepared = stage.path().join("restored");
-                            copy_tree(now, &prepared, false, &HashMap::new(), &p).map_err(|e| err(now, e))?;
-                            rustix::fs::syncfs(&File::open(stage.path()).map_err(|e| err(orig, e))?).map_err(|e| err(orig, e.into()))?;
+                            copy_tree(now, &prepared, &p).map_err(|e| err(now, e))?;
+                            // One sync before removing the moved copy is enough: until then
+                            // that copy still exists.
                             rename_noreplace(&prepared, orig).map_err(|e| err(orig, e))?;
                             rustix::fs::syncfs(&File::open(parent).map_err(|e| err(orig, e))?).map_err(|e| err(orig, e.into()))?;
                             remove_copied_source(now, &source_tree).map_err(|e| err(now, e))?;
@@ -858,8 +1013,8 @@ impl Undo {
                 Ok(format!("Restored {} {} from the Trash", items.len(), if items.len() == 1 { "item" } else { "items" }))
             }
             Undo::Copy(made) => {
-                for p in made {
-                    trash::trash(p).map_err(|e| err(p, e))?;
+                for (p, r) in made.iter().zip(trash::trash_many(made)) {
+                    r.map_err(|e| err(p, e))?;
                 }
                 Ok(format!("Moved {} {} to the Trash", made.len(), if made.len() == 1 { "copy" } else { "copies" }))
             }
@@ -870,6 +1025,132 @@ impl Undo {
             }
         }
     }
+}
+
+impl Undo {
+    /// Which batch this step can join: copies (undone by trashing) or moves.
+    fn batch(&self) -> Option<Kind> {
+        match self {
+            Undo::Copy(_) => Some(Kind::Copy),
+            Undo::Move(_) => Some(Kind::Move),
+            Undo::Checked { action, .. } => match **action { Undo::Copy(_) => Some(Kind::Copy), Undo::Move(_) => Some(Kind::Move), _ => None },
+            _ => None,
+        }
+    }
+
+    /// A replaced destination set aside during a copy or move. It is restored after the
+    /// entry that replaced it is undone, so it can join that batch. (A merged-away folder
+    /// is not: it has to be back before its children return.)
+    fn is_backup(&self) -> bool {
+        matches!(self, Undo::Retained { kept, .. } if kept.file_name().is_some_and(|n| n.as_bytes().starts_with(b"previous-")))
+    }
+
+    /// Delete what this step set aside for undo; the operation can then no longer be
+    /// undone. Called when an undo entry is dropped (session end, history limit).
+    pub fn discard(&self) {
+        match self {
+            Undo::Retained { kept, .. } => {
+                let _ = remove_any(kept);
+                tidy_recovery(kept.parent().map(Path::to_path_buf));
+            }
+            Undo::Journal(journal) => {
+                let journal = journal.lock().unwrap_or_else(|e| e.into_inner());
+                let mut dirs = Vec::new();
+                for step in journal.iter() {
+                    if let Undo::Retained { kept, .. } = step { let _ = remove_any(kept); dirs.extend(kept.parent().map(Path::to_path_buf)); }
+                }
+                tidy_recovery(dirs);
+            }
+            Undo::Checked { action, .. } => action.discard(),
+            _ => {}
+        }
+    }
+}
+
+/// Remove recovery folders that hold nothing but their `RECOVERY.txt` note. Each folder is
+/// listed once, however many of its entries were restored.
+fn tidy_recovery(dirs: impl IntoIterator<Item = PathBuf>) {
+    let mut dirs: Vec<PathBuf> = dirs.into_iter().filter(|d| d.file_name().is_some_and(|n| n.as_bytes().starts_with(b".echofiles-recovery-"))).collect();
+    dirs.sort();
+    dirs.dedup();
+    for dir in dirs {
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        if entries.flatten().all(|e| e.file_name() == "RECOVERY.txt") {
+            let _ = fs::remove_file(dir.join("RECOVERY.txt"));
+            let _ = fs::remove_dir(&dir);
+        }
+    }
+}
+
+/// Undo a run of copy or move steps together. Results line up with `steps`.
+fn undo_batch(steps: &[Undo], kind: Kind) -> Vec<Result<(), String>> {
+    let err = |p: &Path, e: io::Error| format!("Couldn't undo for {}: {}.", p.display(), describe_io(&e));
+    // Checked steps must still find the entry the operation made.
+    let checked: Vec<Result<&Undo, String>> = steps.iter().map(|s| match s {
+        Undo::Checked { path, identity, action } => {
+            let actual = fs::symlink_metadata(path).map_err(|e| err(path, e))?;
+            if actual.dev() != identity.dev || actual.ino() != identity.ino { return Err(format!("{} was replaced after the operation; leaving it untouched", path.display())); }
+            Ok(&**action)
+        }
+        other => Ok(other),
+    }).collect();
+    // Replaced destinations go back once the entries that replaced them are gone.
+    let restore_backups = |results: &mut Vec<Result<(), String>>| {
+        let mut dirs = Vec::new();
+        for (i, step) in steps.iter().enumerate().rev() {
+            if let Undo::Retained { original, kept } = step {
+                results[i] = rename_noreplace(kept, original).map_err(|e| err(kept, e));
+                dirs.extend(kept.parent().map(Path::to_path_buf));
+            }
+        }
+        tidy_recovery(dirs);
+    };
+    let mut results: Vec<Result<(), String>> = checked.iter().map(|c| c.as_ref().map(|_| ()).map_err(Clone::clone)).collect();
+    if kind == Kind::Copy {
+        let mut owner = Vec::new();
+        let mut paths = Vec::new();
+        for (i, c) in checked.iter().enumerate() {
+            if let Ok(Undo::Copy(made)) = c { for p in made { owner.push(i); paths.push(p.clone()); } }
+        }
+        for ((i, p), r) in owner.into_iter().zip(&paths).zip(trash::trash_many(&paths)) {
+            if let Err(e) = r && results[i].is_ok() { results[i] = Err(err(p, e)); }
+        }
+        restore_backups(&mut results);
+        return results;
+    }
+    // Moves: renames first; entries on another filesystem are copied back and published,
+    // then one sync per filesystem, then the moved copies are removed.
+    let mut pending: Vec<(usize, PathBuf, Vec<(PathBuf, Identity)>, PathBuf)> = Vec::new();
+    for (i, c) in checked.iter().enumerate().rev() {
+        let Ok(Undo::Move(pairs)) = c else { continue };
+        for (orig, now) in pairs.iter().rev() {
+            if results[i].is_err() { break; }
+            let r = match rename_noreplace(now, orig) {
+                Ok(()) => Ok(()),
+                Err(e) if e.raw_os_error() == Some(libc::EXDEV) => (|| {
+                    let parent = orig.parent().ok_or_else(|| "Missing restore parent".to_string())?;
+                    let tree = snapshot(now).map_err(|e| err(now, e))?;
+                    let stage = tempfile::Builder::new().prefix(".echofiles-restore-").tempdir_in(parent).map_err(|e| err(orig, e))?;
+                    let prepared = stage.path().join("restored");
+                    copy_tree(now, &prepared, &Progress::default()).map_err(|e| err(now, e))?;
+                    rename_noreplace(&prepared, orig).map_err(|e| err(orig, e))?;
+                    pending.push((i, now.clone(), tree, parent.to_path_buf()));
+                    Ok(())
+                })(),
+                Err(e) => Err(err(now, e)),
+            };
+            if let Err(e) = r { results[i] = Err(e); }
+        }
+    }
+    let mut synced: HashMap<u64, Result<(), String>> = HashMap::new();
+    for (i, now, tree, parent) in pending {
+        let dev = fs::metadata(&parent).map(|m| m.dev()).unwrap_or(0);
+        let sync = synced.entry(dev).or_insert_with(|| File::open(&parent).and_then(|f| rustix::fs::syncfs(&f).map_err(Into::into)).map_err(|e| err(&parent, e))).clone();
+        let r = sync.and_then(|()| remove_copied_source(&now, &tree).map_err(|e| err(&now, e)));
+        if let Err(e) = r && results[i].is_ok() { results[i] = Err(e); }
+    }
+    restore_backups(&mut results);
+    results
 }
 
 // ------------------------------------------------------------------------------ sizes
@@ -1000,7 +1281,9 @@ impl Identity {
 
 fn snapshot(root: &Path) -> io::Result<Vec<(PathBuf, Identity)>> {
     fn visit(root: &Path, relative: &Path, entries: &mut Vec<(PathBuf, Identity)>) -> io::Result<()> {
-        let path = root.join(relative); let m = fs::symlink_metadata(&path)?;
+        // `root.join("")` would add a trailing slash, which fails on a file.
+        let path = if relative.as_os_str().is_empty() { root.to_path_buf() } else { root.join(relative) };
+        let m = fs::symlink_metadata(&path)?;
         entries.push((relative.to_path_buf(), Identity::of(&m)));
         if m.is_dir() { for entry in fs::read_dir(path)? { let entry = entry?; visit(root, &relative.join(entry.file_name()), entries)?; } }
         Ok(())

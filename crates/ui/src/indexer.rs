@@ -87,7 +87,77 @@ pub fn open_existing(cfg: &SearchConfig) -> Vec<RootIndex> {
 }
 
 /// Crawl every indexed folder, save, and map the new files. Runs on the background pool.
+///
+/// The crawl itself runs in a short-lived child process (`echofiles --index-worker`): its
+/// peak memory (about 100 bytes per entry) then goes back to the system when the child
+/// exits, instead of staying in this long-running process's allocator. If the child can't
+/// run, the crawl happens here.
 pub fn build_all(cfg: &SearchConfig, generation: u64) -> Vec<RootIndex> {
+    let cfg = cfg.clone();
+    let child = {
+        let _publication = PUBLICATION.lock().unwrap();
+        build_in_child(&cfg).map(|ok| ok && GENERATION.load(Ordering::Acquire) == generation)
+    };
+    match child {
+        Some(true) => cfg.roots().into_iter().map(|root| {
+            match MappedIndex::open(&config::index_file_for(&root)) {
+                Ok(m) => RootIndex { root, map: Some(Arc::new(m)), updated: Some(SystemTime::now()), error: None },
+                Err(e) => RootIndex { root: root.clone(), map: None, updated: None, error: Some(format!("Couldn't index {}: {e}", config::tilde(&root))) },
+            }
+        }).collect(),
+        Some(false) if GENERATION.load(Ordering::Acquire) != generation => cfg.roots().into_iter().map(|root| RootIndex { root, map: None, updated: None, error: Some("index settings changed during the crawl".into()) }).collect(),
+        _ => build_here(&cfg, generation),
+    }
+}
+
+/// Run the index worker; `None` if it couldn't be started, else whether it succeeded.
+fn build_in_child(cfg: &SearchConfig) -> Option<bool> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let exe = std::env::current_exe().ok()?;
+    let mut child = Command::new(exe).arg("--index-worker").stdin(Stdio::piped()).stdout(Stdio::null()).spawn().ok()?;
+    let config = serde_json::to_vec(cfg).ok()?;
+    let sent = child.stdin.take().map(|mut s| s.write_all(&config));
+    let status = child.wait().ok()?;
+    Some(matches!(sent, Some(Ok(()))) && status.success())
+}
+
+/// The worker's side: read the search settings on stdin, crawl and save every root (an
+/// unchanged index file is left alone), exit non-zero on any failure.
+pub fn worker_main() -> std::process::ExitCode {
+    use std::io::Read;
+    let mut input = Vec::new();
+    let Ok(cfg) = std::io::stdin().read_to_end(&mut input).map_err(|e| e.to_string()).and_then(|_| serde_json::from_slice::<SearchConfig>(&input).map_err(|e| e.to_string())) else {
+        eprintln!("index worker: invalid settings on stdin");
+        return std::process::ExitCode::FAILURE;
+    };
+    let mut ok = true;
+    let _ = std::fs::create_dir_all(config::index_dir());
+    for root in cfg.roots() {
+        let result = Index::build_with(&root, &Options::from_search(&cfg, &root)).and_then(|idx| idx.save_if_changed(&config::index_file_for(&root)));
+        if let Err(e) = result { eprintln!("index worker: {}: {e}", root.display()); ok = false; }
+    }
+    remove_stale_files(&cfg);
+    if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
+}
+
+/// Index files nothing uses any more: other roots' files untouched for a week (old
+/// settings, benchmark corpora) and the pre-`index/` single file.
+fn remove_stale_files(cfg: &SearchConfig) {
+    let keep: Vec<PathBuf> = cfg.roots().iter().map(|r| config::index_file_for(r)).collect();
+    let week = std::time::Duration::from_secs(7 * 86_400);
+    if let Ok(dir) = std::fs::read_dir(config::index_dir()) {
+        for e in dir.flatten() {
+            let p = e.path();
+            let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > week);
+            if p.extension().is_some_and(|x| x == "efidx") && !keep.contains(&p) && old { let _ = std::fs::remove_file(&p); }
+        }
+    }
+    if let Some(legacy) = config::index_dir().parent().map(|d| d.join("home.efidx")) { let _ = std::fs::remove_file(legacy); }
+}
+
+/// The crawl in this process (fallback when the worker can't run).
+fn build_here(cfg: &SearchConfig, generation: u64) -> Vec<RootIndex> {
     let cfg = cfg.clone();
     background_pool().install(move || {
         cfg.roots()
@@ -99,7 +169,7 @@ pub fn build_all(cfg: &SearchConfig, generation: u64) -> Vec<RootIndex> {
                         let _publication = PUBLICATION.lock().unwrap();
                         if GENERATION.load(Ordering::Acquire) != generation { return Err(std::io::Error::other("index settings changed during the crawl")); }
                         std::fs::create_dir_all(config::index_dir())?;
-                        idx.save(&file)?;
+                        idx.save_if_changed(&file)?;
                         if GENERATION.load(Ordering::Acquire) != generation {
                             let _ = std::fs::remove_file(&file);
                             return Err(std::io::Error::other("index settings changed during publication"));

@@ -121,21 +121,27 @@ impl<'a> View<'a> {
 
     /// Ids of matching entries, best first. See [`Index::search`](crate::Index::search).
     pub fn search(&self, q: &Query) -> Vec<u32> {
+        self.search_counted(q).1
+    }
+
+    /// Every match counted, but only the best `q.limit` ids kept, best first.
+    pub fn search_counted(&self, q: &Query) -> (usize, Vec<u32>) {
         let Some(m) = Matcher::new(q) else {
-            return Vec::new();
+            return (0, Vec::new());
         };
         let within = q.within as usize;
         if within >= self.len() {
-            return Vec::new();
+            return (0, Vec::new());
         }
         let (first, last) = (within + 1, self.end[within] as usize);
         if first >= last {
-            return Vec::new();
+            return (0, Vec::new());
         }
-        let mut keys = if last - first < PARALLEL_MIN {
+        let (total, mut keys) = if last - first < PARALLEL_MIN {
             let mut v = self.scan(first, last, &m, q);
+            let total = v.len();
             matcher::keep_best(&mut v, q.limit);
-            v
+            (total, v)
         } else {
             use rayon::prelude::*;
             let chunks = rayon::current_num_threads() * 4;
@@ -146,17 +152,18 @@ impl<'a> View<'a> {
                 .into_par_iter()
                 .map(|a| {
                     let mut v = self.scan(a, (a + step).min(last), &m, q);
+                    let total = v.len();
                     matcher::keep_best(&mut v, q.limit);
-                    v
+                    (total, v)
                 })
-                .reduce(Vec::new, |mut a, mut b| {
-                    a.append(&mut b);
-                    a
+                .reduce(|| (0, Vec::new()), |mut a, mut b| {
+                    a.1.append(&mut b.1);
+                    (a.0 + b.0, a.1)
                 })
         };
         matcher::keep_best(&mut keys, q.limit);
         keys.sort_unstable();
-        keys.into_iter().map(|k| k as u32).collect()
+        (total, keys.into_iter().map(|k| k as u32).collect())
     }
 
     /// Rank keys (`Matcher::rank` | id) of the hits among entries `first..last`.

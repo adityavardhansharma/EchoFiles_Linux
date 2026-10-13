@@ -62,27 +62,24 @@ pub fn from_index(roots: &[RootIndex], text: &str, hidden: bool) -> Option<Resul
     let searched: Vec<PathBuf> = roots.iter().map(|r| r.root.clone()).collect();
     let mut hits = Vec::new();
     let mut total = 0;
+    let q = Query { text, hidden, ..Query::new(text) };
     for (root, m) in &maps {
-        let q = Query { text, hidden, ..Query::new(text) };
-        let all = m.search(&Query { limit: None, ..q.clone() });
+        // Each root contributes at most LIMIT of its best hits, so a broad query never
+        // materializes every match; the count still covers all of them.
         let nested = config::nested_roots(&searched, root);
-        if nested.is_empty() {
-            total += all.len();
-            for &id in all.iter() {
-                hits.push(hit(m.path(id), m.kind(id) == ef_index::Kind::Dir));
-            }
+        let skip: Vec<(u32, u32)> = nested.iter().filter_map(|n| m.lookup(n).map(|id| (id, id + m.descendants(id) as u32))).collect();
+        let ids = if skip.is_empty() {
+            let (n, ids) = m.search_counted(&Query { limit: Some(LIMIT), ..q.clone() });
+            total += n;
+            ids
         } else {
-            for &id in &all {
-                let p = m.path(id);
-                if nested.iter().any(|n| p.starts_with(n)) {
-                    continue;
-                }
-                total += 1;
-                {
-                    hits.push(hit(p, m.kind(id) == ef_index::Kind::Dir));
-                }
-            }
-        }
+            let mut ids = m.search(&q);
+            ids.retain(|id| !skip.iter().any(|&(a, b)| (a..=b).contains(id)));
+            total += ids.len();
+            ids.truncate(LIMIT);
+            ids
+        };
+        hits.extend(ids.into_iter().map(|id| hit(m.path(id), m.kind(id) == ef_index::Kind::Dir)));
     }
     rank_hits(&mut hits, text);
     fill_details(&mut hits);
@@ -143,7 +140,8 @@ pub fn with_phone(results: Option<Results>, text: &str, hidden: bool, enabled: b
 
 fn rank_hits(hits: &mut Vec<Hit>, text: &str) {
     use std::os::unix::ffi::OsStrExt;
-    hits.sort_by_cached_key(|h| (ef_index::rank_name(text, h.path.file_name().unwrap_or_default().as_bytes()), h.path.clone()));
+    let ranker = ef_index::Ranker::new(text);
+    hits.sort_by_cached_key(|h| (ranker.rank(h.path.file_name().unwrap_or_default().as_bytes()), h.path.clone()));
     hits.dedup_by(|a, b| a.path == b.path);
     hits.truncate(LIMIT);
 }
