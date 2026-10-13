@@ -384,12 +384,12 @@ impl App {
                     let handlr = std::process::Command::new("which").arg("handlr").output().is_ok_and(|o| o.status.success());
                     let mut cmd = std::process::Command::new(if handlr { "handlr" } else { "xdg-open" });
                     if handlr { cmd.arg("open"); }
-                    cmd.arg(path).spawn().map(drop).map_err(|e| e.to_string())
+                    crate::system::spawn_detached(cmd.arg(path)).map_err(|e| e.to_string())
                 }, |r| Message::File(FileMsg::Opened(r)))
             }
             FileMsg::OpenTerminal => {
                 let dir = self.pane().location.clone();
-                background(move || std::process::Command::new("xdg-terminal-exec").current_dir(&dir).spawn().or_else(|_| std::process::Command::new("alacritty").current_dir(&dir).spawn()).map(drop).map_err(|e| e.to_string()), |r| Message::File(FileMsg::Opened(r)))
+                background(move || crate::system::spawn_detached(std::process::Command::new("xdg-terminal-exec").current_dir(&dir)).or_else(|_| crate::system::spawn_detached(std::process::Command::new("alacritty").current_dir(&dir))).map_err(|e| e.to_string()), |r| Message::File(FileMsg::Opened(r)))
             }
             FileMsg::Opened(result) => {
                 if let Err(e) = result { self.toast_error("Couldn't open that".into(), e); }

@@ -358,6 +358,7 @@ fn watch_clipboard(tx: mpsc::UnboundedSender<PhoneMsg>) {
             let _ = tx.unbounded_send(PhoneMsg::LocalClip(text));
         }
     }
+    let _ = child.wait();
 }
 
 fn watch_images() {
@@ -365,7 +366,7 @@ fn watch_images() {
     let mut command = std::process::Command::new("wl-paste");
     command.args(["--type", "image/png", "--watch", "sh", "-c", "head -c 16777217 | base64 -w0; echo"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
     unsafe { command.pre_exec(|| { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM); Ok(()) }); }
-    if let Ok(mut child) = command.spawn() { if let Some(out) = child.stdout.take() { for line in std::io::BufReader::new(out).lines().map_while(Result::ok) { if let Ok(bytes) = crate::codec::base64_decode(line.trim()).ok_or(()) { if !bytes.is_empty() && bytes.len() <= 16*1024*1024 { let _ = event_tx().unbounded_send(PhoneMsg::LocalImage(bytes)); } } } } }
+    if let Ok(mut child) = command.spawn() { if let Some(out) = child.stdout.take() { for line in std::io::BufReader::new(out).lines().map_while(Result::ok) { if let Ok(bytes) = crate::codec::base64_decode(line.trim()).ok_or(()) { if !bytes.is_empty() && bytes.len() <= 16*1024*1024 { let _ = event_tx().unbounded_send(PhoneMsg::LocalImage(bytes)); } } } } let _ = child.wait(); }
 }
 
 fn normal_image(bytes: &[u8]) -> Option<Vec<u8>> {
@@ -751,12 +752,13 @@ fn allow_firewall() -> Result<(), String> {
 
 fn notify_desktop(phone: &str, n: &Notification) {
     let title = if n.title.is_empty() { n.app.clone() } else { format!("{} · {}", n.app, n.title) };
-    let _ = std::process::Command::new("notify-send")
-        .args(["--app-name", phone, "--icon", "phone", &title, &n.text])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    let _ = crate::system::spawn_detached(
+        std::process::Command::new("notify-send")
+            .args(["--app-name", phone, "--icon", "phone", &title, &n.text])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null()),
+    );
 }
 
 // ------------------------------------------------------------------------------ app side
@@ -1866,7 +1868,7 @@ impl App {
             }
             Event::Url { id, url } => {
                 if url.starts_with("http://") || url.starts_with("https://") {
-                    let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+                    let _ = crate::system::spawn_detached(std::process::Command::new("xdg-open").arg(&url));
                 }
                 self.push_toast(Tone::Accent, format!("Link from {}", self.phone_name(&id)), Some(url), None);
                 Task::none()
