@@ -19,6 +19,7 @@ pub mod corpus;
 pub mod filter;
 pub mod find;
 pub mod fold;
+mod fold_tables;
 pub mod gitignore;
 pub mod glob;
 pub mod live;
