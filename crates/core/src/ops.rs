@@ -742,7 +742,7 @@ fn copy_tree_inner(src: &Path, dst: &Path, fixes: &HashMap<&Path, &str>, progres
             let name = fixes.get(from.as_path()).map(OsString::from).unwrap_or_else(|| e.file_name());
             copy_tree_inner(&from, &dst.join(name), fixes, progress, (links.0, &mut *links.1), opts)?;
         }
-        best_effort(fs::set_permissions(dst, fs::Permissions::from_mode(m.mode() & 0o7777)), opts.strict)?;
+        best_effort(fs::set_permissions(dst, fs::Permissions::from_mode(copied_mode(&m))), opts.strict)?;
         set_times(dst, &m)?;
         copy_xattrs(src, dst, opts.strict)?;
     } else if ft.is_file() {
@@ -776,6 +776,14 @@ fn best_effort(r: io::Result<()>, strict: bool) -> io::Result<()> {
         Err(e) if !strict && unsupported_metadata(&e) => Ok(()),
         r => r,
     }
+}
+
+/// The mode a copy gets. Like `cp`, setuid and setgid survive only on our own files: the
+/// copy belongs to us, so keeping another user's privilege bits would grant them as us.
+fn copied_mode(m: &fs::Metadata) -> u32 {
+    // SAFETY: getuid has no preconditions.
+    let mine = m.uid() == unsafe { libc::getuid() };
+    if mine { m.mode() & 0o7777 } else { m.mode() & 0o1777 }
 }
 
 // Includes user attributes and POSIX ACLs. For a move (`strict`), failure is an error, so
@@ -858,7 +866,7 @@ fn copy_file(src: &Path, dst: &Path, m: &fs::Metadata, progress: &Progress, opts
         let _ = fs::remove_file(dst);
         return Err(e);
     }
-    best_effort(rustix::fs::fchmod(&to, rustix::fs::Mode::from_raw_mode(m.mode() & 0o7777)).map_err(Into::into), opts.strict)?;
+    best_effort(rustix::fs::fchmod(&to, rustix::fs::Mode::from_raw_mode(copied_mode(m))).map_err(Into::into), opts.strict)?;
     let ts = rustix::fs::Timestamps {
         last_access: rustix::fs::Timespec { tv_sec: m.atime(), tv_nsec: m.atime_nsec() as _ },
         last_modification: rustix::fs::Timespec { tv_sec: m.mtime(), tv_nsec: m.mtime_nsec() as _ },
