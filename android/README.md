@@ -14,9 +14,13 @@ export JAVA_HOME="/path/to/jdk-21"
 rustup target add aarch64-linux-android x86_64-linux-android
 cargo install cargo-ndk --locked
 cd android
-./gradlew assembleDebug lintDebug
-"$ANDROID_HOME/platform-tools/adb" install -r app/build/outputs/apk/debug/app-debug.apk
+./gradlew assembleFullDebug lintFullDebug
+"$ANDROID_HOME/platform-tools/adb" install -r app/build/outputs/apk/full/debug/app-full-debug.apk
 ```
+
+There are two flavors. `full` (the GitHub release) has every feature. `store` leaves out
+the permissions Google Play restricts (texts, call log, all-files access and automatic
+clipboard); those features show as unavailable. Build it with `./gradlew assembleStoreRelease`.
 
 The verified local package is `android/dist/EchoConnect-debug.apk` (about 71 MiB), with `SHA256SUMS`, source hashes and build/test reports alongside it.
 
@@ -48,7 +52,7 @@ DND integration on the laptop uses Mako. Calls use BlueZ and PipeWire; Answer co
 ```sh
 cargo test -p echofiles-phone -p echoconnect-core -p echofiles-index --lib --tests -- --test-threads=1
 cargo test -p echofiles --bin echofiles
-cd android && ./gradlew assembleDebug lintDebug
+cd android && ./gradlew assembleFullDebug lintFullDebug lintStoreDebug
 ```
 
 The interactive integration fixture uses disposable pairing credentials:

@@ -73,8 +73,8 @@ jobs:
               -storepass "$ECHOCONNECT_KEYSTORE_PASSWORD" -keypass "$ECHOCONNECT_KEY_PASSWORD"
           fi
           cd android
-          ./gradlew assembleRelease
-          cp app/build/outputs/apk/release/app-release.apk EchoConnect.apk
+          ./gradlew assembleFullRelease
+          cp app/build/outputs/apk/full/release/app-full-release.apk EchoConnect.apk
           sha256sum EchoConnect.apk > SHA256SUMS
       - name: Publish the release
         env:
