@@ -1,4 +1,6 @@
-//! The `ef` command line, as a library: the `ef` binary runs it in-process.
+//! The `ef` command line, as a library: the `ef` binary runs it in-process, and the
+//! running EchoFiles app runs it for `ef` over a socket ([`server`]), with settings,
+//! index maps, ignore rules and threads already loaded.
 //!
 //! Nothing here touches process-global state: the working directory, output streams and
 //! the environment variables that matter come in a [`Ctx`].
@@ -21,6 +23,7 @@ pub mod args;
 pub mod exec;
 pub mod find;
 pub mod output;
+pub mod server;
 pub mod tools;
 
 use std::io::Write;

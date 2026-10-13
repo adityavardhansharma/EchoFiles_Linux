@@ -9,7 +9,7 @@ name = "ef_index"
 
 [dependencies]
 tempfile = "3"
-rustix.workspace = true
+rustix = { workspace = true, features = ["net", "process"] }
 rayon.workspace = true
 memchr = "2.8"
 memmap2 = "0.9"

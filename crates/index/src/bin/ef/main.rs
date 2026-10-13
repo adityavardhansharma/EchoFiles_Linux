@@ -1,14 +1,18 @@
 //! `ef` — EchoFiles from the terminal and for AI agents. See `ef help`.
 //!
+//! When the EchoFiles app is running (it starts at login), `ef` hands the command to it:
+//! the app already has the settings, index maps and threads loaded, and writes straight
+//! to this process's stdout and stderr. Otherwise the same code runs here.
+//!
 //! `ef fd …` (or `ef` installed under the name `fd`) takes fd's options and defaults.
-//! `EF_TIMING=1` prints timings to stderr.
+//! `EF_LOCAL=1` always runs in-process; `EF_TIMING=1` prints timings to stderr.
 
 use std::io::IsTerminal;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use ef_index::cli::{self, Ctx};
+use ef_index::cli::{self, Ctx, server};
 use ef_index::config::Settings;
 
 fn main() -> ExitCode {
@@ -27,6 +31,12 @@ fn main() -> ExitCode {
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| "/".into());
     let out_tty = std::io::stdout().is_terminal();
+    if std::env::var_os("EF_LOCAL").is_none()
+        && !cli::runs_locally(&argv)
+        && let Some(code) = server::client(&argv, &cwd, out_tty)
+    {
+        return ExitCode::from(code);
+    }
     let settings = match Settings::load() {
         Ok(s) => s,
         Err(e) => {

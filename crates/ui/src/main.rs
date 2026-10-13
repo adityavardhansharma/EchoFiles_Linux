@@ -83,6 +83,8 @@ fn main() -> iced::Result {
             eprintln!("Couldn't acquire the EchoFiles instance socket");
             return Ok(());
         }
+        // Answer `ef` from here: settings, index maps and threads stay loaded.
+        ef_index::cli::server::spawn();
     }
 
     // Iced parses every system font before it can draw text (714 files, ~450 ms here). Load

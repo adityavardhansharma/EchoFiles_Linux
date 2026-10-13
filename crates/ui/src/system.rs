@@ -159,36 +159,49 @@ pub fn starts_at_login() -> bool {
 const SKILL: &str = r#"---
 name: echofiles
 description: >
-  Fast file search on this computer through EchoFiles. Use it to find files or folders by
-  name in indexed locations or search any accessible folder live with ef find --in, including
-  external drives and /tmp, before running find/fd/locate over large trees.
-  Triggers: find a file, where is, search files, locate, which folder, all PDFs, recent files.
+  Fast file search on this computer through EchoFiles (`ef`): everything fd does — regex,
+  glob, type/size/date/owner filters, .gitignore rules, -x/-X — answered from the index in
+  milliseconds, plus agent tools: why a file is missing, recent changes, related files,
+  folder maps, change tracking. Use it instead of find/fd/locate/ls -R.
+  Triggers: find a file, where is, search files, locate, which folder, all PDFs, recent
+  files, what changed, tests for this file, project layout, duplicates.
 ---
 
 # EchoFiles — `ef`
 
-`ef` searches EchoFiles' index of the user's files. With `--in` on a folder outside the
-index, it searches that folder live without changing the indexed locations.
-
 ```sh
-ef find report                      # names containing all words, best matches first
-ef find "annual report"             # exact phrase
-ef find '*' --ext pdf --limit 50    # every PDF, first 50
-ef find invoice --in ~/Documents    # only inside a folder
-ef find report --in /tmp             # live search outside the index
-ef find src --dirs                  # folders only (--files for files only)
-ef find config --hidden             # include dotfiles and hidden folders
-ef find report --count              # just the number of matches
-ef status                           # what's indexed and how fresh
+ef find report                       # words, any order, ignoring case/accents; best first
+ef find report -n 20 --json          # JSON: path, type, size, modified, where answers came from
+ef find '*' -e pdf --changed-within 1w -n 50
+ef find 'test_*.py' -g src/          # glob, inside a folder (any path, indexed or not)
+ef find 'v[0-9]+' --regex            # regex; -F for literal text; -p to match whole paths
+ef find config -H                    # include dotfiles; -I files hidden by .gitignore; -u both
+ef find build --project --dirs       # in the current project only (also --here)
+ef find '*' --project -t f --budget 2000   # fits ~2000 tokens, rest summarised by folder/type
+ef find main.rs --details            # + size, line count, tags (binary, lockfile, generated)
+ef fd …                              # exactly fd's options, defaults and output
 ```
 
-- Matching ignores case and accents ("resume" finds "Résumé").
-- Results are full paths, one per line. Always pass `--limit` for broad queries.
-- `--in` accepts any accessible folder. Outside indexed locations it walks the folder live,
-  so searches there can take longer.
-- The index updates within seconds in Downloads, Desktop, Documents and the folder open in
-  EchoFiles, and at least every minute elsewhere. For a file created moments ago in some
-  other folder, confirm with `ls`.
+When nothing matches, `ef` says on stderr what would match (with -H, -I, without a
+filter, as a glob/regex) and suggests close names. Read that before retrying.
+
+```sh
+ef why path/to/file      # why it does/doesn't show up: hidden, which ignore rule (file:line), index
+ef recent [DIR] --within 1h      # files changed recently, newest first (what the user just touched)
+ef related src/parser.rs         # its tests, header/source, styles, docs, same-named files
+ef map [DIR]                     # project shape: biggest folders, file counts, sizes
+ef mark  → ef changed --since ID # exactly what a build/script added, removed, modified
+ef wait 'app-*.apk' build/ --timeout 5m   # block until a file appears
+ef batch -c 'find a' -c 'recent' # several commands in one call
+ef dupes [DIR]                   # identical files
+ef status                        # what's indexed, how fresh, whether EchoFiles is running
+```
+
+- Results are full paths (`ef fd` prints fd-style relative paths). Ignored files
+  (.gitignore, .ignore) and dotfiles are skipped by default, like fd.
+- Any folder works; indexed folders answer instantly, others are read live.
+- With EchoFiles running the index is current within seconds to a minute; indexed hits are
+  checked against the disk before they're printed.
 - If `ef` says it's turned off, the user disabled it in EchoFiles → Settings → AI agents:
   fall back to `fd`/`find` and don't try to re-enable it.
 "#;
