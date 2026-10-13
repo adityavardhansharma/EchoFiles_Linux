@@ -59,9 +59,9 @@ pub fn topdir(p: &Path) -> PathBuf {
 }
 
 /// The trash directory for `path` and the `Path=` value its info file records.
-fn trash_for(path: &Path) -> io::Result<(PathBuf, PathBuf, File)> {
+fn trash_for(path: &Path, home: &Path) -> io::Result<(PathBuf, PathBuf, File)> {
     let dev = fs::symlink_metadata(path)?.dev();
-    let home = home_trash();
+    let home = home.to_path_buf();
     if dev_of(&home) == Some(dev) {
         if let Some(parent) = home.parent() { fs::create_dir_all(parent)?; }
         let fd = secure_dir(&home)?;
@@ -156,8 +156,8 @@ impl Bin {
     }
 }
 
-fn bin_for(path: &Path) -> io::Result<Bin> {
-    let (dir, recorded, root) = trash_for(path)?;
+fn bin_for(path: &Path, home: &Path) -> io::Result<Bin> {
+    let (dir, recorded, root) = trash_for(path, home)?;
     let top = (recorded != path).then(|| topdir(path));
     let pinned = Bin::pinned(&root);
     let files_fd = secure_dir(&pinned.join("files"))?;
@@ -170,6 +170,12 @@ fn bin_for(path: &Path) -> io::Result<Bin> {
 /// written before any item moves, and the batch has one durability barrier. Results are in
 /// input order.
 pub fn trash_many(paths: &[PathBuf]) -> Vec<io::Result<Trashed>> {
+    trash_many_in(paths, &home_trash())
+}
+
+/// [`trash_many`] with `home` as the home trash (tests use a private one rather than
+/// changing `XDG_DATA_HOME` under other threads).
+fn trash_many_in(paths: &[PathBuf], home: &Path) -> Vec<io::Result<Trashed>> {
     let small = paths.len() <= 64;
     let date = now_local();
     let mut bins: std::collections::HashMap<u64, Result<Bin, (io::ErrorKind, String)>> = Default::default();
@@ -180,7 +186,7 @@ pub fn trash_many(paths: &[PathBuf]) -> Vec<io::Result<Trashed>> {
         reserved.push((|| {
             let path = if path.is_absolute() { path.clone() } else { std::env::current_dir()?.join(path) };
             let dev = fs::symlink_metadata(&path)?.dev();
-            let bin = bins.entry(dev).or_insert_with(|| bin_for(&path).map_err(|e| (e.kind(), e.to_string())));
+            let bin = bins.entry(dev).or_insert_with(|| bin_for(&path, home).map_err(|e| (e.kind(), e.to_string())));
             let bin = bin.as_ref().map_err(|(k, m)| io::Error::new(*k, m.clone()))?;
             let base = path.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "can't trash a filesystem root"))?.as_bytes().to_vec();
             let recorded = bin.top.as_ref().and_then(|t| path.strip_prefix(t).ok()).unwrap_or(&path);
@@ -324,12 +330,11 @@ mod tests {
         let base = std::env::temp_dir().join(format!("ef-trash-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).unwrap();
-        // Use a private XDG_DATA_HOME so the test never touches the real trash.
-        // SAFETY: tests in this module run on one thread per test; nothing else reads it.
-        unsafe { std::env::set_var("XDG_DATA_HOME", base.join("data")) };
+        // A private home trash, so the test never touches the real one. (Setting
+        // XDG_DATA_HOME instead would race with tests running on other threads.)
         let f = base.join("a.txt");
         fs::write(&f, b"x").unwrap();
-        let t = trash(&f).unwrap();
+        let t = trash_many_in(&[f.clone()], &base.join("data/Trash")).pop().unwrap().unwrap();
         assert!(!f.exists() && t.file.exists() && t.info.exists());
         let e = entry_for(&t.file).unwrap();
         assert_eq!(e.trashed.original, f);

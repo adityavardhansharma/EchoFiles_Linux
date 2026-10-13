@@ -5,11 +5,22 @@ fn transfer(kind: Kind, src: &Path, dst: &Path) -> ops::Outcome {
     let plan = ops::plan(kind, &[src.into()], dst, &progress).unwrap();
     ops::execute(&plan, &HashMap::new(), Resolution::Replace, false, &progress)
 }
-// This integration executable owns its disposable Trash; no real user data is touched.
+/// This integration executable owns one disposable Trash; no real user data is touched.
+/// Tests run on parallel threads, so `XDG_DATA_HOME` is set exactly once, before any test
+/// can read it (each test calls this first), instead of per test with different values.
+fn private_trash() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let data = tempfile::tempdir().unwrap().keep().join("data");
+        // SAFETY: inside call_once every other test is blocked in private_trash(), so
+        // nothing reads the environment concurrently.
+        unsafe { std::env::set_var("XDG_DATA_HOME", data) };
+    });
+}
 #[test]
 fn file_safety_review_regressions() {
+    private_trash();
     let root = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("XDG_DATA_HOME", root.path().join("data")); }
     for (label, kind) in [("copy", Kind::Copy), ("move", Kind::Move)] {
         let src = root.path().join(label).join("src/folder");
         let dst = root.path().join(label).join("dst/folder");
@@ -60,6 +71,7 @@ fn file_safety_review_regressions() {
 
 #[test]
 fn preserves_xattrs_and_hardlinks() {
+    private_trash();
     let root = tempfile::tempdir().unwrap(); let src = root.path().join("source"); let dst = root.path().join("dest");
     fs::create_dir(&src).unwrap(); fs::create_dir(&dst).unwrap(); fs::write(src.join("a"), b"data").unwrap(); fs::hard_link(src.join("a"), src.join("b")).unwrap();
     rustix::fs::lsetxattr(src.join("a"), "user.audit", b"value", rustix::fs::XattrFlags::empty()).unwrap();
@@ -70,6 +82,7 @@ fn preserves_xattrs_and_hardlinks() {
 
 #[test]
 fn conflict_changes_and_partial_undo_preserve_both_copies() {
+    private_trash();
     let root = tempfile::tempdir().unwrap();
     let src = root.path().join("src"); let dst = root.path().join("dst");
     fs::create_dir(&src).unwrap(); fs::create_dir(&dst).unwrap();
@@ -96,6 +109,7 @@ fn conflict_changes_and_partial_undo_preserve_both_copies() {
 
 #[test]
 fn progress_counts_each_leaf_once_for_copies_and_merged_moves() {
+    private_trash();
     use std::sync::atomic::Ordering;
     let root = tempfile::tempdir().unwrap();
     for (name, kind) in [("copy", Kind::Copy), ("move", Kind::Move)] {
@@ -115,10 +129,10 @@ fn progress_counts_each_leaf_once_for_copies_and_merged_moves() {
 // merged move still retires the emptied source folders and undoes completely.
 #[test]
 fn cross_filesystem_batch_and_merged_moves() {
+    private_trash();
     let home = tempfile::tempdir().unwrap();
     let Ok(other) = tempfile::tempdir_in("/dev/shm") else { return };
     if fs::metadata(other.path()).unwrap().dev() == fs::metadata(home.path()).unwrap().dev() { return; }
-    unsafe { std::env::set_var("XDG_DATA_HOME", home.path().join("data")); }
     let src = home.path().join("src"); fs::create_dir(&src).unwrap();
     let files: Vec<_> = (0..20).map(|i| { let p = src.join(format!("f{i}")); fs::write(&p, format!("{i}")).unwrap(); p }).collect();
     let p = Progress::default();
@@ -145,6 +159,7 @@ fn cross_filesystem_batch_and_merged_moves() {
 
 #[test]
 fn rename_changes_only_letter_case() {
+    private_trash();
     let d = tempfile::tempdir().unwrap();
     fs::write(d.path().join("photo.jpg"), b"x").unwrap();
     assert_eq!(ops::rename(&d.path().join("photo.jpg"), "Photo.jpg").unwrap(), d.path().join("Photo.jpg"));
@@ -159,8 +174,8 @@ fn recovery_dirs(p: &Path) -> usize {
 // exactly and leaves nothing behind, and discarding the undo frees what was retained.
 #[test]
 fn merge_replace_undo_and_discard_leave_no_recovery_folders() {
+    private_trash();
     let root = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("XDG_DATA_HOME", root.path().join("data")); }
     for discard in [false, true] {
         let base = root.path().join(if discard { "discard" } else { "undo" });
         let src = base.join("src/tree"); let dst = base.join("dst");
@@ -189,8 +204,8 @@ fn merge_replace_undo_and_discard_leave_no_recovery_folders() {
 
 #[test]
 fn many_items_with_one_name_trash_and_restore() {
+    private_trash();
     let root = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("XDG_DATA_HOME", root.path().join("data")); }
     let paths: Vec<_> = (0..300).map(|i| { let d = root.path().join(format!("d{i}")); fs::create_dir(&d).unwrap(); let p = d.join("README.md"); fs::write(&p, format!("{i}")).unwrap(); p }).collect();
     let (ok, failed) = ops::trash_all(&paths);
     assert!(failed.is_empty() && ok.len() == 300);
@@ -202,6 +217,7 @@ fn many_items_with_one_name_trash_and_restore() {
 
 #[test]
 fn duplicate_names_are_found_with_gaps_and_without_gaps() {
+    private_trash();
     let d = tempfile::tempdir().unwrap();
     let f = d.path().join("photo.jpg"); fs::write(&f, b"x").unwrap();
     let made: Vec<_> = (0..40).map(|_| { let p = ops::unique_path(&f, ops::Naming::Copy); assert!(!p.exists()); fs::write(&p, b"x").unwrap(); p }).collect();
@@ -214,6 +230,7 @@ fn duplicate_names_are_found_with_gaps_and_without_gaps() {
 
 #[test]
 fn a_few_files_copy_and_move_with_targeted_fsync() {
+    private_trash();
     let root = tempfile::tempdir().unwrap();
     let src = root.path().join("s"); let dst = root.path().join("d"); fs::create_dir(&src).unwrap(); fs::create_dir(&dst).unwrap();
     let files: Vec<_> = (0..3).map(|i| { let p = src.join(format!("f{i}")); fs::write(&p, format!("{i}")).unwrap(); p }).collect();
