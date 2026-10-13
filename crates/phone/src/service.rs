@@ -35,6 +35,9 @@ use crate::{Device, Event, Notification, Sftp, Sms, Via, PORT_MAX, PORT_MIN, UDP
 const PROTOCOL: u32 = 8;
 const PAYLOAD_PORTS: std::ops::RangeInclusive<u16> = 1739..=PORT_MAX;
 const MAX_LINE: usize = 8 << 20;
+/// Before pairing only identity and pair packets are expected: small ones. Anyone on the
+/// network can open a link, so they don't get to make us buffer megabytes.
+const MAX_UNPAIRED_LINE: usize = 64 << 10;
 
 /// What a laptop sends, and so what a phone accepts (each side enables a feature when the
 /// other lists its packets). `echofiles.*` are EchoConnect's own; stock KDE Connect ignores them.
@@ -896,6 +899,9 @@ fn run_link<S: Sock>(inner: &Arc<Inner>, mut stream: Tls2<S>, ip: IpAddr, cert: 
     let revoked = Arc::new(AtomicBool::new(false));
     let mut device: Option<Device> = None;
     let mut buf: Vec<u8> = Vec::new();
+    // `buf[..scanned]` holds no newline: each byte is searched once, however many reads
+    // a long packet takes.
+    let mut scanned = 0;
     let mut tmp = vec![0u8; 64 * 1024];
     let started = Instant::now();
     // Older peers don't repeat the identity inside TLS: fall back to the plain one.
@@ -974,10 +980,12 @@ fn run_link<S: Sock>(inner: &Arc<Inner>, mut stream: Tls2<S>, ip: IpAddr, cert: 
             Ok(0) => break Ok(()),
             Ok(n) => {
                 buf.extend_from_slice(&tmp[..n]);
-                if buf.len() > MAX_LINE {
+                let paired = device.as_ref().is_some_and(|d| inner.authorized(&d.id, &cert, generation));
+                if buf.len() > if paired { MAX_LINE } else { MAX_UNPAIRED_LINE } {
                     break Err(io::Error::other("packet too large"));
                 }
-                while let Some(pos) = buf.iter().position(|&c| c == b'\n') {
+                while let Some(pos) = buf[scanned..].iter().position(|&c| c == b'\n').map(|p| scanned + p) {
+                    scanned = 0;
                     let raw: Vec<u8> = buf.drain(..=pos).collect();
                     let Ok(v) = serde_json::from_slice::<Value>(raw.trim_ascii()) else { continue };
                     if v["type"] == "kdeconnect.identity" {
@@ -997,6 +1005,7 @@ fn run_link<S: Sock>(inner: &Arc<Inner>, mut stream: Tls2<S>, ip: IpAddr, cert: 
                         handle(inner, &d.id, ip, generation, &cert, &v);
                     }
                 }
+                scanned = buf.len();
             }
             Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted) => {}
             Err(e) => break Err(e),
