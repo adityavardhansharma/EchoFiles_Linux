@@ -349,9 +349,8 @@ fn watch_clipboard(tx: mpsc::UnboundedSender<PhoneMsg>) {
         return;
     };
     let Some(out) = child.stdout.take() else { return };
-    use base64::Engine;
     for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
-        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(line.trim())
+        if let Ok(bytes) = crate::codec::base64_decode(line.trim()).ok_or(())
             && let Ok(text) = String::from_utf8(bytes)
             && !text.is_empty()
             && text.len() < 1 << 20
@@ -366,7 +365,7 @@ fn watch_images() {
     let mut command = std::process::Command::new("wl-paste");
     command.args(["--type", "image/png", "--watch", "sh", "-c", "head -c 16777217 | base64 -w0; echo"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
     unsafe { command.pre_exec(|| { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM); Ok(()) }); }
-    if let Ok(mut child) = command.spawn() { if let Some(out) = child.stdout.take() { use base64::Engine; for line in std::io::BufReader::new(out).lines().map_while(Result::ok) { if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(line.trim()) { if !bytes.is_empty() && bytes.len() <= 16*1024*1024 { let _ = event_tx().unbounded_send(PhoneMsg::LocalImage(bytes)); } } } } }
+    if let Ok(mut child) = command.spawn() { if let Some(out) = child.stdout.take() { for line in std::io::BufReader::new(out).lines().map_while(Result::ok) { if let Ok(bytes) = crate::codec::base64_decode(line.trim()).ok_or(()) { if !bytes.is_empty() && bytes.len() <= 16*1024*1024 { let _ = event_tx().unbounded_send(PhoneMsg::LocalImage(bytes)); } } } } }
 }
 
 fn normal_image(bytes: &[u8]) -> Option<Vec<u8>> {
@@ -514,7 +513,7 @@ fn scan_photos(root: &Path) -> Result<Vec<Photo>, String> {
 }
 
 fn thumb_cache(path: &Path, mtime: i64, tag: &str) -> PathBuf {
-    let key = format!("{:x}", md5::compute(format!("{}\0{mtime}\0{tag}", path.display()).as_bytes()));
+    let key = crate::codec::md5_hex(format!("{}\0{mtime}\0{tag}", path.display()).as_bytes());
     std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| config::home().join(".cache")).join("echofiles/phone-thumbs").join(format!("{key}.png"))
 }
 
@@ -635,7 +634,6 @@ fn photo_thumb(path: &Path, mtime: i64) -> Option<Pixels> {
 
 /// The newest photo, sized for the phone's screen, as a base64 JPEG.
 fn screen_image(path: &Path, mtime: i64) -> Option<String> {
-    use base64::Engine;
     let cache = thumb_cache(path, mtime, "screen").with_extension("jpg");
     let bytes = match read_image_limited(&cache) {
         Some(b) => b,
@@ -653,7 +651,7 @@ fn screen_image(path: &Path, mtime: i64) -> Option<String> {
             out
         }
     };
-    Some(base64::engine::general_purpose::STANDARD.encode(bytes))
+    Some(crate::codec::base64_encode(&bytes))
 }
 
 fn import_key(id: &str, root: Option<&Path>, p: &Photo) -> String {
@@ -1184,7 +1182,7 @@ impl App {
                 if !self.settings.phone.clipboard || bytes == self.phone.last_image { return Task::none(); }
                 self.phone.last_image = bytes.clone();
                 if let Some(s) = service() { for d in self.phone.devices.values().filter(|d| d.paired && d.echoconnect()) {
-                    if bytes.len() <= 48*1024 { use base64::Engine; s.send_packet(&d.id, "echofiles.clipboard.image.inline", ef_phone::json!({"data":base64::engine::general_purpose::STANDARD.encode(&bytes),"mime":"image/png"})); }
+                    if bytes.len() <= 48*1024 { s.send_packet(&d.id, "echofiles.clipboard.image.inline", ef_phone::json!({"data":crate::codec::base64_encode(&bytes),"mime":"image/png"})); }
                     else { s.send_payload(&d.id, "echofiles.clipboard.image", ef_phone::json!({"filename":"clipboard.png","mime":"image/png"}), ef_phone::Source::Bytes(bytes.clone())); }
                 } }
                 Task::none()
@@ -1937,9 +1935,8 @@ impl App {
             Event::Other { id, kind, body } => {
                 match kind.as_str() {
                     "echofiles.clipboard.image.inline" if self.settings.phone.clipboard => {
-                                            use base64::Engine;
-                        let data = body["data"].as_str().unwrap_or("");
-                        if data.len() <= 65536 { if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) { std::thread::spawn(move || { if let Some(png) = normal_image(&bytes) { let _ = event_tx().unbounded_send(PhoneMsg::RemoteImage(png)); } }); } }
+                                            let data = body["data"].as_str().unwrap_or("");
+                        if data.len() <= 65536 { if let Ok(bytes) = crate::codec::base64_decode(data).ok_or(()) { std::thread::spawn(move || { if let Some(png) = normal_image(&bytes) { let _ = event_tx().unbounded_send(PhoneMsg::RemoteImage(png)); } }); } }
                     }
                     "echofiles.dnd" if self.settings.phone.dnd_sync => {
                         let enabled = body["enabled"].as_bool().unwrap_or(false);

@@ -16,7 +16,6 @@ ef-config.workspace = true
 ef-net.workspace = true
 ef-phone.workspace = true
 zbus.workspace = true
-base64 = "0.22"
 iced = { workspace = true, features = ["wayland", "x11", "smol", "crisp", "image-without-codecs"] }
 mimalloc.workspace = true
 rayon.workspace = true
@@ -24,7 +23,6 @@ rustix.workspace = true
 libc = "0.2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 png = "0.17"
-md5 = "0.8.1"
 
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 sha2 = "0.10"
