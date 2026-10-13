@@ -126,6 +126,8 @@ pub struct SearchConfig {
     pub exclude_paths: Vec<String>,
     pub exclude_names: Vec<String>,
     pub skip_cache_folders: bool,
+    /// Also index every drive mounted on this computer (see [`drives`]).
+    pub index_drives: bool,
 }
 
 impl Default for SearchConfig {
@@ -137,13 +139,24 @@ impl Default for SearchConfig {
             exclude_paths: Vec::new(),
             exclude_names: DEFAULT_EXCLUDE_NAMES.iter().map(|s| s.to_string()).collect(),
             skip_cache_folders: true,
+            index_drives: true,
         }
     }
 }
 
 impl SearchConfig {
+    /// The folders search covers: the ones listed in Settings, plus every mounted drive
+    /// that isn't already inside one of them (with `index_drives`).
     pub fn roots(&self) -> Vec<PathBuf> {
-        self.roots.iter().map(|r| expand(r)).collect()
+        let mut roots: Vec<PathBuf> = self.roots.iter().map(|r| expand(r)).collect();
+        if self.index_drives {
+            for d in drives() {
+                if !roots.iter().any(|r| d.starts_with(r)) {
+                    roots.push(d);
+                }
+            }
+        }
+        roots
     }
 
     /// Excluded paths, expanded, that lie inside `root` (and aren't `root` itself).
@@ -376,6 +389,68 @@ impl Settings {
     }
 }
 
+/// Where the drives attached to this computer are mounted: every disk filesystem (internal
+/// or removable) except the one the system runs from, skipping system places (`/boot`,
+/// `/var`, …), network and virtual filesystems, folders inside the home folder (already
+/// searched) and places this user can't read. One mount point per drive.
+pub fn drives() -> Vec<PathBuf> {
+    drives_from(&std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default(), &home())
+}
+
+/// [`drives`] for a given `/proc/self/mountinfo` text.
+pub fn drives_from(mountinfo: &str, home: &Path) -> Vec<PathBuf> {
+    // `\040` and friends: octal escapes for spaces, tabs, newlines and backslashes.
+    fn unescape(s: &str) -> PathBuf {
+        let b = s.as_bytes();
+        let mut out = Vec::with_capacity(b.len());
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'\\' && i + 3 < b.len() && b[i + 1..i + 4].iter().all(|c| (b'0'..=b'7').contains(c)) {
+                out.push((b[i + 1] - b'0') * 64 + (b[i + 2] - b'0') * 8 + (b[i + 3] - b'0'));
+                i += 4;
+            } else {
+                out.push(b[i]);
+                i += 1;
+            }
+        }
+        PathBuf::from(std::ffi::OsStr::from_bytes(&out))
+    }
+    const SYSTEM: [&str; 13] = ["/boot", "/efi", "/usr", "/var", "/opt", "/srv", "/tmp", "/proc", "/sys", "/dev", "/snap", "/etc", "/root"];
+    // (device, mount point, filesystem, source)
+    let mounts: Vec<(&str, PathBuf, &str, &str)> = mountinfo
+        .lines()
+        .filter_map(|l| {
+            let (left, right) = l.split_once(" - ")?;
+            let f: Vec<&str> = left.split(' ').collect();
+            let r: Vec<&str> = right.split(' ').collect();
+            Some((*f.get(2)?, unescape(f.get(4)?), *r.first()?, *r.get(1)?))
+        })
+        .collect();
+    let system_dev = mounts.iter().find(|m| m.1 == Path::new("/")).map(|m| m.0);
+    let mut out: Vec<(&str, PathBuf)> = Vec::new();
+    for (dev, at, fs, source) in &mounts {
+        let virtual_fs = matches!(*fs, "squashfs" | "iso9660" | "udf" | "overlay" | "tmpfs" | "devtmpfs" | "ramfs") || (fs.starts_with("fuse") && *fs != "fuseblk");
+        let system_place = at == Path::new("/")
+            || SYSTEM.iter().any(|s| at.starts_with(s))
+            || (at.starts_with("/run") && !at.starts_with("/run/media"));
+        if !source.starts_with("/dev/") || virtual_fs || system_place || Some(*dev) == system_dev || at.starts_with(home) {
+            continue;
+        }
+        if rustix::fs::access(at.as_path(), rustix::fs::Access::READ_OK | rustix::fs::Access::EXEC_OK).is_err() {
+            continue;
+        }
+        match out.iter_mut().find(|o| o.0 == *dev) {
+            // The same drive mounted twice (bind mounts, btrfs subvolumes): keep the shortest path.
+            Some(o) if at.as_os_str().len() < o.1.as_os_str().len() => o.1 = at.clone(),
+            Some(_) => {}
+            None => out.push((dev, at.clone())),
+        }
+    }
+    let mut v: Vec<PathBuf> = out.into_iter().map(|o| o.1).collect();
+    v.sort();
+    v
+}
+
 /// Roots from `searched` that lie strictly inside `root`. Each is searched on its own, so a
 /// search of `root` skips them rather than listing their contents twice.
 pub fn nested_roots(searched: &[PathBuf], root: &Path) -> Vec<PathBuf> {
@@ -427,6 +502,38 @@ mod tests {
         let partial = Settings::load_from(&file).unwrap();
         assert!(!partial.agents.cli);
         assert_eq!(partial.search, SearchConfig::default());
+    }
+
+    #[test]
+    fn drives_are_disks_outside_the_system() {
+        let info = "\
+22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw
+23 22 0:25 /@home /home rw - btrfs /dev/mapper/root rw
+24 22 0:25 /@log /var/log rw - btrfs /dev/mapper/root rw
+25 22 259:8 / /boot rw - vfat /dev/nvme0n1p8 rw
+26 22 0:40 / /media/data106 rw - btrfs /dev/mapper/data106 rw
+27 22 0:40 /sub /media/data106-bind rw - btrfs /dev/mapper/data106 rw
+28 22 8:17 / /run/media/me/USB\040Stick rw - exfat /dev/sdb1 rw
+29 22 0:50 / /run/user/1000/doc rw - fuse.portal portal rw
+30 22 0:51 / /mnt/nas rw - cifs //nas/share rw
+31 22 0:52 / /tmp rw - tmpfs tmpfs rw
+32 22 8:33 / /home/me/inside rw - ext4 /dev/sdc1 rw
+33 22 8:49 / /mnt/ntfs rw - fuseblk /dev/sdd1 rw
+34 22 7:0 / /var/lib/snapd/snap/core rw - squashfs /dev/loop0 ro
+";
+        // Mount points that don't exist here fail the readability check, so the realistic
+        // table above can only lose entries; every rule is checked below with "/media",
+        // which exists on any test machine.
+        for d in drives_from(info, Path::new("/home/me")) {
+            assert!(!d.starts_with("/boot") && !d.starts_with("/home") && !d.starts_with("/tmp") && !d.starts_with("/mnt/nas") && !d.starts_with("/var"), "{d:?}");
+        }
+        let names = |i: &str| drives_from(i, Path::new("/home/me"));
+        assert!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n23 22 0:25 /@home /media rw - btrfs /dev/mapper/root rw\n").is_empty(), "same device as the system");
+        assert_eq!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n26 22 0:40 / /media rw - btrfs /dev/mapper/data rw\n27 22 0:40 /x /media/deeper rw - btrfs /dev/mapper/data rw\n"), vec![PathBuf::from("/media")], "one path per drive, the shortest");
+        assert!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n30 22 0:51 / /media rw - cifs //nas/share rw\n").is_empty(), "network");
+        assert!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n29 22 0:50 / /media rw - fuse.portal portal rw\n").is_empty(), "virtual");
+        assert_eq!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n33 22 8:49 / /media rw - fuseblk /dev/sdd1 rw\n"), vec![PathBuf::from("/media")], "ntfs-3g");
+        assert!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n25 22 259:8 / /boot rw - vfat /dev/nvme0n1p8 rw\n").is_empty(), "system places");
     }
 
     #[test]
