@@ -391,6 +391,14 @@ impl App {
                 col = col.push(self.side_item(icon, label.to_string(), path, false, 0.0));
             }
         }
+        // Your other Linux drives (internal, USB, unlocked LUKS), under their own names.
+        let mut linux_drives = self.volumes.iter().enumerate().filter(|(_, v)| !v.is_windows()).peekable();
+        if linux_drives.peek().is_some() {
+            col = col.push(Space::new().height(style::SPACE_3));
+            for (i, v) in linux_drives {
+                col = col.push(self.drive_item(i, v));
+            }
+        }
         if !self.settings.sidebar.pinned.is_empty() {
             col = col.push(Space::new().height(style::SPACE_5));
             col = col.push(self.section("Pinned", None, None));
@@ -445,12 +453,13 @@ impl App {
         let p = &self.palette;
         let open = self.settings.sidebar.windows_open;
         let pane = self.pane();
-        let mut col = column![self.fold_head("Windows", color(p.world_windows), (!self.volumes.is_empty()).then_some(self.volumes.len()), open, Fold::Windows, None)].spacing(1);
-        if open && self.volumes.is_empty() {
+        let count = self.volumes.iter().filter(|v| v.is_windows()).count();
+        let mut col = column![self.fold_head("Windows", color(p.world_windows), (count > 0).then_some(count), open, Fold::Windows, None)].spacing(1);
+        if open && count == 0 {
             col = col.push(container(text("No Windows drives found").size(style::META).font(style::FONT).color(color(p.ink_muted))).padding([4, 12]));
         }
         let here = if pane.special() { None } else { self.volume_at(&pane.location).map(|(i, _)| i) };
-        for (i, v) in self.volumes.iter().enumerate() {
+        for (i, v) in self.volumes.iter().enumerate().filter(|(_, v)| v.is_windows()) {
             if open || here == Some(i) {
                 col = col.push(self.drive_item(i, v));
             }
@@ -540,7 +549,7 @@ impl App {
             // the accent edge.
             let world = if pane.shares.is_some() || ef_net::gvfs::is_network_path(&pane.location) {
                 p.world_network
-            } else if self.volume_at(&pane.location).is_some() {
+            } else if self.volume_at(&pane.location).is_some_and(|(_, v)| v.is_windows()) {
                 p.world_windows
             } else {
                 p.world_linux
@@ -733,7 +742,9 @@ impl App {
         let pane = self.pane();
         let mut left = String::new();
         if pane.drives {
-            left.push_str(&format!("{} Windows {}", self.volumes.len(), if self.volumes.len() == 1 { "drive" } else { "drives" }));
+            // The Linux system drive is a card too.
+            let n = self.volumes.len() + 1;
+            left.push_str(&format!("{n} {}", if n == 1 { "drive" } else { "drives" }));
         } else if let Some(page) = pane.phone {
             left.push_str(&self.phone_status(page));
         } else if let Some(page) = &pane.shares {

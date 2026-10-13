@@ -388,7 +388,7 @@ impl App {
                 let d = Message::Drive;
                 let mut e = Vec::new();
                 if v.locked {
-                    e.push(Entry::Heading("Locked with BitLocker".into()));
+                    e.push(Entry::Heading(if v.is_bitlocker() { "Locked with BitLocker".into() } else { "Encrypted and locked".into() }));
                     return e;
                 }
                 match v.mount_points.first() {
@@ -523,7 +523,7 @@ impl App {
                     add("Actions", "lock", format!("Mount {name} read-write"), Some("unsafe".into()), None, Message::Drive(DriveMsg::AskWrite(i)));
                 }
             } else {
-                add("Actions", "drive", format!("Mount {name}"), Some(format!("{size} NTFS")), None, Message::Drive(DriveMsg::Click(i)));
+                add("Actions", "drive", format!("Mount {name}"), Some(format!("{size} {}", v.kind())), None, Message::Drive(DriveMsg::Click(i)));
             }
         }
         for place in self.net_places() {
