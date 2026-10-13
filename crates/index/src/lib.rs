@@ -16,11 +16,13 @@
 
 pub use ef_config as config;
 pub mod corpus;
+pub mod filter;
 pub mod fold;
 pub mod gitignore;
 pub mod glob;
 pub mod live;
 mod matcher;
+pub mod pattern;
 pub mod units;
 mod store;
 mod view;
