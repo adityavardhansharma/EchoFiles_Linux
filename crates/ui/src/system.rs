@@ -156,55 +156,10 @@ pub fn starts_at_login() -> bool {
 // AI agent skill (the Omarchy way: one SKILL.md linked into global agent skill folders)
 // ---------------------------------------------------------------------------------------
 
-const SKILL: &str = r#"---
-name: echofiles
-description: >
-  Fast file search on this computer through EchoFiles (`ef`): everything fd does — regex,
-  glob, type/size/date/owner filters, .gitignore rules, -x/-X — answered from the index in
-  milliseconds, plus agent tools: why a file is missing, recent changes, related files,
-  folder maps, change tracking. Use it instead of find/fd/locate/ls -R.
-  Triggers: find a file, where is, search files, locate, which folder, all PDFs, recent
-  files, what changed, tests for this file, project layout, duplicates.
----
-
-# EchoFiles — `ef`
-
-```sh
-ef find report                       # words, any order, ignoring case/accents; best first
-ef find report -n 20 --json          # JSON: path, type, size, modified, where answers came from
-ef find '*' -e pdf --changed-within 1w -n 50
-ef find 'test_*.py' -g src/          # glob, inside a folder (any path, indexed or not)
-ef find 'v[0-9]+' --regex            # regex; -F for literal text; -p to match whole paths
-ef find config -H                    # include dotfiles; -I files hidden by .gitignore; -u both
-ef find build --project --dirs       # in the current project only (also --here)
-ef find '*' --project -t f --budget 2000   # fits ~2000 tokens, rest summarised by folder/type
-ef find main.rs --details            # + size, line count, tags (binary, lockfile, generated)
-ef fd …                              # exactly fd's options, defaults and output
-```
-
-When nothing matches, `ef` says on stderr what would match (with -H, -I, without a
-filter, as a glob/regex) and suggests close names. Read that before retrying.
-
-```sh
-ef why path/to/file      # why it does/doesn't show up: hidden, which ignore rule (file:line), index
-ef recent [DIR] --within 1h      # files changed recently, newest first (what the user just touched)
-ef related src/parser.rs         # its tests, header/source, styles, docs, same-named files
-ef map [DIR]                     # project shape: biggest folders, file counts, sizes
-ef mark  → ef changed --since ID # exactly what a build/script added, removed, modified
-ef wait 'app-*.apk' build/ --timeout 5m   # block until a file appears
-ef batch -c 'find a' -c 'recent' # several commands in one call
-ef dupes [DIR]                   # identical files
-ef status                        # what's indexed, how fresh, whether EchoFiles is running
-```
-
-- Results are full paths (`ef fd` prints fd-style relative paths). Ignored files
-  (.gitignore, .ignore) and dotfiles are skipped by default, like fd.
-- Any folder works; indexed folders answer instantly, others are read live.
-- With EchoFiles running the index is current within seconds to a minute; indexed hits are
-  checked against the disk before they're printed.
-- If `ef` says it's turned off, the user disabled it in EchoFiles → Settings → AI agents:
-  fall back to `fd`/`find` and don't try to re-enable it.
-"#;
+/// The skill: a short SKILL.md agents always read, and the full reference they open when
+/// they need an option, a command or the JSON format.
+const SKILL: &str = include_str!("skill/SKILL.md");
+const SKILL_REFERENCE: &str = include_str!("skill/reference.md");
 
 fn skill_source_dir() -> PathBuf {
     std::env::var_os("XDG_DATA_HOME")
@@ -213,14 +168,62 @@ fn skill_source_dir() -> PathBuf {
         .join("echofiles/agents/skills/echofiles")
 }
 
-fn skill_links() -> [PathBuf; 4] {
+/// Where Omarchy keeps its global agent skills (`$OMARCHY_PATH/default/agents/skills`).
+fn omarchy_skills() -> PathBuf {
+    std::env::var_os("OMARCHY_PATH").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/usr/share/omarchy")).join("default/agents/skills")
+}
+
+/// The agent skill folders to put EchoFiles' skill in: every folder where Omarchy's global
+/// skills are linked (so every agent Omarchy sets up — now or after an update — finds
+/// it), found by looking, not from a fixed list. Without Omarchy, the shared
+/// `~/.agents/skills` that agents read.
+fn skill_links() -> Vec<PathBuf> {
+    let source = omarchy_skills();
+    let mut dirs: Vec<PathBuf> = skill_dirs().into_iter().filter(|d| links_into(d, &source)).collect();
+    if dirs.is_empty() {
+        dirs.push(config::home().join(".agents/skills"));
+    }
+    dirs.into_iter().map(|d| d.join("echofiles")).collect()
+}
+
+/// Folders named `skills` in the dot-folders of home, up to four levels down
+/// (`~/.claude/skills`, `~/.pi/agent/skills`, `~/.hermes/profiles/work/skills`, …).
+fn skill_dirs() -> Vec<PathBuf> {
+    const SKIP: [&str; 12] = [".cache", ".local", ".npm", ".cargo", ".rustup", ".gradle", ".m2", ".nvm", ".pnpm-store", ".yarn", ".mozilla", ".var"];
     let home = config::home();
-    [
-        home.join(".agents/skills/echofiles"),
-        home.join(".claude/skills/echofiles"),
-        home.join(".codex/skills/echofiles"),
-        home.join(".pi/agent/skills/echofiles"),
-    ]
+    let mut found = Vec::new();
+    let mut queue: Vec<(PathBuf, u32)> = std::fs::read_dir(&home)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            n.starts_with('.') && !SKIP.contains(&n.as_ref()) && e.file_type().is_ok_and(|t| t.is_dir())
+        })
+        .map(|e| (e.path(), 1))
+        .collect();
+    while let Some((dir, depth)) = queue.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            // Real folders only: a symlinked skill is a skill, not a place to look in.
+            if !e.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            if e.file_name() == "skills" {
+                found.push(e.path());
+            } else if depth < 4 && e.file_name() != "node_modules" {
+                queue.push((e.path(), depth + 1));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Whether `dir` holds a link to one of Omarchy's global skills.
+fn links_into(dir: &Path, source: &Path) -> bool {
+    std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| std::fs::read_link(e.path()).is_ok_and(|t| t.starts_with(source)))
 }
 
 fn is_our_link(link: &Path, source: &Path) -> bool {
@@ -237,8 +240,10 @@ pub fn set_skill(on: bool) -> Result<(), String> {
     let source = skill_source_dir();
     let links = skill_links();
     if !on {
-        // Never remove another agent skill with the same name.
-        for link in &links {
+        // Wherever our skill was linked (Omarchy's folders may have changed since); never
+        // remove another agent skill with the same name.
+        let ours = skill_dirs().into_iter().map(|d| d.join("echofiles")).chain(links.iter().cloned());
+        for link in ours.collect::<Vec<_>>().iter() {
             if is_our_link(link, &source) {
                 std::fs::remove_file(link).map_err(|e| format!("Couldn't remove {}: {e}", link.display()))?;
             }
@@ -256,6 +261,7 @@ pub fn set_skill(on: bool) -> Result<(), String> {
 
     std::fs::create_dir_all(&source)
         .and_then(|_| std::fs::write(source.join("SKILL.md"), SKILL))
+        .and_then(|_| std::fs::write(source.join("reference.md"), SKILL_REFERENCE))
         .map_err(|e| format!("Couldn't write the skill to {}: {e}", source.display()))?;
     for link in &links {
         if is_our_link(link, &source) {

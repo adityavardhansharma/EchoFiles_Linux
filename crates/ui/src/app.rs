@@ -547,9 +547,7 @@ impl App {
 
     fn run_search(&mut self) -> Task<Message> {
         let hidden = self.show_hidden;
-        let use_index = self.settings.search.index && self.roots.iter().any(|r| r.map.is_some());
-        let roots = self.roots.clone();
-        let cfg = self.settings.search.clone();
+        let settings = self.settings.clone();
         let pane = self.pane_mut();
         pane.search_cancel.store(true, Ordering::Relaxed);
         pane.search_generation = crate::pane::next_id();
@@ -563,15 +561,7 @@ impl App {
         pane.searching = true;
         let cancel = Arc::new(AtomicBool::new(false));
         pane.search_cancel = cancel.clone();
-        if use_index {
-            let phones = self.settings.phone.phone_index;
-            return background(move || search::with_phone(search::combined(&roots, &cfg, &text, hidden, &cancel), &text, hidden, phones), move |results| Message::SearchDone { generation, results });
-        }
-        let cancel = Arc::new(AtomicBool::new(false));
-        pane.search_cancel = cancel.clone();
-        let dirs = cfg.roots();
-        let phones = self.settings.phone.phone_index;
-        background(move || search::with_phone(search::live(&dirs, &cfg, &text, hidden, &cancel), &text, hidden, phones), move |results| Message::SearchDone { generation, results })
+        background(move || search::run(&settings, &text, hidden, &cancel), move |results| Message::SearchDone { generation, results })
     }
 
     // ------------------------------------------------------------------ index
@@ -983,7 +973,7 @@ impl App {
             }
             Message::SearchDone { generation, results } => {
                 if let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.search_generation == generation) {
-                    if results.is_none() { self.notice = Some("Search could not read all requested locations. Reconnect unavailable locations and try again.".into()); }
+                    // `None`: the search was cancelled. Errors arrive as results with a note.
                     pane.searching = false;
                     pane.results = None;
                     pane.result_cursor = None;

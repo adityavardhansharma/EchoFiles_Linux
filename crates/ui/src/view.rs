@@ -657,7 +657,9 @@ impl App {
             return container(text(msg).size(style::META).font(style::FONT).color(color(p.ink_muted))).center(Length::Fill).into();
         };
         if res.hits.is_empty() {
-            let hint = if res.from_index {
+            let hint = if let Some(note) = &res.note {
+                note.clone()
+            } else if res.from_index {
                 format!("Nothing in the index matches. It was updated {}; new files in other folders can take up to a minute.", indexer::ago(res.index_updated))
             } else {
                 "Nothing in your indexed folders matches.".to_string()

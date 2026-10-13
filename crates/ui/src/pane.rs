@@ -519,7 +519,7 @@ mod review_tests {
         assert_eq!(p.targets().len(), 1);
         p.phone = Some(crate::phone::PhonePage::Hub); assert!(p.targets().is_empty());
         p.phone = None; p.drives = true; assert!(p.targets().is_empty()); p.drives = false;
-        p.scope = Scope::Everywhere; p.query = "other".into(); p.results = Some(Results { query: "other".into(), hits: Vec::new(), total: 0, from_index: true, index_updated: None });
+        p.scope = Scope::Everywhere; p.query = "other".into(); p.results = Some(Results { query: "other".into(), hits: Vec::new(), total: 0, from_index: true, index_updated: None, note: None });
         assert!(p.targets().is_empty());
         p.search_generation = next_id(); let old = p.search_generation; p.clear_search(); assert_ne!(old, p.search_generation);
     }
