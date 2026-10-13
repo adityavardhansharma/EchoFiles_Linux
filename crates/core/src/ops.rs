@@ -307,6 +307,8 @@ pub struct Item {
     pub dst: PathBuf,
     source_identity: Identity,
     destination_identity: Option<Identity>,
+    /// Files below `src`, counted while planning.
+    files: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -419,7 +421,7 @@ pub fn plan(kind: Kind, sources: &[PathBuf], dest: &Path, progress: &Progress) -
                     dirs: sm.is_dir() && dm.is_dir(),
                 });
             }
-        items.push(Item { src: src.clone(), source_identity: Identity::of(&sm), destination_identity: fs::symlink_metadata(&dst).ok().map(|m| Identity::of(&m)), dst });
+        items.push(Item { src: src.clone(), files: t.files, source_identity: Identity::of(&sm), destination_identity: fs::symlink_metadata(&dst).ok().map(|m| Identity::of(&m)), dst });
         if progress.cancelled() {
             return Err("Cancelled.".into());
         }
@@ -462,7 +464,7 @@ pub fn execute(plan: &Plan, choices: &HashMap<PathBuf, Resolution>, default: Res
     // A few plain files are made durable one by one; anything bigger syncs the filesystem
     // once (cheaper than thousands of fsyncs, but it also flushes unrelated dirty data).
     let small = plan.items.len() <= SMALL_BATCH && plan.items.iter().all(|i| fs::symlink_metadata(&i.src).is_ok_and(|m| m.is_file()));
-    let mut cx = Transfer { kind: plan.kind, fixes: &fixes, progress, links: HashMap::new(), recovery_parent: PathBuf::new(), removals: Vec::new(), stages: HashMap::new(), stage_dirs: Vec::new(), copy: CopyOpts { fsync: small, strict: plan.kind == Kind::Move } };
+    let mut cx = Transfer { kind: plan.kind, fixes: &fixes, progress, links: HashMap::new(), recovery_parent: PathBuf::new(), removals: Vec::new(), stages: HashMap::new(), stage_dirs: Vec::new(), counted: plan.items.iter().map(|i| (i.src.clone(), i.files)).collect(), copy: CopyOpts { fsync: small, strict: plan.kind == Kind::Move } };
     for item in &plan.items {
         if fs::symlink_metadata(&item.src).ok().map(|m| Identity::of(&m)) != Some(item.source_identity.clone()) {
             out.errors.push(format!("{} changed since planning; please retry", item.src.display())); continue;
@@ -545,6 +547,8 @@ struct Transfer<'a> {
     stages: HashMap<PathBuf, (PathBuf, u32)>,
     /// Every staging folder made, removed at the end if nothing was retained in it.
     stage_dirs: Vec<PathBuf>,
+    /// File counts the plan already walked for, by top-level source.
+    counted: HashMap<PathBuf, u64>,
     /// fsync each copied file (small batches; see [`execute`]) and how strictly metadata
     /// is kept.
     copy: CopyOpts,
@@ -564,6 +568,15 @@ struct CopyOpts {
 const SMALL_BATCH: usize = 64;
 
 impl Transfer<'_> {
+    /// Files below `src` for progress: from the plan for a top-level item (a same-device
+    /// move would otherwise walk its whole tree a second time), counted otherwise.
+    fn files_in(&mut self, src: &Path) -> io::Result<u64> {
+        match self.counted.remove(src) {
+            Some(n) => Ok(n),
+            None => Ok(tally(src, false, &Progress::default())?.files),
+        }
+    }
+
     /// A fresh slot in `parent`'s staging folder: (folder, slot number).
     fn stage(&mut self, parent: &Path) -> io::Result<(PathBuf, u32)> {
         if let Some((dir, n)) = self.stages.get_mut(parent) {
@@ -657,7 +670,7 @@ fn transfer_entry(cx: &mut Transfer, src: &Path, dst: &Path, choice: Resolution,
     // A same-device move commits with one rename and keeps its original until then.
     let direct_move = kind == Kind::Move && sm.dev() == fs::metadata(parent)?.dev();
     if direct_move && !replaced {
-        let files = tally(src, false, &Progress::default())?.files;
+        let files = cx.files_in(src)?;
         rename_noreplace(src, &dst)?;
         out.journal.push(Undo::Checked { path: dst.clone(), identity: Identity::of(&fs::symlink_metadata(&dst)?), action: Box::new(Undo::Move(vec![(src.to_path_buf(), dst.clone())])) });
         out.done.push((src.to_path_buf(), dst));
@@ -669,7 +682,7 @@ fn transfer_entry(cx: &mut Transfer, src: &Path, dst: &Path, choice: Resolution,
     let (stage, slot) = cx.stage(parent)?;
     let staged = stage.join(format!("new-{slot}"));
     let backup = stage.join(format!("previous-{slot}"));
-    let renamed_files = if direct_move { tally(src, false, &Progress::default())?.files } else { 0 };
+    let renamed_files = if direct_move { cx.files_in(src)? } else { 0 };
     let source_tree = if kind == Kind::Move && !direct_move { Some(snapshot(src)?) } else { None };
     let mut new_links = HashMap::new();
     if !direct_move
