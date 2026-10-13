@@ -80,11 +80,7 @@ impl Index {
         if same_contents(path, &f) {
             return Ok(false);
         }
-        let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-        tmp.write_all(&f)?;
-        tmp.as_file().sync_all()?;
-        tmp.persist(path).map_err(|e| e.error)?;
-        std::fs::File::open(parent)?.sync_all()?;
+        write_atomically(path, parent, &f)?;
         Ok(true)
     }
 
@@ -117,10 +113,75 @@ impl Index {
     }
 }
 
+/// Write `bytes` to a fresh private file next to `path`, flush it, and rename it over
+/// `path`; then flush the folder so the rename survives a crash.
+fn write_atomically(path: &Path, parent: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    for _ in 0..16 {
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = parent.join(format!(".{name}.{}.{n}.tmp", std::process::id()));
+        let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(rustix::fs::OFlags::CLOEXEC.bits() as i32).open(&tmp) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+        let done = file.write_all(bytes).and_then(|_| file.sync_all()).and_then(|_| std::fs::rename(&tmp, path));
+        if let Err(e) = done {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        return std::fs::File::open(parent)?.sync_all();
+    }
+    Err(io::Error::other("couldn't create a temporary file"))
+}
+
+/// A read-only memory mapping of a whole file, unmapped on drop.
+struct Map {
+    ptr: *mut std::ffi::c_void,
+    len: usize,
+}
+
+// SAFETY: the mapping is read-only and never written through; it may be read from any
+// thread.
+unsafe impl Send for Map {}
+unsafe impl Sync for Map {}
+
+impl Map {
+    fn of(file: &std::fs::File) -> io::Result<Map> {
+        let len = file.metadata()?.len() as usize;
+        if len == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "empty file"));
+        }
+        // SAFETY: a fresh private read-only mapping of an open file; no existing memory is
+        // affected.
+        let ptr = unsafe { rustix::mm::mmap(std::ptr::null_mut(), len, rustix::mm::ProtFlags::READ, rustix::mm::MapFlags::SHARED, file, 0)? };
+        Ok(Map { ptr, len })
+    }
+}
+
+impl std::ops::Deref for Map {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        // SAFETY: `ptr` maps `len` readable bytes for as long as `self` lives.
+        unsafe { std::slice::from_raw_parts(self.ptr.cast::<u8>(), self.len) }
+    }
+}
+
+impl Drop for Map {
+    fn drop(&mut self) {
+        // SAFETY: unmapping exactly the range `of` mapped; no slices outlive `self`.
+        unsafe {
+            let _ = rustix::mm::munmap(self.ptr, self.len);
+        }
+    }
+}
+
 /// A saved index searched in place, without copying it onto the heap. Read-only: the
 /// indexer rewrites the file (atomically) and readers reopen it.
 pub struct MappedIndex {
-    map: memmap2::Mmap,
+    map: Map,
     root: PathBuf,
     opts: Options,
     n: usize,
@@ -132,9 +193,9 @@ pub struct MappedIndex {
 impl MappedIndex {
     pub fn open(path: &Path) -> io::Result<MappedIndex> {
         let file = std::fs::File::open(path)?;
-        // SAFETY: the indexer only ever replaces index files by rename, never truncates or
-        // writes them in place, so the mapped bytes can't change under us.
-        let map = unsafe { memmap2::Mmap::map(&file)? };
+        // The indexer only ever replaces index files by rename, never truncates or writes
+        // them in place, so the mapped bytes can't change under us.
+        let map = Map::of(&file)?;
         let bad = || io::Error::new(io::ErrorKind::InvalidData, "not an EchoFiles index");
         if map.len() < HEADER || &map[..8] != MAGIC {
             return Err(bad());

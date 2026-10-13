@@ -8,11 +8,9 @@ license.workspace = true
 name = "ef_index"
 
 [dependencies]
-tempfile = "3"
-rustix = { workspace = true, features = ["net", "process"] }
+rustix = { workspace = true, features = ["net", "process", "mm"] }
 rayon.workspace = true
 memchr = "2.8"
-memmap2 = "0.9"
 ef-config.workspace = true
 serde_json = "1"
 regex = { version = "1.12", default-features = false, features = ["std", "perf", "unicode"] }
@@ -20,6 +18,7 @@ regex-syntax = { version = "0.8", default-features = false, features = ["std", "
 
 [dev-dependencies]
 unicode-normalization = "0.1.25"
+tempfile = "3"
 divan.workspace = true
 mimalloc.workspace = true
 

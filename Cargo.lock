@@ -1501,7 +1501,6 @@ dependencies = [
  "divan",
  "echofiles-config",
  "memchr",
- "memmap2",
  "mimalloc",
  "rayon",
  "regex",
