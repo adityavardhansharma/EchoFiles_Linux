@@ -15,6 +15,7 @@
 //! exclude_paths = []
 //! exclude_names = ["node_modules", …]
 //! skip_cache_folders = true
+//! index_drives = false        # true: also index every drive mounted on this computer
 //!
 //! [agents]
 //! cli = true                  # off: `ef` refuses to run
@@ -44,7 +45,7 @@
 //! notifications = "app"       # "off", "app" (Notifications page only) or "desktop"
 //! muted_apps = []
 //! battery_warning = true
-//! auto_accept = true          # save files the phone sends without asking
+//! auto_accept = false         # true: save files the phone sends without asking
 //! save_to = "~/Downloads/Phone"
 //! picture = "photo"           # what the phone on the hub shows: "photo" or "echofiles"
 //!
@@ -126,7 +127,9 @@ pub struct SearchConfig {
     pub exclude_paths: Vec<String>,
     pub exclude_names: Vec<String>,
     pub skip_cache_folders: bool,
-    /// Also index every drive mounted on this computer (see [`drives`]).
+    /// Also index every drive mounted on this computer (see [`drives`]). Off by default:
+    /// it records the name of every file on any USB stick plugged in, and keeps external
+    /// disks busy.
     pub index_drives: bool,
 }
 
@@ -139,7 +142,7 @@ impl Default for SearchConfig {
             exclude_paths: Vec::new(),
             exclude_names: DEFAULT_EXCLUDE_NAMES.iter().map(|s| s.to_string()).collect(),
             skip_cache_folders: true,
-            index_drives: true,
+            index_drives: false,
         }
     }
 }
@@ -277,7 +280,8 @@ pub struct Phone {
     /// App names whose notifications are dropped.
     pub muted_apps: Vec<String>,
     pub battery_warning: bool,
-    /// Save files the phone sends without asking.
+    /// Save files the phone sends without asking (off by default: each file is offered
+    /// with an Accept button).
     pub auto_accept: bool,
     pub save_to: String,
     pub picture: PhonePicture,
@@ -293,7 +297,7 @@ impl Default for Phone {
             notifications: PhoneNotifications::App,
             muted_apps: Vec::new(),
             battery_warning: true,
-            auto_accept: true,
+            auto_accept: false,
             save_to: "~/Downloads/Phone".into(),
             picture: PhonePicture::Photo,
         }
