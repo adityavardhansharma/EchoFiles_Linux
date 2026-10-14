@@ -1401,9 +1401,13 @@ impl App {
                 // The contact's initial, not the first digit of their number.
                 avatar(&who),
                 column![
-                    self.pt(crate::view::fit_end(&who, text_w, style::BODY), style::BODY, if unread || active { p.ink_strong } else { p.ink })
-                        .font(if unread { style::FONT_BOLD } else { style::FONT })
-                        .wrapping(text::Wrapping::None),
+                    self.pt(
+                        crate::view::fit_end(&who, text_w, style::BODY),
+                        style::BODY,
+                        if unread || active { p.ink_strong } else { p.ink }
+                    )
+                    .font(if unread { style::FONT_BOLD } else { style::FONT })
+                    .wrapping(text::Wrapping::None),
                     self.pt(crate::view::fit_end(&last, text_w, style::META), style::META, p.ink_muted).wrapping(text::Wrapping::None),
                 ]
                 .spacing(2)
@@ -1416,9 +1420,10 @@ impl App {
             list = list.push(w::row_button(p, container(r).padding([8, 0]).into(), active, Some(pm(PhoneMsg::Thread(m.thread)))));
         }
         let bar = scrollable::Scrollbar::new().width(4).scroller_width(4).spacing(2);
-        let left = w::fill(scrollable(list.padding([12, 8])).direction(scrollable::Direction::Vertical(bar)).height(Length::Fill), p.bg_sunken)
-            .width(list_w)
-            .height(Length::Fill);
+        let left =
+            w::fill(scrollable(list.padding([12, 8])).direction(scrollable::Direction::Vertical(bar)).height(Length::Fill), p.bg_sunken)
+                .width(list_w)
+                .height(Length::Fill);
 
         let right: Element<'a, Message> = match self.phone.open_thread {
             None => container(self.pt("Pick a conversation.", style::BODY, p.ink_muted)).center(Length::Fill).into(),
@@ -1538,11 +1543,23 @@ impl App {
             "Shown here only — no desktop pop-ups. Change it in Settings → Phone."
         };
         let any = self.phone.notifications.iter().any(|n| n.dismissable);
-        let mut col = column![self.page_header(
-            "Notifications",
-            sub.into(),
-            vec![w::text_button(p, &self.icons, "Dismiss all", Some("close"), None, Variant::Ghost, any.then(|| pm(PhoneMsg::DismissAll)))]
-        )]
+        // The header is as wide as the cards, so Dismiss all sits above them, not far away.
+        let mut col = column![
+            container(self.page_header(
+                "Notifications",
+                sub.into(),
+                vec![w::text_button(
+                    p,
+                    &self.icons,
+                    "Dismiss all",
+                    Some("close"),
+                    None,
+                    Variant::Ghost,
+                    any.then(|| pm(PhoneMsg::DismissAll))
+                )]
+            ))
+            .max_width(760)
+        ]
         .spacing(style::SPACE_4);
         if self.phone.notifications.is_empty() {
             col = col.push(self.pt("Nothing new on the phone.", style::BODY, p.ink_muted));
@@ -1569,19 +1586,42 @@ impl App {
             ];
             for n in items {
                 g = g.push(w::hline(p.line));
-                let mut line = row![
-                    column![
-                        self.ptb(if n.title.is_empty() { n.app.clone() } else { n.title.clone() }, style::BODY, p.ink_strong)
-                            .wrapping(text::Wrapping::None),
-                        self.pt(n.text.clone(), style::META, p.ink_muted)
-                    ]
-                    .spacing(2)
-                    .width(Length::Fill)
-                    .clip(true),
-                    self.pt(short_time(n.time), style::LABEL, p.ink_muted),
+                // A long body (an email) shows its first lines; "Show all" opens the rest.
+                let lines: Vec<&str> = n.text.lines().collect();
+                let expanded = self.phone.expanded.contains(&n.key);
+                let long = lines.len() > 4 || n.text.chars().count() > 400;
+                let shown = if long && !expanded {
+                    let mut s: String = lines.iter().take(4).copied().collect::<Vec<_>>().join("\n");
+                    if s.chars().count() > 400 {
+                        s = s.chars().take(400).collect();
+                    }
+                    format!("{}…", s.trim_end())
+                } else {
+                    n.text.clone()
+                };
+                let mut text_col = column![
+                    self.ptb(if n.title.is_empty() { n.app.clone() } else { n.title.clone() }, style::BODY, p.ink_strong)
+                        .wrapping(text::Wrapping::None),
+                    self.pt(shown, style::META, p.ink_muted)
                 ]
-                .spacing(style::SPACE_4)
-                .align_y(Alignment::Center);
+                .spacing(2)
+                .width(Length::Fill)
+                .clip(true);
+                if long {
+                    text_col = text_col.push(w::text_button(
+                        p,
+                        &self.icons,
+                        if expanded { "Show less" } else { "Show all" },
+                        None,
+                        None,
+                        Variant::Ghost,
+                        Some(pm(PhoneMsg::ToggleNotification(n.key.clone()))),
+                    ));
+                }
+                // Time and Dismiss sit at the top of the card, beside the title.
+                let mut line = row![text_col, self.pt(short_time(n.time), style::LABEL, p.ink_muted),]
+                    .spacing(style::SPACE_4)
+                    .align_y(Alignment::Start);
                 if n.dismissable {
                     line = line.push(self.tip(
                         w::icon_button(p, &self.icons, "close", Some(pm(PhoneMsg::Dismiss(n.key.clone()))), false),
@@ -1590,16 +1630,21 @@ impl App {
                     ));
                 }
                 let mut body = column![line].spacing(style::SPACE_3);
-                for action in &n.actions {
-                    body = body.push(w::text_button(
-                        p,
-                        &self.icons,
-                        action,
-                        None,
-                        None,
-                        Variant::Secondary,
-                        Some(pm(PhoneMsg::NotificationAction(n.key.clone(), action.clone()))),
-                    ));
+                // Actions side by side (they stacked one per line).
+                if !n.actions.is_empty() {
+                    let mut acts = row![].spacing(style::SPACE_3);
+                    for action in &n.actions {
+                        acts = acts.push(w::text_button(
+                            p,
+                            &self.icons,
+                            action,
+                            None,
+                            None,
+                            Variant::Secondary,
+                            Some(pm(PhoneMsg::NotificationAction(n.key.clone(), action.clone()))),
+                        ));
+                    }
+                    body = body.push(acts.wrap());
                 }
                 if n.reply_id.is_some() {
                     let draft = self.phone.reply.get(&n.key).cloned().unwrap_or_default();

@@ -750,7 +750,11 @@ impl App {
                 text(if pane.special() {
                     pane.title()
                 } else {
-                    fit_start(&self.net_uri_for(&pane.location).unwrap_or_else(|| config::tilde(&pane.location)), self.pane_width() - 48.0, style::META)
+                    fit_start(
+                        &self.net_uri_for(&pane.location).unwrap_or_else(|| config::tilde(&pane.location)),
+                        self.pane_width() - 48.0,
+                        style::META,
+                    )
                 })
                 .size(style::META)
                 .font(if active { style::FONT_BOLD } else { style::FONT })
@@ -907,7 +911,8 @@ impl App {
         let row_h = self.settings.appearance.density.row_height();
         // The location column's share (4 of 7 portions) of what's left after the icon,
         // size and date columns and the gaps.
-        let loc_w = (self.pane_width() - 40.0 - style::ICON_ROW - style::COL_SIZE - style::COL_DATE - 5.0 * style::SPACE_4).max(0.0) * 4.0 / 7.0;
+        let loc_w =
+            (self.pane_width() - 40.0 - style::ICON_ROW - style::COL_SIZE - style::COL_DATE - 5.0 * style::SPACE_4).max(0.0) * 4.0 / 7.0;
         let mut rows = column![].spacing(0).padding([0, 4]);
         let mut buf = String::new();
         for (i, h) in res.hits.iter().enumerate() {
@@ -937,7 +942,9 @@ impl App {
                 .clip(true),
                 // The end of the location (the folder holding the result) is what matters;
                 // a long one loses its start, not its end.
-                container(meta(fit_start(&config::tilde(Path::new(&h.location)), loc_w, style::META))).width(Length::FillPortion(4)).clip(true),
+                container(meta(fit_start(&config::tilde(Path::new(&h.location)), loc_w, style::META)))
+                    .width(Length::FillPortion(4))
+                    .clip(true),
                 container(meta(size)).width(style::COL_SIZE).align_x(Alignment::End),
                 meta(date).width(style::COL_DATE),
             ]

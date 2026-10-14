@@ -605,6 +605,12 @@ impl App {
                 }
                 Task::none()
             }
+            PhoneMsg::ToggleNotification(key) => {
+                if !self.phone.expanded.remove(&key) {
+                    self.phone.expanded.insert(key);
+                }
+                Task::none()
+            }
             PhoneMsg::Dismiss(key) => {
                 if let (Some(id), Some(s)) = (self.phone_id(), service()) {
                     s.dismiss_notification(&id, &key);

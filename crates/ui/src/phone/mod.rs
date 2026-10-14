@@ -146,6 +146,8 @@ pub struct PhoneState {
     /// What we last put on, or sent from, the clipboard (no echo).
     pub clip_last: String,
     pub mute_draft: String,
+    /// Notifications shown in full (by key); others show their first lines.
+    pub expanded: HashSet<String>,
     pub ufw: Option<bool>,
 }
 
@@ -268,6 +270,8 @@ pub enum PhoneMsg {
     SendSms,
     RefreshMessages,
     Dismiss(String),
+    /// Show a long notification in full, or clamp it again.
+    ToggleNotification(String),
     DismissAll,
     ReplyDraft(String, String),
     Reply(String),

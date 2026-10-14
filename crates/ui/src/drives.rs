@@ -39,9 +39,16 @@ pub enum DriveMsg {
     Space(Vec<Option<ef_core::volume::FsInfo>>, Option<ef_core::volume::FsInfo>),
     Animations(bool),
     Click(usize),
-    Mounted { device: String, result: Result<Mounted, MountError>, open: bool },
+    Mounted {
+        device: String,
+        result: Result<Mounted, MountError>,
+        open: bool,
+    },
     Unmount(usize),
-    Unmounted { device: String, result: Result<(), MountError> },
+    Unmounted {
+        device: String,
+        result: Result<(), MountError>,
+    },
     AskWrite(usize),
     AllowWrite(usize),
     Menu(usize, Point),

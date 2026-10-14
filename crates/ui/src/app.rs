@@ -307,7 +307,9 @@ fn media_dirs() -> &'static (PathBuf, PathBuf) {
         let text = std::fs::read_to_string(config::config_dir().with_file_name("user-dirs.dirs")).unwrap_or_default();
         let get = |key: &str, fallback: &str| {
             text.lines()
-                .find_map(|l| l.strip_prefix(key)?.strip_prefix('=').map(|v| v.trim().trim_matches('"').replace("$HOME", &home.to_string_lossy())))
+                .find_map(|l| {
+                    l.strip_prefix(key)?.strip_prefix('=').map(|v| v.trim().trim_matches('"').replace("$HOME", &home.to_string_lossy()))
+                })
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join(fallback))
         };
@@ -320,8 +322,30 @@ fn is_media_name(name: &std::ffi::OsStr) -> bool {
     let ext = Path::new(name).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     matches!(
         ext.as_str(),
-        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "heic" | "heif" | "avif" | "tif" | "tiff" | "jxl" | "raw" | "dng" | "cr2" | "nef"
-            | "arw" | "mp4" | "mkv" | "mov" | "webm" | "avi" | "m4v" | "3gp"
+        "jpg"
+            | "jpeg"
+            | "png"
+            | "gif"
+            | "webp"
+            | "bmp"
+            | "heic"
+            | "heif"
+            | "avif"
+            | "tif"
+            | "tiff"
+            | "jxl"
+            | "raw"
+            | "dng"
+            | "cr2"
+            | "nef"
+            | "arw"
+            | "mp4"
+            | "mkv"
+            | "mov"
+            | "webm"
+            | "avi"
+            | "m4v"
+            | "3gp"
     )
 }
 

@@ -581,7 +581,11 @@ impl App {
                 }
                 let from = r.path.clone();
                 background(
-                    move || ops::rename(&from, &name).map(|to| (from.clone(), to)).map_err(|e| (from.clone(), name.clone(), rename_problem(&e, &name))),
+                    move || {
+                        ops::rename(&from, &name)
+                            .map(|to| (from.clone(), to))
+                            .map_err(|e| (from.clone(), name.clone(), rename_problem(&e, &name)))
+                    },
                     |res| Message::File(FileMsg::Renamed(res)),
                 )
             }
