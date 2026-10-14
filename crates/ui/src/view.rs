@@ -206,6 +206,10 @@ impl App {
     fn tab_strip(&self) -> Element<'_, Message> {
         let p = &self.palette;
         let mut r = row![].spacing(0).align_y(Alignment::End).height(TABS_H);
+        // Tabs share the strip: each gets at most 220 px and shrinks (the title clips) so
+        // the last tab and the New tab button always stay on screen.
+        let room = (self.window_size.width - 48.0).max(0.0);
+        let tab_w = (room / self.tabs.len().max(1) as f32 - 20.0).clamp(48.0, 220.0);
         for (i, t) in self.tabs.iter().enumerate() {
             let active = i == self.tab;
             let pane = &t.panes[t.active];
@@ -220,7 +224,7 @@ impl App {
             } else {
                 "folder"
             };
-            let mut content = row![
+            let mut label = row![
                 self.glyph(icon, 14.0, color(if active { p.accent_ink } else { p.ink_muted })),
                 text(self.pane_title(pane))
                     .size(style::META)
@@ -231,13 +235,15 @@ impl App {
             .spacing(6)
             .align_y(Alignment::Center);
             if t.panes.len() == 2 {
-                content = content.push(self.glyph("columns", 12.0, color(p.ink_faint)));
+                label = label.push(self.glyph("columns", 12.0, color(p.ink_faint)));
             }
+            // The title clips when tabs are narrow; the close button never does.
+            let mut content = row![container(label).width(Length::Fill).clip(true)].spacing(6).align_y(Alignment::Center);
             if self.tabs.len() > 1 {
                 content = content.push(w::icon_button(p, &self.icons, "close", Some(Message::CloseTab(i)), false));
             }
             let pal = p.clone();
-            let tabb = button(container(content).height(TABS_H - 2.0).align_y(Alignment::Center).max_width(220).clip(true))
+            let tabb = button(container(content).height(TABS_H - 2.0).align_y(Alignment::Center).max_width(tab_w).clip(true))
                 .padding([0, 10])
                 .on_press(Message::SelectTab(i))
                 .style(move |_, status| button::Style {
