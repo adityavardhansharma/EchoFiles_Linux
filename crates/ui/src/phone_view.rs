@@ -1388,25 +1388,23 @@ impl App {
         if threads.is_empty() {
             list = list.push(container(self.pt("Loading conversations…", style::META, p.ink_muted)).padding(12));
         }
+        // The list grows with the window (it was 300 px even full screen); names and the
+        // last message end in "…" instead of running into the date.
+        let list_w = (self.pane_width() * 0.32).clamp(300.0, 440.0);
+        let text_w = list_w - 16.0 - 32.0 - 2.0 * style::SPACE_3 - 48.0;
         for m in threads.iter().take(200) {
             let active = self.phone.open_thread == Some(m.thread);
             let unread = !m.read && !m.outgoing;
+            let who = self.phone.contacts.get(&m.address).cloned().unwrap_or_else(|| m.address.clone());
+            let last = format!("{}{}", if m.outgoing { "You: " } else { "" }, m.body.lines().next().unwrap_or_default());
             let r = row![
-                avatar(&m.address),
+                // The contact's initial, not the first digit of their number.
+                avatar(&who),
                 column![
-                    self.pt(
-                        self.phone.contacts.get(&m.address).cloned().unwrap_or_else(|| m.address.clone()),
-                        style::BODY,
-                        if unread || active { p.ink_strong } else { p.ink }
-                    )
-                    .font(if unread { style::FONT_BOLD } else { style::FONT })
-                    .wrapping(text::Wrapping::None),
-                    self.pt(
-                        format!("{}{}", if m.outgoing { "You: " } else { "" }, m.body.lines().next().unwrap_or_default()),
-                        style::META,
-                        p.ink_muted
-                    )
-                    .wrapping(text::Wrapping::None),
+                    self.pt(crate::view::fit_end(&who, text_w, style::BODY), style::BODY, if unread || active { p.ink_strong } else { p.ink })
+                        .font(if unread { style::FONT_BOLD } else { style::FONT })
+                        .wrapping(text::Wrapping::None),
+                    self.pt(crate::view::fit_end(&last, text_w, style::META), style::META, p.ink_muted).wrapping(text::Wrapping::None),
                 ]
                 .spacing(2)
                 .width(Length::Fill)
@@ -1417,7 +1415,10 @@ impl App {
             .align_y(Alignment::Center);
             list = list.push(w::row_button(p, container(r).padding([8, 0]).into(), active, Some(pm(PhoneMsg::Thread(m.thread)))));
         }
-        let left = w::fill(scrollable(list.padding([12, 8])).height(Length::Fill), p.bg_sunken).width(300).height(Length::Fill);
+        let bar = scrollable::Scrollbar::new().width(4).scroller_width(4).spacing(2);
+        let left = w::fill(scrollable(list.padding([12, 8])).direction(scrollable::Direction::Vertical(bar)).height(Length::Fill), p.bg_sunken)
+            .width(list_w)
+            .height(Length::Fill);
 
         let right: Element<'a, Message> = match self.phone.open_thread {
             None => container(self.pt("Pick a conversation.", style::BODY, p.ink_muted)).center(Length::Fill).into(),

@@ -1115,3 +1115,14 @@ pub(crate) fn fit_start(s: &str, width: f32, size: f32) -> String {
     let tail: String = s.chars().skip(n - (max - 1)).collect();
     format!("…{tail}")
 }
+
+/// `s` if it fits in `width` pixels at `size` (the monospace UI font), else as much of its
+/// start as fits and "…".
+pub(crate) fn fit_end(s: &str, width: f32, size: f32) -> String {
+    let max = (width / (size * 0.6)).floor().max(4.0) as usize;
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max - 1).collect();
+    format!("{}…", head.trim_end())
+}
