@@ -1119,7 +1119,7 @@ impl<'a, Message> FileList<'a, Message> {
         let name = l.name_bytes(i);
         let alpha = self.alpha(i);
         let icon_box = Rectangle { x: cols.icon, y: y + (rh - style::ICON_ROW) / 2.0, width: style::ICON_ROW, height: style::ICON_ROW };
-        renderer.draw_svg(Svg { opacity: alpha, ..Svg::new(self.icons.color(kinds::icon(name, l.kind[i]))) }, icon_box, body);
+        renderer.draw_svg(Svg { opacity: alpha, ..Svg::new(self.icons.color(kinds::icon(name, if l.is_folderish(i) { Kind::Dir } else { l.kind[i] }))) }, icon_box, body);
         self.draw_badge(renderer, icon_box, i, body);
         let cy = y + rh / 2.0;
         if self.model.renaming != Some(pos) {
@@ -1160,14 +1160,21 @@ impl<'a, Message> FileList<'a, Message> {
             );
         };
         let stated = l.flags[i] & flags::STATED != 0;
-        if l.is_dir(i) {
+        // A link's own size is the length of its target path: meaningless here.
+        if l.is_folderish(i) || l.kind[i] == Kind::Symlink {
             buf.push('—');
         } else if stated {
             fmt::size(l.size[i], &mut buf);
         }
         meta(renderer, buf.clone(), cols.size_right, true, style::COL_SIZE);
         buf.clear();
-        kinds::label(name, l.kind[i], &mut buf);
+        if l.is_broken_link(i) {
+            buf.push_str("Broken link");
+        } else if l.is_folderish(i) && l.kind[i] == Kind::Symlink {
+            buf.push_str("Link to folder");
+        } else {
+            kinds::label(name, l.kind[i], &mut buf);
+        }
         if cols.show_kind {
             meta(renderer, buf.clone(), cols.kind, false, style::COL_KIND);
         }
@@ -1204,7 +1211,7 @@ impl<'a, Message> FileList<'a, Message> {
             }
             None => {
                 let icon = Rectangle { x: pic.center_x() - 24.0, y: pic.center_y() - 24.0, width: 48.0, height: 48.0 };
-                renderer.draw_svg(Svg { opacity: alpha, ..Svg::new(self.icons.color(kinds::icon(name, l.kind[i]))) }, icon, body);
+                renderer.draw_svg(Svg { opacity: alpha, ..Svg::new(self.icons.color(kinds::icon(name, if l.is_folderish(i) { Kind::Dir } else { l.kind[i] }))) }, icon, body);
                 self.draw_badge(renderer, Rectangle { x: icon.x + 24.0, y: icon.y + 24.0, width: 24.0, height: 24.0 }, i, body);
             }
         }

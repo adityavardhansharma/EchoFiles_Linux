@@ -127,6 +127,16 @@ impl Listing {
         self.kind[i] == Kind::Dir
     }
 
+    /// A folder, or a link to one: what sorts with folders and shows a folder icon.
+    pub fn is_folderish(&self, i: usize) -> bool {
+        self.kind[i] == Kind::Dir || (self.kind[i] == Kind::Symlink && self.flags[i] & flags::LINK_DIR != 0)
+    }
+
+    /// A link whose target doesn't exist.
+    pub fn is_broken_link(&self, i: usize) -> bool {
+        self.kind[i] == Kind::Symlink && self.flags[i] & flags::BROKEN != 0
+    }
+
     pub fn is_hidden(&self, i: usize) -> bool {
         self.flags[i] & flags::HIDDEN != 0
     }

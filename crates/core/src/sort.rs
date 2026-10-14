@@ -8,7 +8,7 @@ use std::cmp::Ordering;
 
 use rayon::prelude::*;
 
-use crate::listing::{Kind, Listing};
+use crate::listing::Listing;
 
 /// Above this many entries the sort runs on the rayon pool.
 const PARALLEL_SORT_MIN: usize = 20_000;
@@ -148,7 +148,7 @@ pub fn order(listing: &Listing, keys: &NameKeys, spec: SortSpec, show_hidden: bo
         let mut v: Vec<(u64, u32)> = (0..listing.len())
             .filter(|&i| visible(i))
             .map(|i| {
-                let group = u64::from(spec.folders_first && listing.kind[i] != Kind::Dir);
+                let group = u64::from(spec.folders_first && !listing.is_folderish(i));
                 (group << 63 | keys.prefix(i) >> 1, i as u32)
             })
             .collect();
@@ -167,7 +167,7 @@ pub fn order(listing: &Listing, keys: &NameKeys, spec: SortSpec, show_hidden: bo
         if spec.descending {
             // Keep folders first when reversing the name order.
             let split = if spec.folders_first {
-                out.iter().position(|&i| listing.kind[i as usize] != Kind::Dir).unwrap_or(out.len())
+                out.iter().position(|&i| !listing.is_folderish(i as usize)).unwrap_or(out.len())
             } else {
                 out.len()
             };
@@ -188,7 +188,7 @@ pub fn order(listing: &Listing, keys: &NameKeys, spec: SortSpec, show_hidden: bo
 
 fn compare(l: &Listing, keys: &NameKeys, spec: SortSpec, a: usize, b: usize) -> Ordering {
     if spec.folders_first {
-        let (da, db) = (l.kind[a] == Kind::Dir, l.kind[b] == Kind::Dir);
+        let (da, db) = (l.is_folderish(a), l.is_folderish(b));
         if da != db {
             return db.cmp(&da);
         }
@@ -196,8 +196,8 @@ fn compare(l: &Listing, keys: &NameKeys, spec: SortSpec, a: usize, b: usize) -> 
     // A folder's st_size is its directory block, not its contents (the list shows "—"), so
     // sorting by size keeps grouped folders in name order. Mixed with files, a folder counts
     // as size 0 so the order stays transitive.
-    let dir_a = l.kind[a] == Kind::Dir;
-    let dir_b = l.kind[b] == Kind::Dir;
+    let dir_a = l.is_folderish(a);
+    let dir_b = l.is_folderish(b);
     if spec.by == SortBy::Size && spec.folders_first && dir_a && dir_b {
         return keys.get(a).cmp(keys.get(b)).then_with(|| l.name_bytes(a).cmp(l.name_bytes(b)));
     }
