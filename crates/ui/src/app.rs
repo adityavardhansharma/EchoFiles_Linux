@@ -155,6 +155,9 @@ pub struct App {
     pub(crate) settings: Settings,
     pub(crate) settings_ui: SettingsUi,
     pub(crate) palette: Palette,
+    /// iced's own theme, built from the palette, for widgets drawn with default styles
+    /// (scrollbars, text selection): otherwise they use iced's stock blue.
+    iced_theme: iced::Theme,
     pub(crate) icons: Icons,
     pub(crate) dates: DateFormatter,
     theme_stamp: Option<SystemTime>,
@@ -218,6 +221,30 @@ pub struct App {
     /// The selection `sel_size` was last derived from: (pane, listing, mode) and its bits.
     /// Messages that leave it unchanged skip rebuilding up to 10,000 folder paths.
     sel_seen: ((u64, usize, bool), Vec<u64>),
+}
+
+/// The palette as an iced theme: accent as primary, so hovered scrollbars and selected
+/// text use the Omarchy accent, not iced's blue.
+fn iced_theme(p: &Palette) -> iced::Theme {
+    use crate::style::color;
+    iced::Theme::custom(
+        p.name.clone(),
+        iced::theme::Palette {
+            background: color(p.bg),
+            text: color(p.ink),
+            primary: color(p.accent),
+            success: color(p.success.base),
+            warning: color(p.warning.base),
+            danger: color(p.danger.base),
+        },
+    )
+}
+
+impl App {
+    /// The theme for every window (see [`iced_theme`]).
+    pub fn theme(&self, _window: window::Id) -> iced::Theme {
+        self.iced_theme.clone()
+    }
 }
 
 fn theme_stamp() -> Option<SystemTime> {
@@ -354,6 +381,7 @@ impl App {
             window: None,
             mode: if args.iter().any(|a| a == "--settings") { Mode::Settings } else { Mode::Files },
             settings_ui: SettingsUi::new(settings_error),
+            iced_theme: iced_theme(&palette),
             palette,
             icons,
             dates: DateFormatter::new(),
@@ -666,6 +694,7 @@ impl App {
         if stamp != self.theme_stamp {
             self.theme_stamp = stamp;
             self.palette = ef_theme::load_active();
+            self.iced_theme = iced_theme(&self.palette);
             self.icons = Icons::new(&self.palette);
         }
         self.expire_toasts();

@@ -341,7 +341,8 @@ pub fn field_style(p: &Palette, invalid: bool) -> impl Fn(&iced::Theme, text_inp
             icon: color(pal.ink_muted),
             placeholder: color(pal.ink_muted),
             value: color(pal.ink),
-            selection: color(pal.accent_soft),
+            // accent_soft was too faint to see what a rename had selected.
+            selection: Color { a: 0.45, ..color(pal.accent) },
         }
     }
 }

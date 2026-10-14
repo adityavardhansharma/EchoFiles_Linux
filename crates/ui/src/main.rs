@@ -117,6 +117,7 @@ fn main() -> iced::Result {
     let result = iced::daemon(app::App::boot, app::App::update, app::App::view)
         .title(app::App::title)
         .subscription(app::App::subscription)
+        .theme(app::App::theme)
         .default_font(style::FONT)
         .antialiasing(false)
         .run();
