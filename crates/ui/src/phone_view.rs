@@ -897,6 +897,7 @@ impl App {
             if narrow { column![left, right].spacing(style::SPACE_5).into() } else { row![left, right].spacing(style::SPACE_5).into() };
 
         scrollable(container(column![hero, lower, Space::new().height(24)].spacing(style::SPACE_5).max_width(1080)).padding([24, 28]))
+            .id(crate::phone::PAGE_SCROLL)
             .height(Length::Fill)
             .into()
     }
@@ -1271,7 +1272,7 @@ impl App {
         if shown.is_empty() {
             col = col.push(self.pt("No photos here.", style::BODY, p.ink_muted));
         }
-        scrollable(container(col.push(Space::new().height(24))).padding([24, 28])).height(Length::Fill).into()
+        scrollable(container(col.push(Space::new().height(24))).padding([24, 28])).id(crate::phone::PAGE_SCROLL).height(Length::Fill).into()
     }
 
     fn photo_tile<'a>(&'a self, ph: &'a phone::Photo) -> Element<'a, Message> {
@@ -1631,7 +1632,7 @@ impl App {
             }
             col = col.push(container(g).max_width(760).width(Length::Fill).style(bordered(p, p.bg_raised, p.line)));
         }
-        scrollable(container(col.push(Space::new().height(24))).padding([24, 28])).height(Length::Fill).into()
+        scrollable(container(col.push(Space::new().height(24))).padding([24, 28])).id(crate::phone::PAGE_SCROLL).height(Length::Fill).into()
     }
 
     // ------------------------------------------------------------------ Connect phone

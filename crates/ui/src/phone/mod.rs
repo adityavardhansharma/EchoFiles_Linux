@@ -27,6 +27,8 @@ use crate::thumbs::Pixels;
 
 pub const IP_ID: &str = "phone-ip";
 pub const SMS_ID: &str = "phone-sms";
+/// The scrolling body of the hub, Photos and Notifications pages.
+pub const PAGE_SCROLL: &str = "phone-page";
 const PHOTO_JOBS: usize = 4;
 const PHOTOS_PAGE: usize = 240;
 
@@ -653,7 +655,19 @@ impl App {
     }
 
     /// Show a phone page in the active pane.
+    /// Open a phone page, at its top: the pages share one scrolling area, so without this
+    /// Photos opened as far down as the hub had been scrolled.
     pub(crate) fn open_phone_page(&mut self, page: PhonePage) -> Task<Message> {
+        let changed = self.pane().phone != Some(page);
+        let task = self.open_phone_page_inner(page);
+        if changed {
+            Task::batch([iced::widget::operation::snap_to(PAGE_SCROLL, iced::widget::operation::RelativeOffset::START), task])
+        } else {
+            task
+        }
+    }
+
+    fn open_phone_page_inner(&mut self, page: PhonePage) -> Task<Message> {
         self.mode = crate::app::Mode::Files;
         let pane = self.pane_mut();
         if pane.phone != Some(page) {
