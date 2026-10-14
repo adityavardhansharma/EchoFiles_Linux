@@ -1639,7 +1639,18 @@ fn upload(
 struct Permit(Arc<AtomicUsize>);
 impl Permit {
     fn take(counter: &Arc<AtomicUsize>, max: usize) -> Option<Self> {
-        counter.fetch_update(Ordering::AcqRel, Ordering::Relaxed, |n| (n < max).then_some(n + 1)).ok()?;
+        // A compare-exchange loop rather than fetch_update, which newer Rust deprecates in
+        // favour of try_update (not available on the minimum supported version).
+        let mut n = counter.load(Ordering::Relaxed);
+        loop {
+            if n >= max {
+                return None;
+            }
+            match counter.compare_exchange_weak(n, n + 1, Ordering::AcqRel, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(actual) => n = actual,
+            }
+        }
         Some(Self(counter.clone()))
     }
 }

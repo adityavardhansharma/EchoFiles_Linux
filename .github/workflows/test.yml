@@ -23,7 +23,7 @@ jobs:
       - run: pacman -Syu --noconfirm git nodejs python rust pkgconf fontconfig libxkbcommon wayland libx11 libxcursor libxi libxrandr vulkan-icd-loader
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --locked
+      - run: cargo test --workspace --locked --no-fail-fast
 
   lint:
     runs-on: ubuntu-latest
@@ -38,8 +38,17 @@ jobs:
   audit:
     # Known vulnerabilities and yanked crates in Cargo.lock (RustSec advisory database).
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The action reports its findings as a check run.
+      checks: write
     steps:
       - uses: actions/checkout@v4
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # RUSTSEC-2023-0071 (rsa, Marvin timing attack; no fixed release exists). rsa comes
+          # in through russh, but EchoConnect's SFTP server only uses an Ed25519 host key and
+          # password logins, so no RSA private-key operation ever runs. Revisit when russh
+          # or rsa ships a fix.
+          ignore: RUSTSEC-2023-0071

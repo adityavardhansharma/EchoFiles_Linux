@@ -561,8 +561,11 @@ mod tests {
 34 22 7:0 / /var/lib/snapd/snap/core rw - squashfs /dev/loop0 ro
 ";
         // Mount points that don't exist here fail the readability check, so the realistic
-        // table above can only lose entries; every rule is checked below with "/media",
-        // which exists on any test machine.
+        // table above can only lose entries. Every rule is checked below with this crate's
+        // own folder, which exists and is readable wherever the tests run (CI containers
+        // have no /media), and lies outside the system places (/tmp would be skipped).
+        let m = env!("CARGO_MANIFEST_DIR");
+        assert!(!m.contains(' '), "mountinfo escapes spaces; keep the test path simple");
         for d in drives_from(info, Path::new("/home/me")) {
             assert!(
                 !d.starts_with("/boot")
@@ -575,27 +578,28 @@ mod tests {
         }
         let names = |i: &str| drives_from(i, Path::new("/home/me"));
         assert!(
-            names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n23 22 0:25 /@home /media rw - btrfs /dev/mapper/root rw\n").is_empty(),
+            names(&format!("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n23 22 0:25 /@home {m} rw - btrfs /dev/mapper/root rw\n"))
+                .is_empty(),
             "same device as the system"
         );
         assert_eq!(
-            names(
-                "22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n26 22 0:40 / /media rw - btrfs /dev/mapper/data rw\n27 22 0:40 /x /media/deeper rw - btrfs /dev/mapper/data rw\n"
-            ),
-            vec![PathBuf::from("/media")],
+            names(&format!(
+                "22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n26 22 0:40 / {m} rw - btrfs /dev/mapper/data rw\n27 22 0:40 /x {m}/src rw - btrfs /dev/mapper/data rw\n"
+            )),
+            vec![PathBuf::from(m)],
             "one path per drive, the shortest"
         );
         assert!(
-            names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n30 22 0:51 / /media rw - cifs //nas/share rw\n").is_empty(),
+            names(&format!("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n30 22 0:51 / {m} rw - cifs //nas/share rw\n")).is_empty(),
             "network"
         );
         assert!(
-            names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n29 22 0:50 / /media rw - fuse.portal portal rw\n").is_empty(),
+            names(&format!("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n29 22 0:50 / {m} rw - fuse.portal portal rw\n")).is_empty(),
             "virtual"
         );
         assert_eq!(
-            names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n33 22 8:49 / /media rw - fuseblk /dev/sdd1 rw\n"),
-            vec![PathBuf::from("/media")],
+            names(&format!("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n33 22 8:49 / {m} rw - fuseblk /dev/sdd1 rw\n")),
+            vec![PathBuf::from(m)],
             "ntfs-3g"
         );
         assert!(
