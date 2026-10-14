@@ -1218,8 +1218,11 @@ impl App {
             let (bg, edge) = (p.accent_soft, p.accent);
             col = col.push(container(bar).padding([6, 12]).width(Length::Fill).style(bordered(p, bg, edge)));
         }
-        let avail = self.window_size.width - if self.settings.sidebar.hidden { 0.0 } else { self.settings.sidebar.width as f32 } - 56.0;
+        // Tiles stretch (118 px or more) so a row fills the width the header and selection
+        // bar use, instead of stopping short of them.
+        let avail = self.pane_width() - 56.0 - 12.0;
         let per_row = ((avail + 4.0) / 122.0).floor().max(2.0) as usize;
+        let tile = ((avail - 4.0 * (per_row as f32 - 1.0)) / per_row as f32).floor().max(118.0);
         let mut day = String::new();
         let mut group: Vec<&phone::Photo> = Vec::new();
         let limit = self.phone.photo_limit;
@@ -1231,13 +1234,17 @@ impl App {
             for chunk in group.chunks(per_row) {
                 let mut r = row![].spacing(4);
                 for ph in chunk {
-                    r = r.push(self.photo_tile(ph));
+                    r = r.push(self.photo_tile(ph, tile));
                 }
                 grid = grid.push(r);
             }
             col.push(
                 column![
-                    row![self.ptb(day.to_string(), 15.0, p.ink_strong), self.pt(group.len().to_string(), style::LABEL, p.ink_muted)]
+                    // "26 photos", not a bare 26 that reads like a year after the date.
+                    row![
+                        self.ptb(day.to_string(), 15.0, p.ink_strong),
+                        self.pt(format!("· {} {}", group.len(), if group.len() == 1 { "item" } else { "items" }), style::LABEL, p.ink_muted)
+                    ]
                         .spacing(style::SPACE_3)
                         .align_y(Alignment::End),
                     grid
@@ -1275,7 +1282,7 @@ impl App {
         scrollable(container(col.push(Space::new().height(24))).padding([24, 28])).id(crate::phone::PAGE_SCROLL).height(Length::Fill).into()
     }
 
-    fn photo_tile<'a>(&'a self, ph: &'a phone::Photo) -> Element<'a, Message> {
+    fn photo_tile<'a>(&'a self, ph: &'a phone::Photo, size: f32) -> Element<'a, Message> {
         let p = &self.palette;
         let sel = self.phone.photo_sel.contains(&ph.path);
         let inner: Element<'a, Message> = match self.phone.photo_thumbs.get(&ph.path).cloned().flatten() {
@@ -1284,7 +1291,7 @@ impl App {
                 .center(Length::Fill)
                 .into(),
         };
-        let mut layers: Vec<Element<'a, Message>> = vec![container(inner).padding(if sel { 8 } else { 0 }).width(118).height(118).into()];
+        let mut layers: Vec<Element<'a, Message>> = vec![container(inner).padding(if sel { 8 } else { 0 }).width(size).height(size).into()];
         if ph.video {
             layers.push(
                 pin(container(w::glyph(&self.icons, "play", 10.0, Color::WHITE)).padding([1, 5]).style(|_| container::Style {
@@ -1292,8 +1299,8 @@ impl App {
                     border: Border { radius: 2.0.into(), ..Border::default() },
                     ..Default::default()
                 }))
-                .x(90.0)
-                .y(96.0)
+                .x(size - 28.0)
+                .y(size - 22.0)
                 .into(),
             );
         }
@@ -1311,7 +1318,7 @@ impl App {
             );
         }
         let pal = p.clone();
-        let tile = button(stack(layers).width(118).height(118)).padding(0).on_press(pm(PhoneMsg::PhotoToggle(ph.path.clone()))).style(
+        let tile = button(stack(layers).width(size).height(size)).padding(0).on_press(pm(PhoneMsg::PhotoToggle(ph.path.clone()))).style(
             move |_, st| button::Style {
                 background: Some(Background::Color(color(pal.bg_deep))),
                 border: Border {
