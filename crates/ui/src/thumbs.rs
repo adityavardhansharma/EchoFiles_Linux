@@ -360,7 +360,35 @@ fn run_thumbnailer(p: &Path, uri: &str, cancel: &AtomicBool) -> Option<Pixels> {
 }
 
 /// Produce a thumbnail for `p` (blocking; run on a worker thread).
+/// A very tall or wide picture (a long screenshot, a 50×2000 strip) becomes a sliver a
+/// pixel or two across; show its middle at 1:3 at most. Only what EchoFiles draws is
+/// cropped: the shared thumbnail cache keeps the whole picture for other apps.
+fn crop_extreme(px: Pixels) -> Pixels {
+    let (w, h) = (px.width as usize, px.height as usize);
+    if h > w * 3 && w > 0 {
+        let ch = w * 3;
+        let top = (h - ch) / 2;
+        let rgba = px.rgba[top * w * 4..(top + ch) * w * 4].to_vec();
+        Pixels { width: px.width, height: ch as u32, rgba: std::sync::Arc::new(rgba) }
+    } else if w > h * 3 && h > 0 {
+        let cw = h * 3;
+        let left = (w - cw) / 2;
+        let mut rgba = Vec::with_capacity(cw * h * 4);
+        for row in 0..h {
+            let start = (row * w + left) * 4;
+            rgba.extend_from_slice(&px.rgba[start..start + cw * 4]);
+        }
+        Pixels { width: cw as u32, height: px.height, rgba: std::sync::Arc::new(rgba) }
+    } else {
+        px
+    }
+}
+
 pub fn load_cancellable(p: &Path, mtime: i64, cancel: &AtomicBool) -> Option<Pixels> {
+    load_uncropped(p, mtime, cancel).map(crop_extreme)
+}
+
+fn load_uncropped(p: &Path, mtime: i64, cancel: &AtomicBool) -> Option<Pixels> {
     if cancel.load(Ordering::Relaxed) {
         return None;
     }

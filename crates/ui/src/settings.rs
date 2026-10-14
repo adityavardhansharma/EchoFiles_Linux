@@ -960,7 +960,15 @@ impl App {
     fn page_appearance(&self) -> Element<'_, Message> {
         let p = &self.palette;
         let mut swatches = row![].spacing(6);
+        // Themes reuse colours across roles (accent and warning are often one orange); show
+        // each colour once.
+        let mut seen: Vec<ef_theme::Rgb> = Vec::new();
         for c in [p.bg, p.bg_raised, p.ink, p.accent, p.world_linux, p.world_windows, p.success.base, p.warning.base, p.danger.base] {
+            let close = |a: &ef_theme::Rgb| (a.r - c.r).abs() + (a.g - c.g).abs() + (a.b - c.b).abs() < 0.03;
+            if seen.iter().any(close) {
+                continue;
+            }
+            seen.push(c);
             let edge = color(p.line_strong);
             swatches = swatches.push(container(Space::new()).width(18).height(18).style(move |_| container::Style {
                 background: Some(Background::Color(color(c))),
