@@ -260,9 +260,32 @@ impl App {
                     (new > 0).then(|| format!("{new} new")),
                 ));
             }
+            // Texts and notifications are pages of their own too, not only hub tiles.
+            if open && current.as_deref() == Some(t.id.as_str()) && self.phone_online(&t.id) {
+                if self.settings.phone.messages {
+                    col = col.push(self.phone_sub(
+                        "message",
+                        "Messages",
+                        pm(PhoneMsg::Open(PhonePage::Messages)),
+                        pane.phone == Some(PhonePage::Messages),
+                        None,
+                    ));
+                }
+                if self.settings.phone.notifications != ef_config::PhoneNotifications::Off {
+                    let n = self.phone.notifications.len();
+                    col = col.push(self.phone_sub(
+                        "bell",
+                        "Notifications",
+                        pm(PhoneMsg::Open(PhonePage::Notifications)),
+                        pane.phone == Some(PhonePage::Notifications),
+                        (n > 0).then(|| n.to_string()),
+                    ));
+                }
+            }
         }
         if open {
-            col = col.push(self.side_button("plus", "Connect another phone", pm(PhoneMsg::Dialog(true)), false));
+            // Short enough for the narrowest sidebar (it wrapped to two lines).
+            col = col.push(self.side_button("plus", "Add a phone", pm(PhoneMsg::Dialog(true)), false));
         }
         col.into()
     }
@@ -307,9 +330,9 @@ impl App {
             .size(style::BODY)
             .font(if active { style::FONT_BOLD } else { style::FONT })
             .color(ink)
-            .wrapping(text::Wrapping::None)
-            .width(Length::Fill);
-        let mut top = row![head].spacing(style::SPACE_3).align_y(Alignment::Center);
+            .wrapping(text::Wrapping::None);
+        // A long name clips at its own edge instead of running under the battery meter.
+        let mut top = row![container(head).width(Length::Fill).clip(true)].spacing(style::SPACE_3).align_y(Alignment::Center);
         if let (true, Some((lv, ch))) = (online, battery) {
             top = top.push(self.battery_meter(lv, ch));
         }
@@ -317,8 +340,11 @@ impl App {
             w::pill(p, "Pairing…", Some(p.info))
         } else if online {
             let ip = self.phone.devices.get(id).map(|d| d.ip.to_string()).unwrap_or_default();
-            let mut r =
-                row![self.pt(format!("Wi-Fi · {ip}"), style::LABEL, p.ink_muted).wrapping(text::Wrapping::None).width(Length::Fill)];
+            let mut r = row![
+                container(self.pt(format!("Wi-Fi · {ip}"), style::LABEL, p.ink_muted).wrapping(text::Wrapping::None))
+                    .width(Length::Fill)
+                    .clip(true)
+            ];
             if let Some((lv, _)) = battery {
                 r = r.push(self.pt(format!("{lv}%"), style::LABEL, p.ink));
             }
