@@ -413,10 +413,27 @@ impl App {
             );
             return w::fill(container(col).padding(16), p.bg_sunken).width(WIDTH).height(Length::Fill).into();
         };
-        // Picture: thumbnail when there is one, else the 96px colour icon.
-        let pic: Element<'_, Message> = match self.thumbs.get(path) {
-            Some(h) => image(h).width(Length::Fill).height(180).content_fit(iced::ContentFit::Contain).into(),
-            None => {
+        // Picture: thumbnail when there is one; for text, the text itself (it used to sit
+        // below every fact and button, off screen, under a big generic icon); else the
+        // 96px colour icon.
+        let text_box = |t: &str| -> Element<'_, Message> {
+            let pal = p.clone();
+            container(text(t.to_string()).size(style::LABEL).font(style::FONT).color(color(p.ink)))
+                .padding(8)
+                .width(Length::Fill)
+                .max_height(260)
+                .clip(true)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(color(pal.bg_deep))),
+                    border: Border { color: color(pal.line), width: 1.0, radius: 2.0.into() },
+                    ..Default::default()
+                })
+                .into()
+        };
+        let pic: Element<'_, Message> = match (self.thumbs.get(path), &d.text) {
+            (Some(h), _) => image(h).width(Length::Fill).height(180).content_fit(iced::ContentFit::Contain).into(),
+            (None, Some(t)) => text_box(t),
+            (None, None) => {
                 let icon = crate::kinds::icon(d.name.as_bytes(), if d.is_dir { ef_core::Kind::Dir } else { ef_core::Kind::File });
                 container(iced::widget::svg(self.icons.color(icon)).width(96).height(96))
                     .width(Length::Fill)
@@ -469,18 +486,6 @@ impl App {
             ]
             .spacing(style::SPACE_3),
         );
-        if let Some(t) = &d.text {
-            let pal = p.clone();
-            col = col.push(
-                container(text(t.clone()).size(style::LABEL).font(style::FONT).color(color(p.ink))).padding(8).width(Length::Fill).style(
-                    move |_| container::Style {
-                        background: Some(Background::Color(color(pal.bg_deep))),
-                        border: Border { color: color(pal.line), width: 1.0, radius: 2.0.into() },
-                        ..Default::default()
-                    },
-                ),
-            );
-        }
         w::fill(scrollable(container(col).padding(16)).height(Length::Fill), p.bg_sunken).width(WIDTH).height(Length::Fill).into()
     }
 }
