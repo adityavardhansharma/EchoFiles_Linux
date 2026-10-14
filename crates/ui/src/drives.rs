@@ -35,6 +35,8 @@ pub struct DriveState {
 #[derive(Debug, Clone)]
 pub enum DriveMsg {
     Volumes(Result<VolumeScan, String>),
+    /// Fresh free space for the drives already listed (and the system drive).
+    Space(Vec<Option<ef_core::volume::FsInfo>>, Option<ef_core::volume::FsInfo>),
     Animations(bool),
     Click(usize),
     Mounted { device: String, result: Result<Mounted, MountError>, open: bool },
@@ -126,8 +128,32 @@ impl App {
         )
     }
 
+    /// Re-read free space on the listed drives (one statfs each) at most every 30 s while
+    /// a window is open, so the sidebar and Drives page don't show numbers from startup.
+    pub(crate) fn refresh_drive_space(&mut self) -> Task<Message> {
+        if self.window.is_none() || self.space_checked.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(30)) {
+            return Task::none();
+        }
+        self.space_checked = Some(std::time::Instant::now());
+        let mounts: Vec<Option<PathBuf>> = self.volumes.iter().map(|v| v.mount_points.first().map(PathBuf::from)).collect();
+        background(
+            move || {
+                let fs = mounts.iter().map(|m| m.as_deref().and_then(crate::app::fs_of)).collect();
+                (fs, crate::app::fs_of(Path::new("/")))
+            },
+            |(fs, root)| Message::Drive(DriveMsg::Space(fs, root)),
+        )
+    }
+
     pub(crate) fn drive_update(&mut self, msg: DriveMsg) -> Task<Message> {
         match msg {
+            DriveMsg::Space(fs, root) => {
+                if fs.len() == self.volumes.len() {
+                    self.volume_fs = fs;
+                }
+                self.root_fs = root;
+                Task::none()
+            }
             DriveMsg::Volumes(Ok((v, fs, root))) => {
                 self.volume_fs = fs;
                 self.root_fs = root;

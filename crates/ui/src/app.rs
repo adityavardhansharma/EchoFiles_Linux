@@ -164,6 +164,8 @@ pub struct App {
     pub(crate) volumes: Vec<Volume>,
     pub(crate) root_fs: Option<FsInfo>,
     pub(crate) volume_fs: Vec<Option<FsInfo>>,
+    /// When drive free space was last re-read (see `refresh_drive_space`).
+    pub(crate) space_checked: Option<Instant>,
     pub(crate) drive_state: HashMap<String, DriveState>,
     pub(crate) net: NetState,
     pub(crate) phone: PhoneState,
@@ -335,6 +337,7 @@ impl App {
             volumes: Vec::new(),
             root_fs: None,
             volume_fs: Vec::new(),
+            space_checked: None,
             drive_state: HashMap::new(),
             net: NetState { recent: crate::network::load_recent(), ..Default::default() },
             phone: crate::phone::load_state(),
@@ -610,7 +613,8 @@ impl App {
         }
         self.expire_toasts();
         self.phone_tick();
-        self.index_tick()
+        let space = self.refresh_drive_space();
+        Task::batch([space, self.index_tick()])
     }
 
     // ------------------------------------------------------------------ windows
