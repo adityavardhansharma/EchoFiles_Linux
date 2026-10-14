@@ -195,9 +195,11 @@ impl App {
                         }
                         "dnd" => {
                             s.send_packet(&id, "echofiles.dnd", ef_phone::json!({"enabled":true}));
+                            self.phone.dnd = true;
                         }
                         "dnd-off" => {
                             s.send_packet(&id, "echofiles.dnd", ef_phone::json!({"enabled":false}));
+                            self.phone.dnd = false;
                         }
                         _ => {}
                     }
@@ -603,6 +605,10 @@ impl App {
                 if let (Some(id), Some(s)) = (self.phone_id(), service()) {
                     s.request_conversations(&id);
                 }
+                Task::none()
+            }
+            PhoneMsg::ClipboardSetup(open) => {
+                self.phone.clipboard_setup = open;
                 Task::none()
             }
             PhoneMsg::ToggleNotification(key) => {

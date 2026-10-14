@@ -896,36 +896,65 @@ impl App {
         let lower: Element<'a, Message> =
             if narrow { column![left, right].spacing(style::SPACE_5).into() } else { row![left, right].spacing(style::SPACE_5).into() };
 
-        scrollable(container(column![hero, lower, Space::new().height(24)].spacing(style::SPACE_5).max_width(1080)).padding([24, 28]))
-            .id(crate::phone::PAGE_SCROLL)
-            .height(Length::Fill)
-            .into()
+        // Centred in the page (it hugged the left edge with a ragged gap on the right).
+        scrollable(
+            container(container(column![hero, lower, Space::new().height(24)].spacing(style::SPACE_5)).max_width(1080))
+                .center_x(Length::Fill)
+                .padding([24, 28]),
+        )
+        .id(crate::phone::PAGE_SCROLL)
+        .height(Length::Fill)
+        .into()
     }
 
     fn connect_controls(&self) -> Element<'_, Message> {
         let p = &self.palette;
-        let action = |label: &str, name: &str| {
-            w::text_button(p, &self.icons, label, None, None, Variant::Secondary, Some(pm(PhoneMsg::Extra(name.into()))))
+        let action = |label: &str, icon: Option<&str>, name: &str| {
+            w::text_button(p, &self.icons, label, icon, None, Variant::Secondary, Some(pm(PhoneMsg::Extra(name.into()))))
+        };
+        // One setting per row with a switch, like Settings (they were buttons reading
+        // "Sync Do Not Disturb · Off").
+        let setting = |label: &str, help: &str, on: bool, msg: Message| -> Element<'_, Message> {
+            row![
+                column![self.pt(label.to_string(), style::BODY, p.ink), self.pt(help.to_string(), style::LABEL, p.ink_muted)]
+                    .spacing(2)
+                    .width(Length::Fill),
+                w::switch(p, on, Some(Box::new(move |_| msg.clone()))),
+            ]
+            .spacing(style::SPACE_3)
+            .align_y(Alignment::Center)
+            .into()
         };
         let mut c = column![self.ptb("ECHOCONNECT", style::LABEL, p.ink_muted)].spacing(style::SPACE_3);
         if !self.phone.signal.is_empty() {
-            c = c.push(self.pt(self.phone.signal.clone(), style::META, p.ink_muted));
-        }
-        c = c.push(action("Refresh media players", "media-refresh"));
-        for (player, state) in &self.phone.players {
-            c = c.push(self.pt(
-                format!("{} · {}", state["title"].as_str().unwrap_or(player), state["artist"].as_str().unwrap_or("")),
-                style::META,
-                p.ink,
-            ));
             c = c.push(
                 row![
-                    action("Previous", &format!("media:Previous:{player}")),
-                    action("Play / pause", &format!("media:PlayPause:{player}")),
-                    action("Next", &format!("media:Next:{player}"))
+                    w::glyph(&self.icons, "phone", 14.0, color(p.ink_muted)),
+                    self.pt(format!("Mobile signal · {}", self.phone.signal), style::META, p.ink_muted)
                 ]
-                .spacing(8),
+                .spacing(6)
+                .align_y(Alignment::Center),
             );
+        }
+        for (player, state) in &self.phone.players {
+            let title = format!("{} · {}", state["title"].as_str().unwrap_or(player), state["artist"].as_str().unwrap_or(""));
+            let tool = |icon: &str, tip: &str, cmd: &str| {
+                self.tip(w::icon_button(p, &self.icons, icon, Some(pm(PhoneMsg::Extra(format!("media:{cmd}:{player}")))), false), tip, None)
+            };
+            c = c.push(
+                row![
+                    w::glyph(&self.icons, "music", 14.0, color(p.ink_muted)),
+                    self.pt(crate::view::fit_end(&title, 220.0, style::META), style::META, p.ink).width(Length::Fill),
+                    tool("chevron-left", "Previous", "Previous"),
+                    tool("play", "Play / pause", "PlayPause"),
+                    tool("chevron-right", "Next", "Next"),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            );
+        }
+        if self.phone.players.is_empty() {
+            c = c.push(action("Find media playing on the phone", Some("music"), "media-refresh"));
         }
         if let Some(call) = &self.phone.call {
             c = c
@@ -934,39 +963,70 @@ impl App {
                     style::BODY,
                     p.ink_strong,
                 ))
-                .push(row![action("Answer on laptop", "answer"), action("Hang up", "hangup"), action("Use phone", "phone")].spacing(8));
+                .push(
+                    row![action("Answer on laptop", None, "answer"), action("Hang up", None, "hangup"), action("Use phone", None, "phone")]
+                        .spacing(8),
+                );
         }
-        c = c.push(row![action("Take photo", "photo"), action("Scan document", "scan")].spacing(8));
-        for (label, key, on) in [
-            ("Sync Do Not Disturb", "dnd-sync", self.settings.phone.dnd_sync),
-            ("Copy one-time codes", "otp", self.settings.phone.otp),
-            ("Lock laptop when away", "autolock", self.settings.phone.autolock),
-            ("Index phone files", "index", self.settings.phone.phone_index),
-            ("Receive camera backup", "backup", self.settings.phone.backup),
+        c = c.push(row![action("Take photo", Some("image"), "photo"), action("Scan document", Some("file"), "scan")].spacing(8));
+        c = c.push(w::hline(p.line));
+        let s = &self.settings.phone;
+        c = c.push(setting(
+            "Do Not Disturb on the phone",
+            "Silence the phone now.",
+            self.phone.dnd,
+            pm(PhoneMsg::Extra(if self.phone.dnd { "dnd-off" } else { "dnd" }.into())),
+        ));
+        for (label, help, key, on) in [
+            ("Sync Do Not Disturb", "The laptop and the phone go quiet together.", "dnd-sync", s.dnd_sync),
+            ("Copy one-time codes", "Codes from texts land on the laptop's clipboard.", "otp", s.otp),
+            ("Lock laptop when away", "Locks when the phone leaves the Wi-Fi.", "autolock", s.autolock),
+            ("Index phone files", "Phone file names show in Everywhere search.", "index", s.phone_index),
+            ("Receive camera backup", "New camera photos save to ~/Pictures/Phone/Backup.", "backup", s.backup),
         ] {
-            c = c.push(action(&format!("{} · {}", label, if on { "On" } else { "Off" }), key));
+            c = c.push(setting(label, help, on, pm(PhoneMsg::Extra(key.into()))));
         }
-        c = c.push(row![action("Do Not Disturb on", "dnd"), action("Off", "dnd-off")].spacing(8));
-        c = c.push(self.ptb("AUTOMATIC CLIPBOARD", style::LABEL, p.ink_muted))
-            .push(self.pt("On the phone: Developer options → Wireless debugging → Pair device with pairing code. Enter its pairing address, code and connection address below.", style::META, p.ink_muted));
-        for (i, label, value) in [
-            (0, "Pairing IP:port", &self.phone.extra_address),
-            (1, "Six-digit pairing code", &self.phone.extra_code),
-            (2, "Connection IP:port", &self.phone.extra_connect),
-        ] {
+        c = c.push(w::hline(p.line));
+        // The adb pairing form is a one-time setup: folded away until asked for.
+        let open = self.phone.clipboard_setup;
+        c = c.push(
+            row![
+                self.ptb("AUTOMATIC CLIPBOARD", style::LABEL, p.ink_muted).width(Length::Fill),
+                w::text_button(
+                    p,
+                    &self.icons,
+                    if open { "Hide" } else { "Set up…" },
+                    None,
+                    None,
+                    Variant::Ghost,
+                    Some(pm(PhoneMsg::ClipboardSetup(!open)))
+                ),
+            ]
+            .align_y(Alignment::Center),
+        );
+        if open {
+            c = c.push(self.pt("On the phone: Developer options → Wireless debugging → Pair device with pairing code. Enter its pairing address, code and connection address below.", style::META, p.ink_muted));
+            for (i, label, value) in [
+                (0, "Pairing IP:port", &self.phone.extra_address),
+                (1, "Six-digit pairing code", &self.phone.extra_code),
+                (2, "Connection IP:port", &self.phone.extra_connect),
+            ] {
+                c = c.push(
+                    text_input(label, value)
+                        .on_input(move |v| pm(PhoneMsg::ExtraField(i, v)))
+                        .size(style::BODY)
+                        .font(style::FONT)
+                        .padding(8)
+                        .style(w::field_style(p, false)),
+                );
+            }
             c = c.push(
-                text_input(label, value)
-                    .on_input(move |v| pm(PhoneMsg::ExtraField(i, v)))
-                    .size(style::BODY)
-                    .font(style::FONT)
-                    .padding(8)
-                    .style(w::field_style(p, false)),
+                row![action("Grant permission", Some("key"), "clipboard-setup"), action("Use a QR code", Some("qr"), "clipboard-qr")]
+                    .spacing(8),
             );
-        }
-        c = c.push(action("Grant clipboard permission", "clipboard-setup"));
-        c = c.push(action("Set up with a QR code", "clipboard-qr"));
-        if let Some(qr) = &self.phone.clipboard_qr {
-            c = c.push(svg(qr.clone()).width(240).height(240));
+            if let Some(qr) = &self.phone.clipboard_qr {
+                c = c.push(svg(qr.clone()).width(240).height(240));
+            }
         }
         if !self.phone.extra_status.is_empty() {
             c = c.push(self.pt(self.phone.extra_status.clone(), style::META, p.ink_muted));
@@ -1243,10 +1303,14 @@ impl App {
                     // "26 photos", not a bare 26 that reads like a year after the date.
                     row![
                         self.ptb(day.to_string(), 15.0, p.ink_strong),
-                        self.pt(format!("· {} {}", group.len(), if group.len() == 1 { "item" } else { "items" }), style::LABEL, p.ink_muted)
+                        self.pt(
+                            format!("· {} {}", group.len(), if group.len() == 1 { "item" } else { "items" }),
+                            style::LABEL,
+                            p.ink_muted
+                        )
                     ]
-                        .spacing(style::SPACE_3)
-                        .align_y(Alignment::End),
+                    .spacing(style::SPACE_3)
+                    .align_y(Alignment::End),
                     grid
                 ]
                 .spacing(style::SPACE_3),

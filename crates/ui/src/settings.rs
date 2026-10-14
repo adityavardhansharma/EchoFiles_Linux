@@ -1125,6 +1125,23 @@ impl App {
                 ),
             ],
         ));
+        // EchoConnect's extras, here as well as on the hub, so every phone setting has a
+        // home in Settings.
+        let extra = |on: bool, key: &'static str| w::switch(p, on, Some(Box::new(move |_| Message::Phone(PhoneMsg::Extra(key.into())))));
+        groups.push(self.group(
+            "EchoConnect",
+            vec![
+                self.setting("Sync Do Not Disturb", "The laptop and the phone go quiet together.", extra(s.dnd_sync, "dnd-sync")),
+                self.setting("Copy one-time codes", "Codes from texts land on the laptop's clipboard.", extra(s.otp, "otp")),
+                self.setting("Lock laptop when away", "Locks this session when the phone leaves the Wi-Fi.", extra(s.autolock, "autolock")),
+                self.setting(
+                    "Index phone files",
+                    "Phone file names show in Everywhere search, even offline.",
+                    extra(s.phone_index, "index"),
+                ),
+                self.setting("Receive camera backup", "New camera photos save to ~/Pictures/Phone/Backup.", extra(s.backup, "backup")),
+            ],
+        ));
         groups.push(self.group(
             "Receiving files",
             vec![

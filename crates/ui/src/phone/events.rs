@@ -636,11 +636,26 @@ impl App {
                 Task::none()
             }
             Event::TransferStarted { transfer, name, size, upload, done, .. } => {
-                self.phone.moved.insert(0, Moved { transfer, name, size, upload, done, result: None, at: SystemTime::now() });
-                self.phone.moved.truncate(30);
+                // Photo thumbnails and clipboard images are the app's own traffic, not files
+                // you sent or received; they stay out of "Received from phone".
+                let internal = self.phone.remote_thumb.contains_key(&transfer)
+                    || self.phone.payloads.get(&transfer).is_some_and(|k| k == "echofiles.clipboard.image");
+                if !internal {
+                    self.phone.moved.insert(0, Moved { transfer, name, size, upload, done, result: None, at: SystemTime::now() });
+                    self.phone.moved.truncate(30);
+                }
                 Task::none()
             }
             Event::TransferDone { id, transfer, upload, result } => {
+                // Mark the row finished first: some branches below return early, which left
+                // finished transfers showing a full progress bar forever.
+                if let Some(m) = self.phone.moved.iter_mut().find(|m| m.transfer == transfer) {
+                    if let (Ok(p), false) = (&result, upload) {
+                        m.name = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                    }
+                    m.result = Some(result.clone());
+                    m.at = SystemTime::now();
+                }
                 if let Some(request) = self.phone.backup_requests.remove(&transfer) {
                     let received = result.clone();
                     let device = id.clone();
@@ -689,13 +704,6 @@ impl App {
                             }
                         });
                     }
-                }
-                if let Some(m) = self.phone.moved.iter_mut().find(|m| m.transfer == transfer) {
-                    if let (Ok(p), false) = (&result, upload) {
-                        m.name = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                    }
-                    m.result = Some(result.clone());
-                    m.at = SystemTime::now();
                 }
                 match (&result, upload) {
                     (Err(e), true) => self.toast_error(format!("Couldn't send to {}", self.phone_name(&id)), e.clone()),

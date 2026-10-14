@@ -148,6 +148,8 @@ pub struct PhoneState {
     pub mute_draft: String,
     /// Notifications shown in full (by key); others show their first lines.
     pub expanded: HashSet<String>,
+    /// The automatic-clipboard setup form on the hub is open.
+    pub clipboard_setup: bool,
     pub ufw: Option<bool>,
 }
 
@@ -272,6 +274,8 @@ pub enum PhoneMsg {
     Dismiss(String),
     /// Show a long notification in full, or clamp it again.
     ToggleNotification(String),
+    /// Show or hide the automatic-clipboard setup form.
+    ClipboardSetup(bool),
     DismissAll,
     ReplyDraft(String, String),
     Reply(String),
