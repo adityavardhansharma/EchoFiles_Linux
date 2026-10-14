@@ -88,6 +88,9 @@ pub struct SettingsUi {
     /// Validation message under one field.
     error: Option<(Field, String)>,
     save: SaveState,
+    /// When the last change was saved: "Saved" shows for a few seconds after a change,
+    /// not forever (it read as if something had just happened).
+    saved_at: Option<std::time::Instant>,
     /// A problem applying a setting to the system (autostart file, skill link).
     problem: Option<String>,
     skill_installed: bool,
@@ -101,6 +104,7 @@ impl SettingsUi {
             drafts: Default::default(),
             error: None,
             save: load_error.map_or(SaveState::Saved, SaveState::Failed),
+            saved_at: None,
             problem: None,
             skill_installed: system::skill_installed(),
             starts_at_login: system::starts_at_login(),
@@ -330,7 +334,10 @@ impl App {
                     self.notice = Some(format!("Settings were not saved: {e}"));
                 }
                 self.settings_ui.save = match r {
-                    Ok(()) => SaveState::Saved,
+                    Ok(()) => {
+                        self.settings_ui.saved_at = Some(std::time::Instant::now());
+                        SaveState::Saved
+                    }
                     Err(e) => SaveState::Failed(e),
                 };
                 Task::none()
@@ -365,7 +372,9 @@ impl App {
 
     fn settings_bar(&self) -> Element<'_, Message> {
         let p = &self.palette;
+        let recent = self.settings_ui.saved_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3));
         let status: Element<'_, Message> = match &self.settings_ui.save {
+            SaveState::Saved if !recent => Space::new().into(),
             SaveState::Saved => row![
                 w::glyph(&self.icons, "check", 14.0, color(p.success.ink)),
                 text("Saved").size(style::META).font(style::FONT).color(color(p.ink_muted))
@@ -813,7 +822,7 @@ impl App {
         let p = &self.palette;
         let mut index_rows = vec![self.setting(
             "Search index",
-            "A list of file names kept on disk so Everywhere search answers instantly and AI agents can use ef. Updates within seconds in Downloads, Desktop and Documents and every minute elsewhere. Turning it off deletes the index.",
+            "A list of file names kept on disk so Everywhere search answers instantly and AI agents can use ef. Updates within a minute in Downloads, Desktop, Documents and the folder you have open, every 30 minutes elsewhere, and every 6 hours on other drives. Turning it off deletes the index.",
             self.toggle(s.index, SettingsMsg::Index),
         )];
         index_rows.push(self.index_status());
