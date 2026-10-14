@@ -344,6 +344,21 @@ impl Pane {
         self.anchor = Some(pos);
     }
 
+    /// Drop selected entries that the current order (the search filter) doesn't show.
+    pub fn retain_visible_selection(&mut self) {
+        if self.selected.iter().all(|&w| w == 0) {
+            return;
+        }
+        let mut visible = vec![0u64; self.selected.len()];
+        for &i in self.order.iter() {
+            let i = i as usize;
+            if file_list::is_selected(&self.selected, i) {
+                file_list::set_bit(&mut visible, i, true);
+            }
+        }
+        self.selected = visible;
+    }
+
     pub fn select_all(&mut self) {
         for p in 0..self.order.len() {
             let i = self.order[p] as usize;

@@ -788,6 +788,9 @@ impl App {
                     }
                     pane.order = order;
                     pane.cursor = None;
+                    // Entries the filter now hides leave the selection: "1 selected" must
+                    // never count something that isn't on screen.
+                    pane.retain_visible_selection();
                 }
                 Task::none()
             }
