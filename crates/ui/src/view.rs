@@ -432,9 +432,27 @@ impl App {
             .on_submit(Message::SearchSubmit)
             .size(style::BODY)
             .font(style::FONT)
-            .padding([5, 10])
+            .padding(Padding { top: 5.0, bottom: 5.0, left: 10.0, right: 28.0 })
             .width(220)
             .style(w::field_style(p, false));
+        // A clear button inside the field's right edge while there is something to clear.
+        // The stack is always there (only its top layer changes) so the field keeps its
+        // focus and state when the first character is typed.
+        let clear: Element<'_, Message> = if pane.query.is_empty() {
+            Space::new().into()
+        } else {
+            self.tip(w::icon_button(p, &self.icons, "close", Some(Message::Search(String::new())), false), "Clear search", Some("Esc"))
+        };
+        let search: Element<'_, Message> = stack![
+            search,
+            container(clear)
+                .width(220)
+                .height(Length::Fill)
+                .align_x(Alignment::End)
+                .align_y(Alignment::Center)
+                .padding(Padding { right: 2.0, ..Padding::ZERO })
+        ]
+        .into();
         let scope = w::segmented(
             p,
             &[("Folder", Message::SetScope(Scope::Folder)), ("Everywhere", Message::SetScope(Scope::Everywhere))],
@@ -854,6 +872,7 @@ impl App {
                 dragging: self.drag.is_some(),
                 renaming,
                 thumb,
+                highlight: if pane.everywhere() { "" } else { pane.query.trim() },
             },
             &self.palette,
             &self.icons,

@@ -111,6 +111,8 @@ pub struct Model<'a> {
     pub renaming: Option<usize>,
     /// Decoded thumbnail for an entry, if ready.
     pub thumb: Box<dyn Fn(usize) -> Option<aimage::Handle> + 'a>,
+    /// The search box's filter text: where it matches, a name is highlighted.
+    pub highlight: &'a str,
 }
 
 /// JetBrains Mono advances every glyph by 0.6 em.
@@ -1139,6 +1141,21 @@ impl<'a, Message> FileList<'a, Message> {
             let name_clip = Rectangle { x: cols.name, y, width: cols.name_w, height: rh };
             let clip = name_clip.intersection(&body).unwrap_or(name_clip);
             let stem_cells: usize = stem.chars().map(cols_of).sum();
+            // Mark where the search matched (ASCII names: one cell per byte, so the match
+            // offset is its position on screen; a name cut short skips the mark).
+            let q = self.model.highlight.as_bytes();
+            let shown = format!("{stem}{ext}");
+            if !q.is_empty()
+                && shown.is_ascii()
+                && let Some(at) = shown.as_bytes().windows(q.len()).position(|w| w.eq_ignore_ascii_case(q))
+            {
+                let mark = Rectangle { x: cols.name + at as f32 * ADVANCE - 1.0, y: cy - 9.0, width: q.len() as f32 * ADVANCE + 2.0, height: 18.0 };
+                if let Some(m) = mark.intersection(&clip) {
+                    let mut c = color(p.accent);
+                    c.a = 0.28 * alpha;
+                    iced::advanced::Renderer::fill_quad(renderer, Quad { bounds: m, border: Border { radius: 2.0.into(), ..Border::default() }, ..Quad::default() }, c);
+                }
+            }
             for (content, x, c) in [(stem, cols.name, ink), (ext, cols.name + stem_cells as f32 * ADVANCE, ink_ext)] {
                 if !content.is_empty() {
                     self.text(renderer, content, Point::new(x, cy), style::BODY, style::FONT, c, text::Alignment::Left, clip);
