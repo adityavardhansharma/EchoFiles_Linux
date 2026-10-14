@@ -271,6 +271,33 @@ pub fn window_settings() -> window::Settings {
     }
 }
 
+/// The user's Pictures and Videos folders from `~/.config/user-dirs.dirs` (they are
+/// translated on many systems: "Bilder", "Imágenes"…).
+fn media_dirs() -> &'static (PathBuf, PathBuf) {
+    static DIRS: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
+    DIRS.get_or_init(|| {
+        let home = config::home();
+        let text = std::fs::read_to_string(config::config_dir().with_file_name("user-dirs.dirs")).unwrap_or_default();
+        let get = |key: &str, fallback: &str| {
+            text.lines()
+                .find_map(|l| l.strip_prefix(key)?.strip_prefix('=').map(|v| v.trim().trim_matches('"').replace("$HOME", &home.to_string_lossy())))
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(fallback))
+        };
+        (get("XDG_PICTURES_DIR", "Pictures"), get("XDG_VIDEOS_DIR", "Videos"))
+    })
+}
+
+/// A photo or video, by extension.
+fn is_media_name(name: &std::ffi::OsStr) -> bool {
+    let ext = Path::new(name).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "heic" | "heif" | "avif" | "tif" | "tiff" | "jxl" | "raw" | "dng" | "cr2" | "nef"
+            | "arw" | "mp4" | "mkv" | "mov" | "webm" | "avi" | "m4v" | "3gp"
+    )
+}
+
 fn view_modes_file() -> PathBuf {
     config::state_dir().join("view-modes")
 }
@@ -483,9 +510,39 @@ impl App {
         }
         let home = config::home();
         let name = dir.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
-        dir == home.join("Pictures")
+        let (pictures, videos) = media_dirs();
+        dir == pictures
+            || dir == videos
+            || dir == home.join("Pictures")
             || dir == home.join("Videos")
             || matches!(name.as_str(), "dcim" | "camera" | "screenshots" | "photos" | "wallpapers")
+    }
+
+    /// Automatic view, after listing: a folder that is mostly photos and videos (at least
+    /// 4 files, 60 % of them media) opens as a grid even without a telling name.
+    fn auto_grid_by_content(&mut self, generation: u64) {
+        if self.settings.appearance.view != config::DefaultView::Auto {
+            return;
+        }
+        let modes = &self.view_modes;
+        let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.generation == generation) else { return };
+        if pane.grid || modes.contains_key(&pane.location) {
+            return;
+        }
+        let Some(l) = pane.loaded.as_ref() else { return };
+        let (mut files, mut media) = (0usize, 0usize);
+        for i in 0..l.listing.len() {
+            if l.listing.is_dir(i) {
+                continue;
+            }
+            files += 1;
+            if is_media_name(l.listing.name(i)) {
+                media += 1;
+            }
+        }
+        if files >= 4 && media * 10 >= files * 6 {
+            pane.grid = true;
+        }
     }
 
     /// The default view changed: forget per-folder choices and re-apply it everywhere.
@@ -781,6 +838,7 @@ impl App {
                 pane.apply_loaded(loaded, order);
                 let id = pane.id;
                 let t = pane.reorder(hidden);
+                self.auto_grid_by_content(generation);
                 self.refresh_cut();
                 let r = self.resume_rename(id);
                 Task::batch([t, r])

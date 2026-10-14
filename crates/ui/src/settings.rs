@@ -988,7 +988,7 @@ impl App {
                 ),
             ), self.setting(
                 "Folders open as",
-                "Automatic uses a grid in Pictures, Videos and camera folders and a list everywhere else. Changing this resets views you switched by hand (Ctrl+1 / Ctrl+2).",
+                "Automatic uses a grid in Pictures, Videos, camera folders and any folder that is mostly photos or videos, and a list everywhere else. Changing this resets views you switched by hand (Ctrl+1 / Ctrl+2).",
                 w::segmented(
                     p,
                     &[
