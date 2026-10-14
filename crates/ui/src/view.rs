@@ -91,6 +91,21 @@ impl App {
         out
     }
 
+    /// About how wide one pane's content is, for fitting paths to it.
+    pub(crate) fn pane_width(&self) -> f32 {
+        let mut w = self.window_size.width;
+        if !self.settings.sidebar.hidden {
+            w -= f32::from(self.settings.sidebar.width) + 5.0;
+        }
+        if self.settings.appearance.preview && !self.pane().special() {
+            w -= crate::preview::WIDTH + 1.0;
+        }
+        if self.tabs[self.tab].panes.len() == 2 {
+            w = w / 2.0 - 1.0;
+        }
+        w.max(0.0)
+    }
+
     pub(crate) fn files_view(&self) -> Element<'_, Message> {
         let p = &self.palette;
         let mut center = column![].width(Length::Fill).height(Length::Fill);
@@ -302,6 +317,9 @@ impl App {
             self.phone_crumbs(page)
         } else if let Some(page) = &pane.shares {
             vec![(Some("network"), page.address.host_port(), PathBuf::new())]
+        } else if self.everywhere() {
+            // Everywhere results aren't inside the folder you were in; say what they are.
+            vec![(Some("search"), "Everywhere".to_string(), PathBuf::new())]
         } else {
             self.crumbs_for(&pane.location)
         };
@@ -385,7 +403,7 @@ impl App {
             trail = trail.push(self.glyph("chevron-right", 12.0, color(p.ink_faint)));
             trail = trail.push(
                 container(
-                    text("Search results")
+                    text(format!("Results for “{}”", pane.query.trim()))
                         .size(style::BODY)
                         .font(style::FONT_BOLD)
                         .color(color(p.ink_strong))
@@ -728,10 +746,11 @@ impl App {
                     .width(6)
                     .height(6)
                     .style(move |_| container::Style { background: Some(Background::Color(wc)), ..Default::default() }),
+                // A long path keeps its end (the folder you're in) and loses its start.
                 text(if pane.special() {
                     pane.title()
                 } else {
-                    self.net_uri_for(&pane.location).unwrap_or_else(|| config::tilde(&pane.location))
+                    fit_start(&self.net_uri_for(&pane.location).unwrap_or_else(|| config::tilde(&pane.location)), self.pane_width() - 48.0, style::META)
                 })
                 .size(style::META)
                 .font(if active { style::FONT_BOLD } else { style::FONT })
@@ -886,6 +905,9 @@ impl App {
             .align_y(Alignment::Center)
         };
         let row_h = self.settings.appearance.density.row_height();
+        // The location column's share (4 of 7 portions) of what's left after the icon,
+        // size and date columns and the gaps.
+        let loc_w = (self.pane_width() - 40.0 - style::ICON_ROW - style::COL_SIZE - style::COL_DATE - 5.0 * style::SPACE_4).max(0.0) * 4.0 / 7.0;
         let mut rows = column![].spacing(0).padding([0, 4]);
         let mut buf = String::new();
         for (i, h) in res.hits.iter().enumerate() {
@@ -913,7 +935,9 @@ impl App {
                 )
                 .width(Length::FillPortion(3))
                 .clip(true),
-                container(meta(h.location.clone())).width(Length::FillPortion(4)).clip(true),
+                // The end of the location (the folder holding the result) is what matters;
+                // a long one loses its start, not its end.
+                container(meta(fit_start(&config::tilde(Path::new(&h.location)), loc_w, style::META))).width(Length::FillPortion(4)).clip(true),
                 container(meta(size)).width(style::COL_SIZE).align_x(Alignment::End),
                 meta(date).width(style::COL_DATE),
             ]
@@ -1078,4 +1102,16 @@ impl App {
         }
         w::fill(bar, p.bg_deep).height(style::STATUSBAR).padding([0, 16]).align_y(Alignment::Center).width(Length::Fill).into()
     }
+}
+
+/// `s` if it fits in `width` pixels at `size` (the monospace UI font), else "…" and as much
+/// of its end as fits.
+pub(crate) fn fit_start(s: &str, width: f32, size: f32) -> String {
+    let max = (width / (size * 0.6)).floor().max(4.0) as usize;
+    let n = s.chars().count();
+    if n <= max {
+        return s.to_string();
+    }
+    let tail: String = s.chars().skip(n - (max - 1)).collect();
+    format!("…{tail}")
 }
