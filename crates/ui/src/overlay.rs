@@ -263,11 +263,16 @@ impl App {
         self.toasts.push(Toast { id: crate::pane::next_id(), tone, title, body, action, at: Instant::now(), hovered: false });
     }
 
-    /// Success toasts leave after 4 s (not while hovered); errors stay until dismissed.
-    /// Finished transfers leave after 6 s.
+    /// Success toasts leave after 4 s, ones with an action (Undo) after 8 s, errors after
+    /// 15 s; none leaves while hovered. Finished transfers leave after 6 s.
     pub(crate) fn expire_toasts(&mut self) {
         self.toasts.retain(|t| {
-            t.tone == Tone::Danger || t.hovered || t.at.elapsed() < Duration::from_secs(if t.action.is_some() { 8 } else { 4 })
+            let keep = match (t.tone, t.action.is_some()) {
+                (Tone::Danger, _) => 15,
+                (_, true) => 8,
+                _ => 4,
+            };
+            t.hovered || t.at.elapsed() < Duration::from_secs(keep)
         });
         self.transfers.retain(|t| t.finished.is_none_or(|f| f.elapsed() < Duration::from_secs(6)));
     }
@@ -1517,13 +1522,15 @@ impl App {
                 .padding(Padding { top: 12.0 * (1.0 - ti), ..Padding::ZERO }),
             );
         }
+        // Stay clear of the rename message bar along the bottom of the pane.
+        let bottom = if self.rename.as_ref().is_some_and(|r| r.error.is_some()) { 64.0 } else { 36.0 };
         Some(
             container(col)
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .align_x(Alignment::End)
                 .align_y(Alignment::End)
-                .padding(Padding { right: 16.0, bottom: 36.0, left: 16.0, top: 16.0 })
+                .padding(Padding { right: 16.0, bottom, left: 16.0, top: 16.0 })
                 .into(),
         )
     }

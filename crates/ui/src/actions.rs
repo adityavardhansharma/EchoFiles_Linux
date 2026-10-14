@@ -133,7 +133,8 @@ pub enum FileMsg {
     StartRename,
     RenameDraft(String),
     RenameCommit,
-    Renamed(Result<(PathBuf, PathBuf), String>),
+    /// (old path, new path), or (old path, the name tried, why it failed).
+    Renamed(Result<(PathBuf, PathBuf), (PathBuf, String, String)>),
     Trash,
     Trashed(TrashResult),
     AskDelete,
@@ -551,7 +552,7 @@ impl App {
             FileMsg::RenameDraft(v) => {
                 let windows = self.rename.as_ref().is_some_and(|r| r.path.parent().is_some_and(|d| self.is_windows_fs(d)));
                 let Some(r) = self.rename.as_mut() else { return Task::none() };
-                r.error = ops::name_problem(&v).map(String::from);
+                r.error = ops::name_problem(&v).map(String::from).or_else(|| taken_name(&r.path, &v));
                 r.fixed = None;
                 if r.error.is_none()
                     && windows
@@ -580,7 +581,7 @@ impl App {
                 }
                 let from = r.path.clone();
                 background(
-                    move || ops::rename(&from, &name).map(|to| (from.clone(), to)).map_err(|e| e.to_string()),
+                    move || ops::rename(&from, &name).map(|to| (from.clone(), to)).map_err(|e| (from.clone(), name.clone(), rename_problem(&e, &name))),
                     |res| Message::File(FileMsg::Renamed(res)),
                 )
             }
@@ -594,9 +595,22 @@ impl App {
                 }
                 self.refresh(&dir)
             }
-            FileMsg::Renamed(Err(e)) => {
-                self.toast_error("Couldn't rename".into(), e);
-                Task::none()
+            FileMsg::Renamed(Err((from, tried, why))) => {
+                // Back into the editor with what was typed and why it didn't work, rather
+                // than a toast and a lost name, when the item is still on screen.
+                let pane = self.pane();
+                let found = pane.loaded.as_ref().filter(|l| from.parent() == Some(l.listing.dir.as_path())).and_then(|l| {
+                    let pos = pane.order.iter().position(|&i| Some(l.listing.name(i as usize)) == from.file_name())?;
+                    Some((pos, l.listing.is_dir(pane.order[pos] as usize)))
+                });
+                let Some((pos, is_dir)) = found else {
+                    self.toast_error("Couldn't rename".into(), why);
+                    return Task::none();
+                };
+                let id = pane.id;
+                self.pane_mut().select_only(pos);
+                self.rename = Some(Rename { pane: id, path: from, value: tried.clone(), error: Some(why), fixed: None, pos: Some(pos) });
+                focus_rename(&tried, is_dir)
             }
             FileMsg::Trash => {
                 let paths = self.targets();
@@ -1001,6 +1015,32 @@ impl App {
 }
 
 /// Focus the rename field with the name's stem selected (the extension stays).
+/// Another entry already has this name in the same folder (a case-only change of the
+/// same file is fine).
+fn taken_name(path: &Path, name: &str) -> Option<String> {
+    let original = path.file_name()?.to_str()?;
+    if name.is_empty() || name == original {
+        return None;
+    }
+    let other = path.with_file_name(name);
+    let there = std::fs::symlink_metadata(&other).ok()?;
+    let me = std::fs::symlink_metadata(path).ok()?;
+    use std::os::unix::fs::MetadataExt;
+    (there.dev() != me.dev() || there.ino() != me.ino()).then(|| format!("“{name}” already exists in this folder."))
+}
+
+/// A rename failure in words, not "os error 17".
+fn rename_problem(e: &std::io::Error, name: &str) -> String {
+    match e.kind() {
+        std::io::ErrorKind::AlreadyExists => format!("“{name}” already exists in this folder."),
+        std::io::ErrorKind::PermissionDenied => "You don't have permission to rename this.".into(),
+        std::io::ErrorKind::NotFound => "It no longer exists.".into(),
+        std::io::ErrorKind::ReadOnlyFilesystem => "The drive is read-only.".into(),
+        std::io::ErrorKind::InvalidInput => e.to_string(),
+        _ => format!("Couldn't rename: {e}."),
+    }
+}
+
 fn focus_rename(value: &str, is_dir: bool) -> Task<Message> {
     let chars = value.chars().count();
     let stem = if is_dir { chars } else { value.rfind('.').filter(|&p| p > 0).map(|p| value[..p].chars().count()).unwrap_or(chars) };
