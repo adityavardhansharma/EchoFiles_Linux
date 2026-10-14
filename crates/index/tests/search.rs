@@ -133,7 +133,8 @@ fn check_corpus(root: &Path, scopes: &[PathBuf]) {
     assert_eq!(idx.len(), all.len() + 1, "every entry is indexed once");
 
     if all.len() >= 1_000 {
-        for text in ["résumé", "strasse", "日本語", "🎉", "[draft]", "new\nline", "latin1", "Ｒｅｐｏｒｔ", "हिंदी"] {
+        for text in ["résumé", "strasse", "日本語", "🎉", "[draft]", "new\nline", "latin1", "Ｒｅｐｏｒｔ", "हिंदी"]
+        {
             let q = Query { hidden: true, ..Query::new(text) };
             assert!(!oracle(&all, root, &q).is_empty(), "corpus has no {text:?} names");
         }
@@ -437,13 +438,16 @@ fn mapped_index_gives_the_same_answers() {
 fn exclusions_skip_contents_but_keep_the_folder() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    for f in ["src/report.rs", "node_modules/pkg/report.js", ".git/objects/report", "proj/target/CACHEDIR.TAG", "proj/target/debug/report.o"] {
+    for f in
+        ["src/report.rs", "node_modules/pkg/report.js", ".git/objects/report", "proj/target/CACHEDIR.TAG", "proj/target/debug/report.o"]
+    {
         touch(root, f);
     }
     let opts = ef_index::Options::recommended();
     let mut idx = Index::build_with(root, &opts).unwrap();
     assert_eq!(idx.stats().excluded, 3, "node_modules, .git and the tagged target/");
-    let paths = |idx: &Index, q: &Query| results(idx, q).into_iter().map(|p| p.strip_prefix(root).unwrap().to_path_buf()).collect::<Vec<_>>();
+    let paths =
+        |idx: &Index, q: &Query| results(idx, q).into_iter().map(|p| p.strip_prefix(root).unwrap().to_path_buf()).collect::<Vec<_>>();
     let all = Query { hidden: true, ..Query::new("report") };
     assert_eq!(paths(&idx, &all), [PathBuf::from("src/report.rs")]);
     // The excluded folders themselves are still found by name, empty.
@@ -482,7 +486,9 @@ fn excluded_paths_leave_search_entirely() {
     let mut opts = ef_index::Options::everything();
     opts.exclude_paths.push(root.join("Private").as_os_str().as_bytes().to_vec());
     let mut idx = Index::build_with(root, &opts).unwrap();
-    let got = |idx: &Index| results(idx, &Query::new("report")).into_iter().map(|p| p.strip_prefix(root).unwrap().to_path_buf()).collect::<Vec<_>>();
+    let got = |idx: &Index| {
+        results(idx, &Query::new("report")).into_iter().map(|p| p.strip_prefix(root).unwrap().to_path_buf()).collect::<Vec<_>>()
+    };
     // `Private` and everything in it are gone; `Privateer` (same prefix) is not excluded.
     assert_eq!(got(&idx), [PathBuf::from("Documents/report.pdf"), PathBuf::from("Privateer/report.txt")]);
     assert!(idx.lookup(&root.join("Private")).is_none());
@@ -496,10 +502,16 @@ fn excluded_paths_leave_search_entirely() {
     assert_eq!(got(&idx).len(), 2);
 
     // Search settings: only excluded paths inside a root apply to it.
-    let mut cfg = ef_index::config::SearchConfig::default();
-    cfg.exclude_paths = vec![format!("{}/Private/", root.display()), "/elsewhere/x".into()];
+    let cfg = ef_index::config::SearchConfig {
+        exclude_paths: vec![format!("{}/Private/", root.display()), "/elsewhere/x".into()],
+        ..Default::default()
+    };
     let o = ef_index::Options::from_search(&cfg, root);
     assert_eq!(o.exclude_paths, [root.join("Private").as_os_str().as_bytes().to_vec()]);
     assert!(o.exclude_names.contains(&b"node_modules".to_vec()));
-    assert_eq!(o, { let mut r = ef_index::Options::recommended(); r.exclude_paths = o.exclude_paths.clone(); r });
+    assert_eq!(o, {
+        let mut r = ef_index::Options::recommended();
+        r.exclude_paths = o.exclude_paths.clone();
+        r
+    });
 }

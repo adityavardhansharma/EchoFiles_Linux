@@ -6,8 +6,8 @@
 
 use std::mem::MaybeUninit;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime};
 
 use ef_config::{self as config, SearchConfig};
@@ -80,7 +80,9 @@ pub fn open_existing(cfg: &SearchConfig) -> Vec<RootIndex> {
             let file = config::index_file_for(&root);
             let updated = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
             match MappedIndex::open(&file) {
-                Ok(m) if m.options() == &Options::from_search(cfg, &root) => RootIndex { root, map: Some(Arc::new(m)), updated, error: None },
+                Ok(m) if m.options() == &Options::from_search(cfg, &root) => {
+                    RootIndex { root, map: Some(Arc::new(m)), updated, error: None }
+                }
                 _ => RootIndex { root, map: None, updated: None, error: None },
             }
         })
@@ -126,14 +128,21 @@ impl Scope {
 
     fn to_json(&self, cfg: &SearchConfig) -> Option<Vec<u8>> {
         let bytes = |v: &[PathBuf]| v.iter().map(|p| p.as_os_str().as_encoded_bytes().to_vec()).collect::<Vec<_>>();
-        serde_json::to_vec(&serde_json::json!({ "search": cfg, "roots": self.roots.as_deref().map(bytes), "folders": bytes(&self.folders) })).ok()
+        serde_json::to_vec(
+            &serde_json::json!({ "search": cfg, "roots": self.roots.as_deref().map(bytes), "folders": bytes(&self.folders) }),
+        )
+        .ok()
     }
 
     fn from_json(input: &[u8]) -> Option<(SearchConfig, Scope)> {
         use std::os::unix::ffi::OsStringExt;
         let v: serde_json::Value = serde_json::from_slice(input).ok()?;
         let cfg = serde_json::from_value(v["search"].clone()).ok()?;
-        let paths = |v: &serde_json::Value| -> Option<Vec<PathBuf>> { serde_json::from_value::<Vec<Vec<u8>>>(v.clone()).ok().map(|l| l.into_iter().map(|b| PathBuf::from(std::ffi::OsString::from_vec(b))).collect()) };
+        let paths = |v: &serde_json::Value| -> Option<Vec<PathBuf>> {
+            serde_json::from_value::<Vec<Vec<u8>>>(v.clone())
+                .ok()
+                .map(|l| l.into_iter().map(|b| PathBuf::from(std::ffi::OsString::from_vec(b))).collect())
+        };
         let roots = if v["roots"].is_null() { None } else { Some(paths(&v["roots"])?) };
         Some((cfg, Scope { roots, folders: paths(&v["folders"]).unwrap_or_default() }))
     }
@@ -160,14 +169,29 @@ pub fn build_all(cfg: &SearchConfig, generation: u64, scope: &Scope) -> Vec<Root
     };
     let untouched = |root: PathBuf| RootIndex { root, map: None, updated: None, error: None };
     match child {
-        Some(true) => cfg.roots().into_iter().map(|root| {
-            if !scope.includes(&root) { return untouched(root); }
-            match MappedIndex::open(&config::index_file_for(&root)) {
-                Ok(m) => RootIndex { root, map: Some(Arc::new(m)), updated: Some(SystemTime::now()), error: None },
-                Err(e) => RootIndex { root: root.clone(), map: None, updated: None, error: Some(format!("Couldn't index {}: {e}", config::tilde(&root))) },
-            }
-        }).collect(),
-        Some(false) if GENERATION.load(Ordering::Acquire) != generation => cfg.roots().into_iter().map(|root| RootIndex { root, map: None, updated: None, error: Some("index settings changed during the crawl".into()) }).collect(),
+        Some(true) => cfg
+            .roots()
+            .into_iter()
+            .map(|root| {
+                if !scope.includes(&root) {
+                    return untouched(root);
+                }
+                match MappedIndex::open(&config::index_file_for(&root)) {
+                    Ok(m) => RootIndex { root, map: Some(Arc::new(m)), updated: Some(SystemTime::now()), error: None },
+                    Err(e) => RootIndex {
+                        root: root.clone(),
+                        map: None,
+                        updated: None,
+                        error: Some(format!("Couldn't index {}: {e}", config::tilde(&root))),
+                    },
+                }
+            })
+            .collect(),
+        Some(false) if GENERATION.load(Ordering::Acquire) != generation => cfg
+            .roots()
+            .into_iter()
+            .map(|root| RootIndex { root, map: None, updated: None, error: Some("index settings changed during the crawl".into()) })
+            .collect(),
         _ => build_here(&cfg, generation, scope),
     }
 }
@@ -213,7 +237,10 @@ pub fn worker_main() -> std::process::ExitCode {
     let _ = std::fs::create_dir_all(config::index_dir());
     let all = cfg.roots();
     for root in all.iter().filter(|r| scope.includes(r)) {
-        if let Err(e) = update_root(&cfg, root, &scope.folders_in(root, &all)) { eprintln!("index worker: {}: {e}", root.display()); ok = false; }
+        if let Err(e) = update_root(&cfg, root, &scope.folders_in(root, &all)) {
+            eprintln!("index worker: {}: {e}", root.display());
+            ok = false;
+        }
     }
     if scope.roots.is_none() {
         remove_stale_files(&cfg);
@@ -230,10 +257,14 @@ fn remove_stale_files(cfg: &SearchConfig) {
         for e in dir.flatten() {
             let p = e.path();
             let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > week);
-            if p.extension().is_some_and(|x| x == "efidx") && !keep.contains(&p) && old { let _ = std::fs::remove_file(&p); }
+            if p.extension().is_some_and(|x| x == "efidx") && !keep.contains(&p) && old {
+                let _ = std::fs::remove_file(&p);
+            }
         }
     }
-    if let Some(legacy) = config::index_dir().parent().map(|d| d.join("home.efidx")) { let _ = std::fs::remove_file(legacy); }
+    if let Some(legacy) = config::index_dir().parent().map(|d| d.join("home.efidx")) {
+        let _ = std::fs::remove_file(legacy);
+    }
 }
 
 /// The crawl in this process (fallback when the worker can't run).
@@ -243,23 +274,31 @@ fn build_here(cfg: &SearchConfig, generation: u64, scope: &Scope) -> Vec<RootInd
         cfg.roots()
             .into_iter()
             .map(|root| {
-                if !scope.includes(&root) { return RootIndex { root, map: None, updated: None, error: None }; }
+                if !scope.includes(&root) {
+                    return RootIndex { root, map: None, updated: None, error: None };
+                }
                 let file = config::index_file_for(&root);
-                let built = Index::build_with(&root, &Options::from_search(&cfg, &root))
-                    .and_then(|idx| {
-                        let _publication = PUBLICATION.lock().unwrap();
-                        if GENERATION.load(Ordering::Acquire) != generation { return Err(std::io::Error::other("index settings changed during the crawl")); }
-                        std::fs::create_dir_all(config::index_dir())?;
-                        idx.save_if_changed(&file)?;
-                        if GENERATION.load(Ordering::Acquire) != generation {
-                            let _ = std::fs::remove_file(&file);
-                            return Err(std::io::Error::other("index settings changed during publication"));
-                        }
-                        MappedIndex::open(&file)
-                    });
+                let built = Index::build_with(&root, &Options::from_search(&cfg, &root)).and_then(|idx| {
+                    let _publication = PUBLICATION.lock().unwrap();
+                    if GENERATION.load(Ordering::Acquire) != generation {
+                        return Err(std::io::Error::other("index settings changed during the crawl"));
+                    }
+                    std::fs::create_dir_all(config::index_dir())?;
+                    idx.save_if_changed(&file)?;
+                    if GENERATION.load(Ordering::Acquire) != generation {
+                        let _ = std::fs::remove_file(&file);
+                        return Err(std::io::Error::other("index settings changed during publication"));
+                    }
+                    MappedIndex::open(&file)
+                });
                 match built {
                     Ok(m) => RootIndex { root, map: Some(Arc::new(m)), updated: Some(SystemTime::now()), error: None },
-                    Err(e) => RootIndex { root: root.clone(), map: None, updated: None, error: Some(format!("Couldn't index {}: {e}", config::tilde(&root))) },
+                    Err(e) => RootIndex {
+                        root: root.clone(),
+                        map: None,
+                        updated: None,
+                        error: Some(format!("Couldn't index {}: {e}", config::tilde(&root))),
+                    },
                 }
             })
             .collect()
@@ -269,7 +308,9 @@ fn build_here(cfg: &SearchConfig, generation: u64, scope: &Scope) -> Vec<RootInd
 /// Delete the index files (search index turned off).
 pub fn remove_files(cfg: &SearchConfig, generation: u64) {
     let _publication = PUBLICATION.lock().unwrap();
-    if GENERATION.load(Ordering::Acquire) != generation { return; }
+    if GENERATION.load(Ordering::Acquire) != generation {
+        return;
+    }
     for root in cfg.roots() {
         let _ = std::fs::remove_file(config::index_file_for(&root));
     }
@@ -370,7 +411,15 @@ impl Watcher {
     /// The fixed set: where new files usually land.
     pub fn watch_landing_folders(&self) {
         let home = config::home();
-        for p in [home.clone(), home.join("Downloads"), home.join("Desktop"), home.join("Documents"), home.join("Pictures"), home.join("Videos"), home.join("Music")] {
+        for p in [
+            home.clone(),
+            home.join("Downloads"),
+            home.join("Desktop"),
+            home.join("Documents"),
+            home.join("Pictures"),
+            home.join("Videos"),
+            home.join("Music"),
+        ] {
             if p.is_dir() {
                 self.add(&p);
             }
@@ -384,7 +433,9 @@ impl Watcher {
         let landing = |wd: i32| {
             let home = config::home();
             self.watches.lock().unwrap().iter().any(|(w, p)| {
-                *w == wd && (p == &home || ["Downloads", "Desktop", "Documents", "Pictures", "Videos", "Music"].iter().any(|n| p == &home.join(n)))
+                *w == wd
+                    && (p == &home
+                        || ["Downloads", "Desktop", "Documents", "Pictures", "Videos", "Music"].iter().any(|n| p == &home.join(n)))
             })
         };
         let wanted: Vec<i32> = paths.iter().filter_map(|p| self.add(p)).collect();

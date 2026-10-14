@@ -4,10 +4,10 @@
 //! `accent-ink` glyph, disabled = 45% opacity and no hover.
 
 use ef_theme::{Palette, Rgb, Semantic};
-use iced::widget::{button, container, row, svg, text, text_input, toggler, Space};
+use iced::widget::{Space, button, container, row, svg, text, text_input, toggler};
 use iced::{Alignment, Background, Border, Color, Element, Length};
 
-use crate::style::{self, color, Icons};
+use crate::style::{self, Icons, color};
 
 pub const DISABLED: f32 = 0.45;
 
@@ -60,7 +60,15 @@ pub enum Variant {
 }
 
 /// Text button, 28px tall, optional leading glyph and trailing key hint.
-pub fn text_button<'a, M: Clone + 'a>(p: &Palette, icons: &Icons, label: &str, icon: Option<&str>, kbd: Option<&str>, variant: Variant, msg: Option<M>) -> Element<'a, M> {
+pub fn text_button<'a, M: Clone + 'a>(
+    p: &Palette,
+    icons: &Icons,
+    label: &str,
+    icon: Option<&str>,
+    kbd: Option<&str>,
+    variant: Variant,
+    msg: Option<M>,
+) -> Element<'a, M> {
     let enabled = msg.is_some();
     let (fill, fg, edge) = match variant {
         Variant::Primary => (Some(color(p.accent)), color(p.on_accent), color(p.accent)),
@@ -91,7 +99,12 @@ pub fn text_button<'a, M: Clone + 'a>(p: &Palette, icons: &Icons, label: &str, i
                 (None, s) => layer(&pal, s, false),
             };
             let edge = if status == button::Status::Disabled { Color { a: edge.a * DISABLED, ..edge } } else { edge };
-            button::Style { background: bg, text_color: fg, border: Border { color: edge, width: 1.0, radius: 4.0.into() }, ..Default::default() }
+            button::Style {
+                background: bg,
+                text_color: fg,
+                border: Border { color: edge, width: 1.0, radius: 4.0.into() },
+                ..Default::default()
+            }
         })
         .into()
 }
@@ -133,25 +146,29 @@ pub fn segmented<'a, M: Clone + 'a>(p: &Palette, options: &[(&str, M)], selected
         let pal = p.clone();
         let fg = if on { color(p.accent_ink) } else { color(p.ink_muted) };
         r = r.push(
-            button(container(text(label.to_string()).size(style::META).font(style::FONT).color(fg).wrapping(text::Wrapping::None)).height(20).align_y(Alignment::Center))
-                .padding([0, 10])
-                .on_press(msg.clone())
-                .style(move |_, status| button::Style {
-                    background: if on {
-                        Some(Background::Color(color(pal.bg_raised)))
-                    } else {
-                        layer(&pal, status, false)
-                    },
-                    text_color: fg,
-                    border: Border { color: if on { color(pal.line) } else { Color::TRANSPARENT }, width: 1.0, radius: 2.0.into() },
-                    ..Default::default()
-                }),
+            button(
+                container(text(label.to_string()).size(style::META).font(style::FONT).color(fg).wrapping(text::Wrapping::None))
+                    .height(20)
+                    .align_y(Alignment::Center),
+            )
+            .padding([0, 10])
+            .on_press(msg.clone())
+            .style(move |_, status| button::Style {
+                background: if on { Some(Background::Color(color(pal.bg_raised))) } else { layer(&pal, status, false) },
+                text_color: fg,
+                border: Border { color: if on { color(pal.line) } else { Color::TRANSPARENT }, width: 1.0, radius: 2.0.into() },
+                ..Default::default()
+            }),
         );
     }
     let (bg, edge) = (color(p.bg_deep), color(p.line_strong));
     container(r)
         .padding(2)
-        .style(move |_| container::Style { background: Some(Background::Color(bg)), border: Border { color: edge, width: 1.0, radius: 4.0.into() }, ..Default::default() })
+        .style(move |_| container::Style {
+            background: Some(Background::Color(bg)),
+            border: Border { color: edge, width: 1.0, radius: 4.0.into() },
+            ..Default::default()
+        })
         .into()
 }
 
@@ -162,7 +179,13 @@ pub fn switch<'a, M: 'a>(p: &Palette, on: bool, on_toggle: Option<Box<dyn Fn(boo
     let mut t = toggler(on).size(18).style(move |_, status| {
         let hovered = matches!(status, toggler::Status::Hovered { .. });
         let a = if enabled { 1.0 } else { DISABLED };
-        let track = if on { color(pal.accent) } else if hovered { color(pal.bg_raised) } else { color(pal.bg_deep) };
+        let track = if on {
+            color(pal.accent)
+        } else if hovered {
+            color(pal.bg_raised)
+        } else {
+            color(pal.bg_deep)
+        };
         toggler::Style {
             background: Background::Color(Color { a, ..track }),
             background_border_width: 1.0,
@@ -189,23 +212,38 @@ pub fn pill<'a, M: 'a>(p: &Palette, label: &str, tone: Option<Semantic>) -> Elem
     };
     container(
         row![
-            container(Space::new()).width(6).height(6).style(move |_| container::Style { background: Some(Background::Color(fg)), ..Default::default() }),
+            container(Space::new())
+                .width(6)
+                .height(6)
+                .style(move |_| container::Style { background: Some(Background::Color(fg)), ..Default::default() }),
             text(label.to_string()).size(style::LABEL).font(style::FONT).color(fg).wrapping(text::Wrapping::None),
         ]
         .spacing(5)
         .align_y(Alignment::Center),
     )
     .padding([1, 6])
-    .style(move |_| container::Style { background: Some(Background::Color(bg)), border: Border { radius: 2.0.into(), ..Border::default() }, ..Default::default() })
+    .style(move |_| container::Style {
+        background: Some(Background::Color(bg)),
+        border: Border { radius: 2.0.into(), ..Border::default() },
+        ..Default::default()
+    })
     .into()
 }
 
 pub fn hline<'a, M: 'a>(c: Rgb) -> Element<'a, M> {
-    container(Space::new()).width(Length::Fill).height(1).style(move |_| container::Style { background: Some(Background::Color(color(c))), ..Default::default() }).into()
+    container(Space::new())
+        .width(Length::Fill)
+        .height(1)
+        .style(move |_| container::Style { background: Some(Background::Color(color(c))), ..Default::default() })
+        .into()
 }
 
 pub fn vline<'a, M: 'a>(c: Rgb) -> Element<'a, M> {
-    container(Space::new()).width(1).height(Length::Fill).style(move |_| container::Style { background: Some(Background::Color(color(c))), ..Default::default() }).into()
+    container(Space::new())
+        .width(1)
+        .height(Length::Fill)
+        .style(move |_| container::Style { background: Some(Background::Color(color(c))), ..Default::default() })
+        .into()
 }
 
 /// 6px usage meter for drive cards and Properties.
@@ -219,7 +257,13 @@ pub fn usage_bar<'a, M: 'a>(p: &Palette, used: f32, fill: Rgb) -> Element<'a, M>
 }
 
 fn meter<'a, M: 'a>(p: &Palette, used: f32, fill: Rgb, h: f32) -> Element<'a, M> {
-    let fill = if used >= 0.97 { color(p.danger.base) } else if used >= 0.9 { color(p.warning.base) } else { color(fill) };
+    let fill = if used >= 0.97 {
+        color(p.danger.base)
+    } else if used >= 0.9 {
+        color(p.warning.base)
+    } else {
+        color(fill)
+    };
     let track = color(p.line);
     let used = (used.clamp(0.0, 1.0) * 1000.0) as u16;
     row![
@@ -228,7 +272,10 @@ fn meter<'a, M: 'a>(p: &Palette, used: f32, fill: Rgb, h: f32) -> Element<'a, M>
             border: Border { radius: 1.0.into(), ..Border::default() },
             ..Default::default()
         }),
-        container(Space::new()).width(Length::FillPortion((1000 - used).max(1))).height(h).style(move |_| container::Style { background: Some(Background::Color(track)), ..Default::default() }),
+        container(Space::new())
+            .width(Length::FillPortion((1000 - used).max(1)))
+            .height(h)
+            .style(move |_| container::Style { background: Some(Background::Color(track)), ..Default::default() }),
     ]
     .into()
 }
@@ -238,7 +285,11 @@ fn meter<'a, M: 'a>(p: &Palette, used: f32, fill: Rgb, h: f32) -> Element<'a, M>
 pub fn progress<'a, M: 'a>(p: &Palette, value: f32, fill: Rgb, busy: bool) -> Element<'a, M> {
     let (fill, track) = (color(fill), color(p.line));
     let bar = |w: u16, c: Color| -> Element<'a, M> {
-        container(Space::new()).width(Length::FillPortion(w.max(1))).height(4).style(move |_| container::Style { background: Some(Background::Color(c)), ..Default::default() }).into()
+        container(Space::new())
+            .width(Length::FillPortion(w.max(1)))
+            .height(4)
+            .style(move |_| container::Style { background: Some(Background::Color(c)), ..Default::default() })
+            .into()
     };
     if busy {
         let t = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0) % 1400) as u32;
@@ -258,12 +309,19 @@ pub fn checkbox<'a, M: Clone + 'a>(p: &Palette, icons: &Icons, label: &str, chec
         border: Border { color: if checked { accent } else { edge }, width: 1.0, radius: 2.0.into() },
         ..Default::default()
     });
-    let r = row![bx, text(label.to_string()).size(style::BODY).font(style::FONT).color(color(p.ink))].spacing(style::SPACE_3).align_y(Alignment::Center);
+    let r = row![bx, text(label.to_string()).size(style::BODY).font(style::FONT).color(color(p.ink))]
+        .spacing(style::SPACE_3)
+        .align_y(Alignment::Center);
     let pal = p.clone();
     button(r)
         .padding([2, 4])
         .on_press(on(!checked))
-        .style(move |_, status| button::Style { background: layer(&pal, status, false), text_color: color(pal.ink), border: Border { radius: 2.0.into(), ..Border::default() }, ..Default::default() })
+        .style(move |_, status| button::Style {
+            background: layer(&pal, status, false),
+            text_color: color(pal.ink),
+            border: Border { radius: 2.0.into(), ..Border::default() },
+            ..Default::default()
+        })
         .into()
 }
 
@@ -297,9 +355,9 @@ pub fn fill<'a, M: 'a>(content: impl Into<Element<'a, M>>, c: Rgb) -> container:
 // ------------------------------------------------------------------------------ right-click
 
 use iced::advanced::layout::{self, Layout};
-use iced::advanced::widget::{tree, Operation, Tree, Widget};
-use iced::advanced::{mouse as amouse, overlay, renderer, Clipboard, Shell};
-use iced::{mouse, Event, Point, Rectangle, Size, Vector};
+use iced::advanced::widget::{Operation, Tree, Widget, tree};
+use iced::advanced::{Clipboard, Shell, mouse as amouse, overlay, renderer};
+use iced::{Event, Point, Rectangle, Size, Vector, mouse};
 
 /// Wraps content and reports right-clicks with the window position of the pointer, so the
 /// context menu opens where the click was (`mouse_area` only says that a click happened).
@@ -352,17 +410,35 @@ impl<M> Widget<M, iced::Theme, iced::Renderer> for ContextArea<'_, M> {
         if shell.is_event_captured() {
             return;
         }
-        if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) = event && let Some(p) = cursor.position_over(layout.bounds()) {
+        if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) = event
+            && let Some(p) = cursor.position_over(layout.bounds())
+        {
             shell.publish((self.on_right)(p));
             shell.capture_event();
         }
     }
 
-    fn mouse_interaction(&self, tree: &Tree, layout: Layout<'_>, cursor: amouse::Cursor, viewport: &Rectangle, renderer: &iced::Renderer) -> amouse::Interaction {
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: amouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> amouse::Interaction {
         self.content.as_widget().mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer)
     }
 
-    fn draw(&self, tree: &Tree, renderer: &mut iced::Renderer, theme: &iced::Theme, style: &renderer::Style, layout: Layout<'_>, cursor: amouse::Cursor, viewport: &Rectangle) {
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut iced::Renderer,
+        theme: &iced::Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: amouse::Cursor,
+        viewport: &Rectangle,
+    ) {
         self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
     }
 

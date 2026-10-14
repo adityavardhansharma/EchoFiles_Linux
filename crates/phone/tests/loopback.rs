@@ -38,27 +38,30 @@ fn pair_and_talk() {
     let (b, rb, db) = start("phone");
     // b connects to a's TCP port: b is the TLS server, a the client.
     b.connect_to(SocketAddr::from((Ipv4Addr::LOCALHOST, a.port())));
+    // Match by device id, not name: the other test in this file runs in parallel with
+    // its own "laptop" and "phone", and their UDP announcements reach these services too.
+    let (want_a, want_b) = (a.device_id().to_string(), b.device_id().to_string());
     let b_id = wait(&ra, "a sees b", |e| match e {
-        Event::Device(d) if d.name == "phone" => Some(d.id.clone()),
+        Event::Device(d) if d.id == want_b => Some(d.id.clone()),
         _ => None,
     });
     let a_id = wait(&rb, "b sees a", |e| match e {
-        Event::Device(d) if d.name == "laptop" => Some(d.id.clone()),
+        Event::Device(d) if d.id == want_a => Some(d.id.clone()),
         _ => None,
     });
 
     a.pair(&b_id);
     let code_a = wait(&ra, "a's code", |e| match e {
-        Event::PairCode { code, .. } => Some(code.clone()),
+        Event::PairCode { id, code } if *id == b_id => Some(code.clone()),
         _ => None,
     });
     let code_b = wait(&rb, "b asked", |e| match e {
-        Event::PairRequested { code, .. } => Some(code.clone()),
+        Event::PairRequested { id, code } if *id == a_id => Some(code.clone()),
         _ => None,
     });
     assert_eq!(code_a, code_b, "both screens show the same code");
     b.accept_pair(&a_id);
-    wait(&ra, "a paired", |e| matches!(e, Event::Paired(_)).then_some(()));
+    wait(&ra, "a paired", |e| matches!(e, Event::Paired(d) if d.id == b_id).then_some(()));
     assert_eq!(ef_phone_trusted_count(&da), 1);
     assert_eq!(ef_phone_trusted_count(&db), 1);
 
@@ -98,9 +101,15 @@ fn pair_and_talk() {
 
     // Cancel an offered upload before the receiver accepts it. No bytes may be saved.
     let cancelled = a.send_files(&b_id, vec![src.clone()])[0];
-    let offer = wait(&rb, "cancellable offer", |e| match e { Event::Incoming { transfer, .. } => Some(*transfer), _ => None });
+    let offer = wait(&rb, "cancellable offer", |e| match e {
+        Event::Incoming { transfer, .. } => Some(*transfer),
+        _ => None,
+    });
     a.cancel_transfer(cancelled);
-    let outcome = wait(&ra, "cancelled upload", |e| match e { Event::TransferDone { transfer, result, .. } if *transfer == cancelled => Some(result.clone()), _ => None });
+    let outcome = wait(&ra, "cancelled upload", |e| match e {
+        Event::TransferDone { transfer, result, .. } if *transfer == cancelled => Some(result.clone()),
+        _ => None,
+    });
     assert_eq!(outcome.unwrap_err(), "Cancelled");
     b.reject_file(offer);
     assert_eq!(std::fs::read_dir(&inbox).unwrap().count(), 1);
@@ -141,21 +150,23 @@ fn bluetooth_only() {
     let (x, y) = std::os::unix::net::UnixStream::pair().unwrap();
     b.adopt(x.into(), true);
     a.adopt(y.into(), false);
+    // By id: pair_and_talk's services run at the same time and announce over UDP.
+    let (want_a, want_b) = (a.device_id().to_string(), b.device_id().to_string());
     let phone = wait(&ra, "laptop sees phone over bluetooth", |e| match e {
-        Event::Device(d) if d.name == "phone" => Some(d.clone()),
+        Event::Device(d) if d.id == want_b && d.bluetooth => Some(d.clone()),
         _ => None,
     });
     assert!(phone.bluetooth && !phone.lan);
     assert!(phone.echoconnect(), "the phone role lists echofiles.* packets");
     assert!(phone.can("kdeconnect.findmyphone.request"));
     let laptop_id = wait(&rb, "phone sees laptop", |e| match e {
-        Event::Device(d) if d.name == "laptop" => Some(d.id.clone()),
+        Event::Device(d) if d.id == want_a => Some(d.id.clone()),
         _ => None,
     });
     a.pair(&phone.id);
-    wait(&rb, "phone asked", |e| matches!(e, Event::PairRequested { .. }).then_some(()));
+    wait(&rb, "phone asked", |e| matches!(e, Event::PairRequested { id, .. } if *id == laptop_id).then_some(()));
     b.accept_pair(&laptop_id);
-    wait(&ra, "paired", |e| matches!(e, Event::Paired(_)).then_some(()));
+    wait(&ra, "paired", |e| matches!(e, Event::Paired(d) if d.id == want_b).then_some(()));
     assert!(b.send_clipboard(&laptop_id, "otp 482913", false, true));
     let (text, sensitive) = wait(&ra, "clipboard over bluetooth", |e| match e {
         Event::Clipboard { text, sensitive, .. } => Some((text.clone(), *sensitive)),

@@ -11,7 +11,7 @@ use std::os::fd::{FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use ef_phone::{json, Device, Event, Service, Source, Value};
+use ef_phone::{Device, Event, Service, Source, Value, json};
 
 #[doc(hidden)]
 pub mod sftp;
@@ -33,10 +33,13 @@ pub enum CoreError {
     Failed(String),
 }
 
+/// Transfer id → (size, bytes done so far).
+type Transfers = Arc<Mutex<HashMap<u64, (u64, Arc<AtomicU64>)>>>;
+
 #[derive(uniffi::Object)]
 pub struct Core {
     svc: Service,
-    progress: Arc<Mutex<HashMap<u64, (u64, Arc<AtomicU64>)>>>,
+    progress: Transfers,
     sftp: Mutex<Option<sftp::Server>>,
     dir: std::path::PathBuf,
 }
@@ -64,7 +67,9 @@ fn event_json(e: &Event, progress: &Mutex<HashMap<u64, (u64, Arc<AtomicU64>)>>) 
         Event::Clipboard { id, text, sensitive } => ("clipboard", json!({ "id": id, "text": text, "sensitive": sensitive })),
         Event::Text { id, text } => ("text", json!({ "id": id, "text": text })),
         Event::Url { id, url } => ("url", json!({ "id": id, "url": url })),
-        Event::Incoming { id, transfer, name, size, kind, body } => ("incoming", json!({ "id": id, "transfer": transfer, "name": name, "size": size, "kind": kind, "body": body })),
+        Event::Incoming { id, transfer, name, size, kind, body } => {
+            ("incoming", json!({ "id": id, "transfer": transfer, "name": name, "size": size, "kind": kind, "body": body }))
+        }
         Event::TransferStarted { id, transfer, name, size, upload, done } => {
             progress.lock().unwrap().insert(*transfer, (*size, done.clone()));
             ("transfer_started", json!({ "id": id, "transfer": transfer, "name": name, "size": size, "upload": upload }))
@@ -78,7 +83,9 @@ fn event_json(e: &Event, progress: &Mutex<HashMap<u64, (u64, Arc<AtomicU64>)>>) 
         }
         Event::Other { id, kind, body } => ("packet", json!({ "id": id, "type": kind, "body": body })),
         // Laptop-side events a phone never sees.
-        Event::Notification { id, .. } | Event::NotificationGone { id, .. } | Event::Sms { id, .. } | Event::Sftp { id, .. } => ("ignored", json!({ "id": id })),
+        Event::Notification { id, .. } | Event::NotificationGone { id, .. } | Event::Sms { id, .. } | Event::Sftp { id, .. } => {
+            ("ignored", json!({ "id": id }))
+        }
     }
 }
 
@@ -93,7 +100,7 @@ impl Core {
     pub fn start(dir: String, name: String, listener: Arc<dyn Listener>) -> Result<Arc<Core>, CoreError> {
         let l2 = listener.clone();
         ef_phone::trace_to(move |line| l2.on_log(line.to_string()));
-        let progress: Arc<Mutex<HashMap<u64, (u64, Arc<AtomicU64>)>>> = Arc::new(Mutex::new(HashMap::new()));
+        let progress: Transfers = Arc::new(Mutex::new(HashMap::new()));
         let p2 = progress.clone();
         let dir = std::path::PathBuf::from(dir);
         let svc = Service::start_as(dir.clone(), Some(name), "phone", move |e| {
@@ -106,7 +113,9 @@ impl Core {
         Ok(Arc::new(Core { svc, progress, sftp: Mutex::new(None), dir }))
     }
 
-    pub fn expect_qr(&self, id: String, fingerprint: String) { self.svc.expect_qr(&id, &fingerprint); }
+    pub fn expect_qr(&self, id: String, fingerprint: String) {
+        self.svc.expect_qr(&id, &fingerprint);
+    }
 
     pub fn device_id(&self) -> String {
         self.svc.device_id().to_string()
@@ -191,7 +200,9 @@ impl Core {
         self.svc.accept_file(transfer, dir.into());
     }
 
-    pub fn cancel_transfer(&self, transfer: u64) { self.svc.cancel_transfer(transfer); }
+    pub fn cancel_transfer(&self, transfer: u64) {
+        self.svc.cancel_transfer(transfer);
+    }
 
     pub fn reject_file(&self, transfer: u64) {
         self.svc.reject_file(transfer);
@@ -216,7 +227,8 @@ impl Core {
 
     /// Laptops paired with this phone (connected or not).
     pub fn trusted(&self) -> String {
-        Value::Array(ef_phone::trusted_in(&self.dir).iter().map(|t| json!({ "id": t.id, "name": t.name, "kind": t.kind })).collect()).to_string()
+        Value::Array(ef_phone::trusted_in(&self.dir).iter().map(|t| json!({ "id": t.id, "name": t.name, "kind": t.kind })).collect())
+            .to_string()
     }
 
     /// Serve `roots` (name → folder) over SFTP for the laptop and tell it how to connect.

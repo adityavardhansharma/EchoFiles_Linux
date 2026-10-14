@@ -101,7 +101,8 @@ impl Address {
             return Address::parse_authority_path(Protocol::Smb, &rest.replace('\\', "/"));
         }
         if let Some((scheme, rest)) = s.split_once("://") {
-            let protocol = Protocol::from_scheme(scheme).ok_or_else(|| format!("EchoFiles can't connect with “{scheme}://”. Use smb://, sftp://, ftp:// or ftps://"))?;
+            let protocol = Protocol::from_scheme(scheme)
+                .ok_or_else(|| format!("EchoFiles can't connect with “{scheme}://”. Use smb://, sftp://, ftp:// or ftps://"))?;
             return Address::parse_authority_path(protocol, rest);
         }
         // //nas/Media (UNC with forward slashes)
@@ -110,9 +111,13 @@ impl Address {
         }
         // scp style: me@host:/srv/files or host:/srv
         if let Some((authority, path)) = s.split_once(":/")
-            && !authority.contains('/') && !authority.contains('[') && !authority.is_empty() && authority.rsplit_once(':').is_none() {
-                return Address::parse_authority_path(Protocol::Sftp, &format!("{authority}/{path}"));
-            }
+            && !authority.contains('/')
+            && !authority.contains('[')
+            && !authority.is_empty()
+            && authority.rsplit_once(':').is_none()
+        {
+            return Address::parse_authority_path(Protocol::Sftp, &format!("{authority}/{path}"));
+        }
         Address::parse_authority_path(default, s)
     }
 
@@ -259,12 +264,14 @@ pub fn decode(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len()
-            && let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(v);
+            i += 3;
+            continue;
+        }
         out.push(b[i]);
         i += 1;
     }
@@ -299,7 +306,10 @@ mod tests {
         assert_eq!(p(r"\\nas\Media\Photos"), p("smb://nas/Media/Photos"));
         assert_eq!(p("//nas/Media"), p("smb://nas/Media"));
         let a = p("smb://WORK;alice@10.0.0.2:4445/Team%20Files/");
-        assert_eq!((a.domain.as_deref(), a.user.as_deref(), a.port, a.share.as_deref()), (Some("WORK"), Some("alice"), Some(4445), Some("Team Files")));
+        assert_eq!(
+            (a.domain.as_deref(), a.user.as_deref(), a.port, a.share.as_deref()),
+            (Some("WORK"), Some("alice"), Some(4445), Some("Team Files"))
+        );
         assert_eq!(a.uri(), "smb://WORK;alice@10.0.0.2:4445/Team%20Files/");
         assert_eq!(p("smb://nas").share, None);
         assert_eq!(p("nas.local/Media").share.as_deref(), Some("Media"));

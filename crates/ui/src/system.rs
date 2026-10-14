@@ -4,7 +4,7 @@
 
 use std::io::{Read, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::fs::{OpenOptionsExt, MetadataExt, PermissionsExt, FileTypeExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -59,7 +59,11 @@ pub fn request_for(arg: &str) -> Request {
 /// If EchoFiles is already running, hand it this launch's request and return `true`.
 pub fn forward_to_running(req: &Request) -> bool {
     let path = config::socket_path();
-    if !private_runtime(&path) || !std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_socket() && m.uid() == unsafe { libc::getuid() }) { return false; }
+    if !private_runtime(&path)
+        || !std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_socket() && m.uid() == unsafe { libc::getuid() })
+    {
+        return false;
+    }
     let Ok(mut s) = UnixStream::connect(path) else { return false };
     let (tag, data) = match req {
         Request::Open(Some(p)) => (1, p.as_os_str().as_bytes()),
@@ -67,7 +71,9 @@ pub fn forward_to_running(req: &Request) -> bool {
         Request::Connect(uri) => (2, uri.as_bytes()),
         Request::Settings => (3, &b""[..]),
     };
-    if data.len() > 1024 * 1024 { return false; }
+    if data.len() > 1024 * 1024 {
+        return false;
+    }
     let _ = s.set_write_timeout(Some(std::time::Duration::from_secs(2)));
     s.write_all(&[tag]).and_then(|_| s.write_all(&(data.len() as u32).to_le_bytes())).and_then(|_| s.write_all(data)).is_ok()
 }
@@ -80,16 +86,32 @@ static INBOX: OnceLock<Mutex<Option<mpsc::UnboundedReceiver<Request>>>> = OnceLo
 /// this process bound the socket (and so should remove it on exit).
 pub fn listen() -> bool {
     let path = config::socket_path();
-    if !private_runtime(&path) { return false; }
+    if !private_runtime(&path) {
+        return false;
+    }
     static OWNER: OnceLock<std::fs::File> = OnceLock::new();
     let lock_path = path.with_extension("lock");
-    let Ok(lock) = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(lock_path) else { return false };
-    if rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive).is_err() { return false; }
+    let Ok(lock) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(lock_path)
+    else {
+        return false;
+    };
+    if rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive).is_err() {
+        return false;
+    }
     // Only the process holding the lifetime lock may unlink a stale socket.
     let _ = std::fs::remove_file(&path);
     let Ok(listener) = UnixListener::bind(&path) else { return false };
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    if let Ok(m) = std::fs::symlink_metadata(&path) { let _ = OWN_SOCKET.set((path.clone(), m.dev(), m.ino())); }
+    if let Ok(m) = std::fs::symlink_metadata(&path) {
+        let _ = OWN_SOCKET.set((path.clone(), m.dev(), m.ino()));
+    }
     let _ = OWNER.set(lock);
     let (tx, rx) = mpsc::unbounded();
     INBOX.get_or_init(|| Mutex::new(Some(rx)));
@@ -101,15 +123,24 @@ pub fn listen() -> bool {
                 let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
                 let mut stream = stream;
                 let mut header = [0u8; 5];
-                if stream.read_exact(&mut header).is_err() { continue; }
+                if stream.read_exact(&mut header).is_err() {
+                    continue;
+                }
                 let len = u32::from_le_bytes(header[1..].try_into().unwrap()) as usize;
-                if len > 1024 * 1024 { continue; }
+                if len > 1024 * 1024 {
+                    continue;
+                }
                 let mut data = vec![0; len];
-                if stream.read_exact(&mut data).is_err() { continue; }
+                if stream.read_exact(&mut data).is_err() {
+                    continue;
+                }
                 let req = match header[0] {
                     0 if len == 0 => Request::Open(None),
                     1 => Request::Open(Some(PathBuf::from(std::ffi::OsString::from_vec(data)))),
-                    2 => match String::from_utf8(data) { Ok(u) => Request::Connect(u), Err(_) => continue },
+                    2 => match String::from_utf8(data) {
+                        Ok(u) => Request::Connect(u),
+                        Err(_) => continue,
+                    },
                     3 if len == 0 => Request::Settings,
                     _ => continue,
                 };
@@ -204,7 +235,8 @@ fn skill_links() -> Vec<PathBuf> {
 /// Folders named `skills` in the dot-folders of home, up to four levels down
 /// (`~/.claude/skills`, `~/.pi/agent/skills`, `~/.hermes/profiles/work/skills`, …).
 fn skill_dirs() -> Vec<PathBuf> {
-    const SKIP: [&str; 12] = [".cache", ".local", ".npm", ".cargo", ".rustup", ".gradle", ".m2", ".nvm", ".pnpm-store", ".yarn", ".mozilla", ".var"];
+    const SKIP: [&str; 12] =
+        [".cache", ".local", ".npm", ".cargo", ".rustup", ".gradle", ".m2", ".nvm", ".pnpm-store", ".yarn", ".mozilla", ".var"];
     let home = config::home();
     let mut found = Vec::new();
     let mut queue: Vec<(PathBuf, u32)> = std::fs::read_dir(&home)
@@ -316,27 +348,55 @@ fn decode_path(value: &str) -> PathBuf {
     let mut out = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Some(n) = std::str::from_utf8(&bytes[i+1..i+3]).ok().and_then(|s| u8::from_str_radix(s, 16).ok()) { out.push(n); i += 3; continue; }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Some(n) = std::str::from_utf8(&bytes[i + 1..i + 3]).ok().and_then(|s| u8::from_str_radix(s, 16).ok())
+        {
+            out.push(n);
+            i += 3;
+            continue;
         }
-        out.push(bytes[i]); i += 1;
+        out.push(bytes[i]);
+        i += 1;
     }
     PathBuf::from(std::ffi::OsString::from_vec(out))
 }
 
 pub fn request_for_os(arg: &std::ffi::OsStr) -> Request {
-    match arg.to_str() { Some(s) => request_for(s), None => Request::Open(Some(PathBuf::from(arg))) }
+    match arg.to_str() {
+        Some(s) => request_for(s),
+        None => Request::Open(Some(PathBuf::from(arg))),
+    }
 }
 
 fn desktop_arg(value: &str) -> String {
     let mut quoted = String::from("\"");
     for c in value.chars() {
-        if matches!(c, '\\' | '\"' | '`' | '$') { quoted.push('\\'); }
-        if c == '%' { quoted.push('%'); }
+        if matches!(c, '\\' | '\"' | '`' | '$') {
+            quoted.push('\\');
+        }
+        if c == '%' {
+            quoted.push('%');
+        }
         quoted.push(c);
     }
     quoted.push('\"');
     quoted.replace('\\', "\\\\").replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t")
+}
+
+fn private_runtime(socket: &Path) -> bool {
+    socket
+        .parent()
+        .and_then(|p| std::fs::symlink_metadata(p).ok())
+        .is_some_and(|m| m.is_dir() && m.uid() == unsafe { libc::getuid() } && m.mode() & 0o077 == 0)
+}
+
+pub fn remove_own_socket() {
+    if let Some((path, dev, ino)) = OWN_SOCKET.get()
+        && std::fs::symlink_metadata(path).is_ok_and(|m| m.dev() == *dev && m.ino() == *ino)
+    {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[cfg(test)]
@@ -347,16 +407,8 @@ mod review_tests {
         let Request::Open(Some(p)) = request_for("file:///tmp/new%0Aline%FF") else { panic!() };
         assert_eq!(p.as_os_str().as_bytes(), b"/tmp/new\nline\xff");
         let arg = desktop_arg("/tmp/a b%\"$`\\/echofiles");
-        assert!(arg.starts_with('"') && arg.ends_with('"')); assert!(arg.contains("%%")); assert!(arg.contains("\\\\\""));
-    }
-}
-
-fn private_runtime(socket: &Path) -> bool {
-    socket.parent().and_then(|p| std::fs::symlink_metadata(p).ok()).is_some_and(|m| m.is_dir() && m.uid() == unsafe { libc::getuid() } && m.mode() & 0o077 == 0)
-}
-
-pub fn remove_own_socket() {
-    if let Some((path, dev, ino)) = OWN_SOCKET.get() {
-        if std::fs::symlink_metadata(path).is_ok_and(|m| m.dev() == *dev && m.ino() == *ino) { let _ = std::fs::remove_file(path); }
+        assert!(arg.starts_with('"') && arg.ends_with('"'));
+        assert!(arg.contains("%%"));
+        assert!(arg.contains("\\\\\""));
     }
 }

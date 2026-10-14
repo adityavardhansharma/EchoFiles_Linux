@@ -12,12 +12,12 @@ mod tls;
 
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
-pub use identity::{dir as config_dir, host_name, Trusted};
-pub use serde_json::{json, Value};
-pub use service::{trace_to, Role, Service, Source};
+pub use identity::{Trusted, dir as config_dir, host_name};
+pub use serde_json::{Value, json};
+pub use service::{Role, Service, Source, trace_to};
 
 /// Lowest and highest TCP port KDE Connect uses.
 pub const PORT_MIN: u16 = 1714;
@@ -113,7 +113,9 @@ pub struct Sftp {
 #[derive(Debug, Clone)]
 pub enum Event {
     /// Listening on this TCP port.
-    Started { port: u16 },
+    Started {
+        port: u16,
+    },
     /// Couldn't start (ports taken — is KDE Connect itself running?).
     Failed(String),
     /// A phone is connected (paired or not), or its details changed.
@@ -122,31 +124,86 @@ pub enum Event {
     Gone(String),
     /// The phone asks to pair; both screens show `code`. Answer with
     /// [`Service::accept_pair`] or [`Service::reject_pair`].
-    PairRequested { id: String, code: String },
+    PairRequested {
+        id: String,
+        code: String,
+    },
     /// We asked to pair; the phone shows `code` and waits for its owner.
-    PairCode { id: String, code: String },
+    PairCode {
+        id: String,
+        code: String,
+    },
     Paired(Device),
     /// A paired device's link is up and the first requests went out.
     Ready(String),
     PairRejected(String),
     Unpaired(String),
-    Battery { id: String, level: i32, charging: bool },
-    Clipboard { id: String, text: String, sensitive: bool },
-    Notification { id: String, notification: Notification },
-    NotificationGone { id: String, key: String },
-    Sms { id: String, messages: Vec<Sms> },
-    Sftp { id: String, result: Result<Sftp, String> },
+    Battery {
+        id: String,
+        level: i32,
+        charging: bool,
+    },
+    Clipboard {
+        id: String,
+        text: String,
+        sensitive: bool,
+    },
+    Notification {
+        id: String,
+        notification: Notification,
+    },
+    NotificationGone {
+        id: String,
+        key: String,
+    },
+    Sms {
+        id: String,
+        messages: Vec<Sms>,
+    },
+    Sftp {
+        id: String,
+        result: Result<Sftp, String>,
+    },
     /// Shared from the phone: some text, or a link.
-    Text { id: String, text: String },
-    Url { id: String, url: String },
+    Text {
+        id: String,
+        text: String,
+    },
+    Url {
+        id: String,
+        url: String,
+    },
     /// The other side offers a payload (a shared file, a thumbnail…) with packet `kind`;
     /// answer with [`Service::accept_file`] or [`Service::reject_file`].
-    Incoming { id: String, transfer: u64, name: String, size: u64, kind: String, body: Value },
-    TransferStarted { id: String, transfer: u64, name: String, size: u64, upload: bool, done: Arc<AtomicU64> },
+    Incoming {
+        id: String,
+        transfer: u64,
+        name: String,
+        size: u64,
+        kind: String,
+        body: Value,
+    },
+    TransferStarted {
+        id: String,
+        transfer: u64,
+        name: String,
+        size: u64,
+        upload: bool,
+        done: Arc<AtomicU64>,
+    },
     /// A download finished (the file's path) or an upload did (the sent file).
-    TransferDone { id: String, transfer: u64, upload: bool, result: Result<PathBuf, String> },
+    TransferDone {
+        id: String,
+        transfer: u64,
+        upload: bool,
+        result: Result<PathBuf, String>,
+    },
     /// Any other packet from a paired device (requests a phone would answer).
-    Other { id: String, kind: String, body: Value },
+    Other {
+        id: String,
+        kind: String,
+        body: Value,
+    },
 }
 
 /// Phones paired with this computer.

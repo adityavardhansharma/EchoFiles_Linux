@@ -204,7 +204,8 @@ mod review_tests {
         std::fs::write(docs.join(".report.pdf"), b"x").unwrap();
         let (settings, idx) = indexed(&[&docs], root.path());
         let names = |text: &str, hidden: bool| -> Vec<String> {
-            let mut v: Vec<String> = run_with(&settings, idx.clone(), text, hidden, &Arc::default()).unwrap().hits.into_iter().map(|h| h.name).collect();
+            let mut v: Vec<String> =
+                run_with(&settings, idx.clone(), text, hidden, &Arc::default()).unwrap().hits.into_iter().map(|h| h.name).collect();
             v.sort();
             v
         };

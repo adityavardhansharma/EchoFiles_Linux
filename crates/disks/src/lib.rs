@@ -104,7 +104,10 @@ impl std::error::Error for Error {}
 /// Names partitioning tools give by default — not something anyone chose.
 fn generic_part_name(name: &str) -> bool {
     let n = name.trim().to_ascii_lowercase();
-    n.starts_with("linux ") || n.starts_with("microsoft ") || n.starts_with("efi ") || matches!(n.as_str(), "basic data partition" | "primary" | "logical" | "extended" | "data" | "linux")
+    n.starts_with("linux ")
+        || n.starts_with("microsoft ")
+        || n.starts_with("efi ")
+        || matches!(n.as_str(), "basic data partition" | "primary" | "logical" | "extended" | "data" | "linux")
 }
 
 impl From<zbus::Error> for Error {
@@ -132,7 +135,8 @@ pub fn windows_volumes() -> Result<Vec<Volume>, Error> {
 /// Linux drives: every filesystem that isn't Windows' or part of the running system
 /// (mounted at /, /boot, /home, …), plus LUKS partitions still waiting to be unlocked.
 pub fn linux_volumes() -> Result<Vec<Volume>, Error> {
-    let mut out: Vec<Volume> = all_volumes()?.into_iter().filter(|v| !v.is_windows() && !v.is_system() && v.fs_type != "squashfs").collect();
+    let mut out: Vec<Volume> =
+        all_volumes()?.into_iter().filter(|v| !v.is_windows() && !v.is_system() && v.fs_type != "squashfs").collect();
     out.sort_by_cached_key(|v| (v.display_name().to_lowercase(), v.device.clone()));
     Ok(out)
 }
@@ -148,10 +152,7 @@ pub fn all_volumes() -> Result<Vec<Volume>, Error> {
         &(),
     )?;
     let objects: HashMap<OwnedObjectPath, Interfaces> = reply.body().deserialize()?;
-    let mut out: Vec<Volume> = objects
-        .iter()
-        .filter_map(|(path, ifaces)| volume(path.as_str(), ifaces, &objects))
-        .collect();
+    let mut out: Vec<Volume> = objects.iter().filter_map(|(path, ifaces)| volume(path.as_str(), ifaces, &objects)).collect();
     out.sort_by(|a, b| a.device.cmp(&b.device));
     Ok(out)
 }
@@ -183,11 +184,18 @@ fn volume(object: &str, ifaces: &Interfaces, all: &HashMap<OwnedObjectPath, Inte
         fs_type,
         size,
         mount_points: fs.and_then(|f| f.get("MountPoints")).map(as_bytestrings).unwrap_or_default(),
-        part_name: part_name(ifaces).or_else(|| {
-            let backing = block.get("CryptoBackingDevice").and_then(as_object_path).filter(|p| p != "/")?;
-            all.iter().find(|(o, _)| o.as_str() == backing).and_then(|(_, i)| part_name(i))
-        }).unwrap_or_default(),
-        part_uuid: ifaces.get("org.freedesktop.UDisks2.Partition").and_then(|p| p.get("UUID")).and_then(as_string).unwrap_or_default().to_lowercase(),
+        part_name: part_name(ifaces)
+            .or_else(|| {
+                let backing = block.get("CryptoBackingDevice").and_then(as_object_path).filter(|p| p != "/")?;
+                all.iter().find(|(o, _)| o.as_str() == backing).and_then(|(_, i)| part_name(i))
+            })
+            .unwrap_or_default(),
+        part_uuid: ifaces
+            .get("org.freedesktop.UDisks2.Partition")
+            .and_then(|p| p.get("UUID"))
+            .and_then(as_string)
+            .unwrap_or_default()
+            .to_lowercase(),
         locked,
         letter: None,
         system: false,
@@ -339,7 +347,9 @@ pub fn mount(v: &Volume, write_system: bool) -> Result<Mounted, MountError> {
         Ok(mp) => (mp, None),
         Err(MountError::NotAuthorized) => return Err(MountError::NotAuthorized),
         Err(first) if !want_ro => match call_mount(&conn, &v.object, true) {
-            Ok(mp) => (mp, Some(format!("Windows didn't shut down fully (Fast Startup or hibernation), so it opened read-only. ({first})"))),
+            Ok(mp) => {
+                (mp, Some(format!("Windows didn't shut down fully (Fast Startup or hibernation), so it opened read-only. ({first})")))
+            }
             Err(_) => return Err(first),
         },
         Err(e) => return Err(e),

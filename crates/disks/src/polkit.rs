@@ -125,7 +125,12 @@ impl Agent {
         let user = uid.and_then(user_name).ok_or_else(|| zbus::fdo::Error::Failed("no user to authenticate as".into()))?;
         for attempt in 0..ATTEMPTS {
             let (tx, rx) = oneshot::channel();
-            (self.on_prompt)(Prompt { message: message.clone(), user: user.clone(), retry: attempt > 0, reply: Arc::new(Mutex::new(Some(tx))) });
+            (self.on_prompt)(Prompt {
+                message: message.clone(),
+                user: user.clone(),
+                retry: attempt > 0,
+                reply: Arc::new(Mutex::new(Some(tx))),
+            });
             let password = match rx.await {
                 Ok(Some(p)) => p,
                 _ => return Err(zbus::fdo::Error::Failed("cancelled".into())),
@@ -149,7 +154,12 @@ impl Agent {
         Err(zbus::fdo::Error::Failed("too many attempts".into()))
     }
 
-    async fn cancel_authentication(&self, #[zbus(header)] header: zbus::message::Header<'_>, #[zbus(connection)] conn: &zbus::Connection, cookie: String) -> zbus::fdo::Result<()> {
+    async fn cancel_authentication(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        cookie: String,
+    ) -> zbus::fdo::Result<()> {
         if !from_polkit(conn, &header).await {
             return Err(zbus::fdo::Error::AccessDenied("only polkit may cancel authentication".into()));
         }

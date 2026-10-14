@@ -16,10 +16,10 @@ use ef_config::{self as config, Server};
 use ef_net::gvfs;
 use ef_net::{Address, Ask, Login, LoginAsk, Mount, Nearby, Protocol, QuestionAsk, Remember};
 use iced::futures::channel::mpsc;
-use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input, Space};
+use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, text, text_input};
 use iced::{Alignment, Background, Border, Element, Length, Point, Task};
 
-use crate::app::{background, App, Message};
+use crate::app::{App, Message, background};
 use crate::overlay::{Dialog, UiMsg};
 use crate::style::{self, color};
 use crate::widgets::{self as w, Variant};
@@ -76,6 +76,9 @@ pub enum LoginField {
     Password,
 }
 
+// Messages are moved once through the update loop, never stored in bulk; boxing the
+// large variants would only add allocations.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum NetMsg {
     Mounts(Result<Vec<Mount>, String>),
@@ -94,14 +97,29 @@ pub enum NetMsg {
     Scan,
     Scanned(Result<Vec<Nearby>, String>),
     // connections
-    Connect { address: Address, save: bool },
-    Connected { op: u64, address: Address, save: bool, result: Result<Mount, ef_net::Error> },
-    Shares { op: u64, address: Address, result: Result<Vec<String>, ef_net::Error> },
+    Connect {
+        address: Address,
+        save: bool,
+    },
+    Connected {
+        op: u64,
+        address: Address,
+        save: bool,
+        result: Result<Mount, ef_net::Error>,
+    },
+    Shares {
+        op: u64,
+        address: Address,
+        result: Result<Vec<String>, ef_net::Error>,
+    },
     // sidebar
     Click(String),
     Menu(String, Point),
     Disconnect(String),
-    Disconnected { name: String, result: Result<(), ef_net::Error> },
+    Disconnected {
+        name: String,
+        result: Result<(), ef_net::Error>,
+    },
     Save(String),
     Forget(String),
     CopyAddress(String),
@@ -121,7 +139,9 @@ enum Event {
 static EVENTS: OnceLock<Mutex<Option<mpsc::UnboundedReceiver<Event>>>> = OnceLock::new();
 static EVENT_TX: OnceLock<mpsc::UnboundedSender<Event>> = OnceLock::new();
 
-pub(crate) fn forward_ask(ask: Ask) { let _ = event_tx().unbounded_send(Event::Ask(ask)); }
+pub(crate) fn forward_ask(ask: Ask) {
+    let _ = event_tx().unbounded_send(Event::Ask(ask));
+}
 
 fn event_tx() -> mpsc::UnboundedSender<Event> {
     EVENT_TX
@@ -165,7 +185,9 @@ fn recent_file() -> PathBuf {
 }
 
 pub fn load_recent() -> Vec<String> {
-    std::fs::read_to_string(recent_file()).map(|t| t.lines().filter(|l| !l.trim().is_empty()).map(str::to_string).take(RECENT_MAX).collect()).unwrap_or_default()
+    std::fs::read_to_string(recent_file())
+        .map(|t| t.lines().filter(|l| !l.trim().is_empty()).map(str::to_string).take(RECENT_MAX).collect())
+        .unwrap_or_default()
 }
 
 /// Ask GVfs what's connected now.
@@ -247,7 +269,10 @@ impl App {
         }
         for (i, m) in self.net.mounts.iter().enumerate() {
             // The phone's files show under Phone, not as a server.
-            if used.contains(&i) || self.is_phone_path(&m.root) || m.address.as_ref().is_some_and(|a| a.user.as_deref() == Some("kdeconnect")) {
+            if used.contains(&i)
+                || self.is_phone_path(&m.root)
+                || m.address.as_ref().is_some_and(|a| a.user.as_deref() == Some("kdeconnect"))
+            {
                 continue;
             }
             let key = m.address.as_ref().map(Address::uri).unwrap_or_else(|| m.root.to_string_lossy().into_owned());
@@ -266,7 +291,8 @@ impl App {
             let b = Address::parse(&s.uri, Protocol::Smb).ok()?;
             m.serves(&b).then(|| s.name.clone().unwrap_or_else(|| b.display_name()))
         });
-        let typed = || self.net.recent.iter().filter_map(|u| Address::parse(u, Protocol::Smb).ok()).find(|b| m.serves(b)).map(|b| b.display_name());
+        let typed =
+            || self.net.recent.iter().filter_map(|u| Address::parse(u, Protocol::Smb).ok()).find(|b| m.serves(b)).map(|b| b.display_name());
         let name = saved.or_else(typed).or_else(|| m.address.as_ref().map(Address::display_name)).unwrap_or_else(|| m.name.clone());
         Some((m, name))
     }
@@ -306,7 +332,8 @@ impl App {
 
     fn save_server(&mut self, a: &Address) -> Task<Message> {
         let server = a.server();
-        let known = self.settings.network.servers.iter().any(|s| Address::parse(&s.uri, Protocol::Smb).is_ok_and(|b| same_server(&b, &server)));
+        let known =
+            self.settings.network.servers.iter().any(|s| Address::parse(&s.uri, Protocol::Smb).is_ok_and(|b| same_server(&b, &server)));
         if known {
             return Task::none();
         }
@@ -359,7 +386,10 @@ impl App {
         }
         let a = address.clone();
         let ask = asker();
-        background(move || gvfs::mount(&a, op, ask), move |result| Message::Net(NetMsg::Connected { op, address: address.clone(), save, result }))
+        background(
+            move || gvfs::mount(&a, op, ask),
+            move |result| Message::Net(NetMsg::Connected { op, address: address.clone(), save, result }),
+        )
     }
 
     /// Show an SMB server's shares in the active pane.
@@ -407,7 +437,12 @@ impl App {
                 for (root, name) in gone {
                     // Still open somewhere: the server went away (a Disconnect leaves first).
                     if self.all_panes_at(&root) {
-                        self.push_toast(crate::overlay::Tone::Accent, format!("Lost the connection to {name}"), Some("The server stopped answering, so its folders were closed. Reconnect it from the Network section.".into()), None);
+                        self.push_toast(
+                            crate::overlay::Tone::Accent,
+                            format!("Lost the connection to {name}"),
+                            Some("The server stopped answering, so its folders were closed. Reconnect it from the Network section.".into()),
+                            None,
+                        );
                     }
                     tasks.push(self.leave(&root));
                 }
@@ -435,7 +470,15 @@ impl App {
                 };
                 let focus = if ask.need_user && user.is_empty() { LOGIN_USER_ID } else { LOGIN_PASSWORD_ID };
                 let domain = ask.default_domain.clone();
-                self.queue_dialog(Dialog::Login { ask, user, domain, password: String::new(), guest: false, remember: false, opened: Instant::now() });
+                self.queue_dialog(Dialog::Login {
+                    ask,
+                    user,
+                    domain,
+                    password: String::new(),
+                    guest: false,
+                    remember: false,
+                    opened: Instant::now(),
+                });
                 iced::widget::operation::focus(focus)
             }
             NetMsg::Ask(Ask::Question(ask)) => {
@@ -459,7 +502,11 @@ impl App {
                     form.text = t;
                 }
                 self.net.form = Some(form);
-                let scan = if self.net.scanning || self.net.nearby.as_ref().is_some_and(|n| n.as_ref().is_ok_and(|v| !v.is_empty())) { Task::none() } else { self.net_update(NetMsg::Scan) };
+                let scan = if self.net.scanning || self.net.nearby.as_ref().is_some_and(|n| n.as_ref().is_ok_and(|v| !v.is_empty())) {
+                    Task::none()
+                } else {
+                    self.net_update(NetMsg::Scan)
+                };
                 Task::batch([scan, iced::widget::operation::focus(CONNECT_ID), iced::widget::operation::move_cursor_to_end(CONNECT_ID)])
             }
             NetMsg::Close => {
@@ -604,7 +651,10 @@ impl App {
             NetMsg::Disconnect(key) => {
                 let Some((_, Some(m), name)) = self.place_by_key(&key) else { return Task::none() };
                 let leave = self.leave(&m.root);
-                let unmount = background(move || gvfs::unmount(&m, false), move |result| Message::Net(NetMsg::Disconnected { name: name.clone(), result }));
+                let unmount = background(
+                    move || gvfs::unmount(&m, false),
+                    move |result| Message::Net(NetMsg::Disconnected { name: name.clone(), result }),
+                );
                 Task::batch([leave, unmount])
             }
             NetMsg::Disconnected { name, result } => {
@@ -681,12 +731,32 @@ impl App {
     pub(crate) fn network_section(&self) -> Element<'_, Message> {
         let p = &self.palette;
         let open = self.settings.sidebar.network_open;
-        let connected = self.net.mounts.iter().filter(|m| !self.is_phone_path(&m.root) && m.address.as_ref().is_none_or(|a| a.user.as_deref() != Some("kdeconnect"))).count();
-        let add = self.tip(w::icon_button(p, &self.icons, "plus", Some(Message::Net(NetMsg::Open(None))), false), "Connect to server", Some("Ctrl+Shift+S"));
-        let mut col = column![self.fold_head("Network", color(p.world_network), (connected > 0).then_some(connected), open, crate::view::Fold::Network, Some(add))].spacing(1);
+        let connected = self
+            .net
+            .mounts
+            .iter()
+            .filter(|m| !self.is_phone_path(&m.root) && m.address.as_ref().is_none_or(|a| a.user.as_deref() != Some("kdeconnect")))
+            .count();
+        let add = self.tip(
+            w::icon_button(p, &self.icons, "plus", Some(Message::Net(NetMsg::Open(None))), false),
+            "Connect to server",
+            Some("Ctrl+Shift+S"),
+        );
+        let mut col = column![self.fold_head(
+            "Network",
+            color(p.world_network),
+            (connected > 0).then_some(connected),
+            open,
+            crate::view::Fold::Network,
+            Some(add)
+        )]
+        .spacing(1);
         let places = self.net_places();
         if open && places.is_empty() {
-            let hint = text("Windows shares, SSH and FTP servers you connect to appear here.").size(style::META).font(style::FONT).color(color(p.ink_muted));
+            let hint = text("Windows shares, SSH and FTP servers you connect to appear here.")
+                .size(style::META)
+                .font(style::FONT)
+                .color(color(p.ink_muted));
             col = col.push(container(hint).padding([2, 12]));
         }
         for place in places {
@@ -715,8 +785,18 @@ impl App {
         let connecting = place.address.as_ref().is_some_and(|a| self.is_connecting(a));
         let active = self.net_place_active(&place);
         let connected = place.mount.is_some();
-        let ink = if active { color(p.ink_strong) } else if connected { color(p.ink) } else { color(p.ink_muted) };
-        let head = text(place.name.clone()).size(style::BODY).font(if active { style::FONT_BOLD } else { style::FONT }).color(ink).wrapping(text::Wrapping::None);
+        let ink = if active {
+            color(p.ink_strong)
+        } else if connected {
+            color(p.ink)
+        } else {
+            color(p.ink_muted)
+        };
+        let head = text(place.name.clone())
+            .size(style::BODY)
+            .font(if active { style::FONT_BOLD } else { style::FONT })
+            .color(ink)
+            .wrapping(text::Wrapping::None);
         // Connected: tinted icon and a disconnect button. Not connected: all muted. The
         // server itself is always on the second line.
         let meta_row: Element<'_, Message> = if connecting {
@@ -730,14 +810,31 @@ impl App {
         };
         let lines = column![head, meta_row].spacing(3).width(Length::Fill).clip(true);
         let icon = place.address.as_ref().map_or("network", |a| protocol_icon(a.protocol));
-        let tint = if active { color(p.accent_ink) } else if connected { color(p.world_network) } else { color(p.ink_muted) };
-        let mut r = row![container(w::glyph(&self.icons, icon, 16.0, tint)).padding([2, 0]), lines].spacing(style::SPACE_4).align_y(Alignment::Start);
+        let tint = if active {
+            color(p.accent_ink)
+        } else if connected {
+            color(p.world_network)
+        } else {
+            color(p.ink_muted)
+        };
+        let mut r = row![container(w::glyph(&self.icons, icon, 16.0, tint)).padding([2, 0]), lines]
+            .spacing(style::SPACE_4)
+            .align_y(Alignment::Start);
         if connected {
             // Inside the row, so the highlight covers it; a click here doesn't open the place.
-            let eject = self.tip(w::icon_button(p, &self.icons, "arrow-up", Some(Message::Net(NetMsg::Disconnect(place.key.clone()))), false), "Disconnect", None);
+            let eject = self.tip(
+                w::icon_button(p, &self.icons, "arrow-up", Some(Message::Net(NetMsg::Disconnect(place.key.clone()))), false),
+                "Disconnect",
+                None,
+            );
             r = r.push(eject);
         }
-        let body = w::row_button(p, container(r).padding(iced::Padding { top: 6.0, bottom: 6.0, left: 0.0, right: 0.0 }).into(), active, Some(Message::Net(NetMsg::Click(place.key.clone()))));
+        let body = w::row_button(
+            p,
+            container(r).padding(iced::Padding { top: 6.0, bottom: 6.0, left: 0.0, right: 0.0 }).into(),
+            active,
+            Some(Message::Net(NetMsg::Click(place.key.clone()))),
+        );
         let tip = match (&place.address, place.mount) {
             (Some(a), Some(_)) => format!("{} · connected", a.uri()),
             (Some(a), None) => format!("{} · click to connect", a.uri()),
@@ -797,7 +894,9 @@ impl App {
 
     fn group_head<'a>(&self, title: &str, trailing: Option<Element<'a, Message>>) -> Element<'a, Message> {
         let p = &self.palette;
-        let mut r = row![text(title.to_uppercase()).size(style::LABEL).font(style::FONT_BOLD).color(color(p.ink_muted)).width(Length::Fill)].align_y(Alignment::Center);
+        let mut r =
+            row![text(title.to_uppercase()).size(style::LABEL).font(style::FONT_BOLD).color(color(p.ink_muted)).width(Length::Fill)]
+                .align_y(Alignment::Center);
         if let Some(t) = trailing {
             r = r.push(t);
         }
@@ -835,20 +934,56 @@ impl App {
         // Same widget either way (a container holding text): swapping widget kinds here
         // resets the field beside it and drops focus mid-typing.
         let pal = p.clone();
-        let chip = container(text(if has_scheme { String::new() } else { format!("{}://", f.protocol.scheme()) }).size(style::BODY).font(style::FONT).color(color(p.ink_muted)))
-            .padding(if has_scheme { iced::Padding::ZERO } else { iced::Padding::from([6, 8]) })
-            .style(move |_| if has_scheme { container::Style::default() } else { container::Style { background: Some(Background::Color(color(pal.bg_deep))), border: Border { color: color(pal.line_strong), width: 1.0, radius: 2.0.into() }, ..Default::default() } });
+        let chip = container(
+            text(if has_scheme { String::new() } else { format!("{}://", f.protocol.scheme()) })
+                .size(style::BODY)
+                .font(style::FONT)
+                .color(color(p.ink_muted)),
+        )
+        .padding(if has_scheme { iced::Padding::ZERO } else { iced::Padding::from([6, 8]) })
+        .style(move |_| {
+            if has_scheme {
+                container::Style::default()
+            } else {
+                container::Style {
+                    background: Some(Background::Color(color(pal.bg_deep))),
+                    border: Border { color: color(pal.line_strong), width: 1.0, radius: 2.0.into() },
+                    ..Default::default()
+                }
+            }
+        });
         let mut field_row = row![chip].align_y(Alignment::Center);
-        let mut input = text_input(placeholder, &f.text).id(CONNECT_ID).size(style::BODY).font(style::FONT).padding([6, 10]).style(w::field_style(p, invalid));
+        let mut input = text_input(placeholder, &f.text)
+            .id(CONNECT_ID)
+            .size(style::BODY)
+            .font(style::FONT)
+            .padding([6, 10])
+            .style(w::field_style(p, invalid));
         if !busy {
             input = input.on_input(|t| Message::Net(NetMsg::Draft(t))).on_submit(Message::Net(NetMsg::Submit));
         }
         field_row = field_row.push(input);
 
         let feedback: Element<'_, Message> = match &parsed {
-            None => text("Type a server name or IP, or paste an address like smb://, sftp:// or \\\\server\\share.").size(style::META).font(style::FONT).color(color(p.ink_muted)).into(),
-            Some(Ok(a)) => row![w::glyph(&self.icons, "check", 14.0, color(p.success.ink)), text(describe(a)).size(style::META).font(style::FONT).color(color(p.ink_muted))].spacing(6).align_y(Alignment::Center).into(),
-            Some(Err(e)) => row![w::glyph(&self.icons, "alert", 14.0, color(p.warning.ink)), text(e.clone()).size(style::META).font(style::FONT).color(color(p.warning.ink))].spacing(6).align_y(Alignment::Center).into(),
+            None => text("Type a server name or IP, or paste an address like smb://, sftp:// or \\\\server\\share.")
+                .size(style::META)
+                .font(style::FONT)
+                .color(color(p.ink_muted))
+                .into(),
+            Some(Ok(a)) => row![
+                w::glyph(&self.icons, "check", 14.0, color(p.success.ink)),
+                text(describe(a)).size(style::META).font(style::FONT).color(color(p.ink_muted))
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .into(),
+            Some(Err(e)) => row![
+                w::glyph(&self.icons, "alert", 14.0, color(p.warning.ink)),
+                text(e.clone()).size(style::META).font(style::FONT).color(color(p.warning.ink))
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .into(),
         };
 
         let mut body = column![proto_row, column![field_row, feedback].spacing(6)].spacing(style::SPACE_4);
@@ -857,10 +992,24 @@ impl App {
                 Protocol::Smb => "Windows shares need the gvfs-smb package: sudo pacman -S gvfs-smb",
                 _ => "This computer's GVfs can't speak this protocol. Install the gvfs package.",
             };
-            body = body.push(row![w::glyph(&self.icons, "alert", 14.0, color(p.warning.ink)), text(hint).size(style::META).font(style::FONT).color(color(p.warning.ink))].spacing(6).align_y(Alignment::Center));
+            body = body.push(
+                row![
+                    w::glyph(&self.icons, "alert", 14.0, color(p.warning.ink)),
+                    text(hint).size(style::META).font(style::FONT).color(color(p.warning.ink))
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            );
         }
         if let Some(u) = &self.net.unavailable {
-            body = body.push(row![w::glyph(&self.icons, "alert", 14.0, color(p.warning.ink)), text(u.clone()).size(style::META).font(style::FONT).color(color(p.warning.ink))].spacing(6).align_y(Alignment::Center));
+            body = body.push(
+                row![
+                    w::glyph(&self.icons, "alert", 14.0, color(p.warning.ink)),
+                    text(u.clone()).size(style::META).font(style::FONT).color(color(p.warning.ink))
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            );
         }
         body = body.push(w::checkbox(p, &self.icons, "Add to sidebar", f.save, |on| Message::Net(NetMsg::SaveToggle(on))));
 
@@ -875,7 +1024,8 @@ impl App {
         if !recent.is_empty() {
             lists = lists.push(self.group_head("Recent", None));
             for a in recent {
-                lists = lists.push(self.list_row(protocol_icon(a.protocol), a.display_name(), a.uri(), Message::Net(NetMsg::Pick(a.clone()))));
+                lists =
+                    lists.push(self.list_row(protocol_icon(a.protocol), a.display_name(), a.uri(), Message::Net(NetMsg::Pick(a.clone()))));
             }
             lists = lists.push(Space::new().height(style::SPACE_3));
         }
@@ -888,10 +1038,22 @@ impl App {
         match &self.net.nearby {
             None => lists = lists.push(text("Looking for servers nearby…").size(style::META).font(style::FONT).color(color(p.ink_muted))),
             Some(Err(e)) => lists = lists.push(text(e.clone()).size(style::META).font(style::FONT).color(color(p.ink_muted))),
-            Some(Ok(v)) if v.is_empty() => lists = lists.push(text("No servers are announcing themselves here. Type an address above.").size(style::META).font(style::FONT).color(color(p.ink_muted))),
+            Some(Ok(v)) if v.is_empty() => {
+                lists = lists.push(
+                    text("No servers are announcing themselves here. Type an address above.")
+                        .size(style::META)
+                        .font(style::FONT)
+                        .color(color(p.ink_muted)),
+                )
+            }
             Some(Ok(v)) => {
                 for n in v.iter().take(8) {
-                    lists = lists.push(self.list_row(protocol_icon(n.address.protocol), n.name.clone(), format!("{} · {}", n.address.protocol.label(), n.address.host_port()), Message::Net(NetMsg::Pick(n.address.clone()))));
+                    lists = lists.push(self.list_row(
+                        protocol_icon(n.address.protocol),
+                        n.name.clone(),
+                        format!("{} · {}", n.address.protocol.label(), n.address.host_port()),
+                        Message::Net(NetMsg::Pick(n.address.clone())),
+                    ));
                 }
             }
         }
@@ -900,16 +1062,35 @@ impl App {
         if let Some(e) = &f.error {
             let pal = p.clone();
             body = body.push(
-                container(row![w::glyph(&self.icons, "error", 14.0, color(p.danger.ink)), text(e.clone()).size(style::META).font(style::FONT).color(color(p.ink))].spacing(6).align_y(Alignment::Center))
-                    .padding([8, 10])
-                    .width(Length::Fill)
-                    .style(move |_| container::Style { background: Some(Background::Color(color(pal.danger.soft))), border: Border { color: color(pal.danger.base), width: 1.0, radius: 2.0.into() }, ..Default::default() }),
+                container(
+                    row![
+                        w::glyph(&self.icons, "error", 14.0, color(p.danger.ink)),
+                        text(e.clone()).size(style::META).font(style::FONT).color(color(p.ink))
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                )
+                .padding([8, 10])
+                .width(Length::Fill)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(color(pal.danger.soft))),
+                    border: Border { color: color(pal.danger.base), width: 1.0, radius: 2.0.into() },
+                    ..Default::default()
+                }),
             );
         }
         let can = matches!(parsed, Some(Ok(_))) && !busy;
         let foot = vec![
             w::text_button(p, &self.icons, "Cancel", None, Some("Esc"), Variant::Ghost, Some(Message::Net(NetMsg::Close))),
-            w::text_button(p, &self.icons, if busy { "Connecting…" } else { "Connect" }, Some(if busy { "sync" } else { "network" }), (!busy).then_some("Enter"), Variant::Primary, can.then_some(Message::Net(NetMsg::Submit))),
+            w::text_button(
+                p,
+                &self.icons,
+                if busy { "Connecting…" } else { "Connect" },
+                Some(if busy { "sync" } else { "network" }),
+                (!busy).then_some("Enter"),
+                Variant::Primary,
+                can.then_some(Message::Net(NetMsg::Submit)),
+            ),
         ];
         Some(self.dialog_frame_with("network", "Connect to server".into(), body.into(), foot, false, false, f.opened))
     }
@@ -918,12 +1099,24 @@ impl App {
 
     fn labeled<'a>(&self, label: &str, field: Element<'a, Message>) -> Element<'a, Message> {
         let p = &self.palette;
-        column![text(label.to_string()).size(style::LABEL).font(style::FONT_BOLD).color(color(p.ink_muted)), field].spacing(4).width(Length::Fill).into()
+        column![text(label.to_string()).size(style::LABEL).font(style::FONT_BOLD).color(color(p.ink_muted)), field]
+            .spacing(4)
+            .width(Length::Fill)
+            .into()
     }
 
     /// Sign in to a server (design system `SignInDialog`).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn login_dialog<'a>(&'a self, ask: &'a LoginAsk, user: &'a str, domain: &'a str, password: &'a str, guest: bool, remember: bool, opened: Instant) -> Element<'a, Message> {
+    pub(crate) fn login_dialog<'a>(
+        &'a self,
+        ask: &'a LoginAsk,
+        user: &'a str,
+        domain: &'a str,
+        password: &'a str,
+        guest: bool,
+        remember: bool,
+        opened: Instant,
+    ) -> Element<'a, Message> {
         let p = &self.palette;
         let address = self.net.connecting.iter().find(|(o, _)| *o == ask.op).map(|(_, a)| a.clone());
         let title = match &address {
@@ -931,7 +1124,8 @@ impl App {
             None => "Sign in to the server".to_string(),
         };
         // GVfs' second line names what's asking ("Enter user and password for share …").
-        let detail = ask.message.lines().filter(|l| !l.trim().is_empty() && !l.contains("Authentication Required")).collect::<Vec<_>>().join(" ");
+        let detail =
+            ask.message.lines().filter(|l| !l.trim().is_empty() && !l.contains("Authentication Required")).collect::<Vec<_>>().join(" ");
         let detail = detail.trim_end_matches(':').to_string();
         let mut body = column![].spacing(style::SPACE_4);
         if !detail.is_empty() {
@@ -942,7 +1136,12 @@ impl App {
             body = body.push(w::segmented(p, &opts, usize::from(guest)));
         }
         if guest {
-            body = body.push(text("Connect without an account. Guests usually see only public folders.").size(style::META).font(style::FONT).color(color(p.ink_muted)));
+            body = body.push(
+                text("Connect without an account. Guests usually see only public folders.")
+                    .size(style::META)
+                    .font(style::FONT)
+                    .color(color(p.ink_muted)),
+            );
         } else {
             let field = |id: &'static str, value: &'a str, ph: &'static str, f: LoginField, secure: bool| -> Element<'a, Message> {
                 text_input(ph, value)
@@ -961,7 +1160,9 @@ impl App {
                 who = who.push(self.labeled("User name", field(LOGIN_USER_ID, user, "user", LoginField::User, false)));
             }
             if ask.need_domain {
-                who = who.push(container(self.labeled("Domain", field(LOGIN_DOMAIN_ID, domain, "WORKGROUP", LoginField::Domain, false))).width(170));
+                who = who.push(
+                    container(self.labeled("Domain", field(LOGIN_DOMAIN_ID, domain, "WORKGROUP", LoginField::Domain, false))).width(170),
+                );
             }
             if ask.need_user || ask.need_domain {
                 body = body.push(who);
@@ -972,15 +1173,35 @@ impl App {
                 body = body.push(self.labeled("Password", field(LOGIN_PASSWORD_ID, password, "", LoginField::Password, true)));
             }
             if ask.can_remember {
-                body = body.push(w::checkbox(p, &self.icons, "Remember password in the keyring", remember, |on| Message::Net(NetMsg::LoginRemember(on))));
+                body = body.push(w::checkbox(p, &self.icons, "Remember password in the keyring", remember, |on| {
+                    Message::Net(NetMsg::LoginRemember(on))
+                }));
             }
         }
         if ask.retry {
-            body = body.push(row![w::glyph(&self.icons, "error", 14.0, color(p.danger.ink)), text("That didn't work. Check the user name and password and try again.").size(style::META).font(style::FONT).color(color(p.danger.ink))].spacing(6).align_y(Alignment::Center));
+            body = body.push(
+                row![
+                    w::glyph(&self.icons, "error", 14.0, color(p.danger.ink)),
+                    text("That didn't work. Check the user name and password and try again.")
+                        .size(style::META)
+                        .font(style::FONT)
+                        .color(color(p.danger.ink))
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            );
         }
         let foot = vec![
             w::text_button(p, &self.icons, "Cancel", None, Some("Esc"), Variant::Ghost, Some(Message::Ui(UiMsg::CloseDialog))),
-            w::text_button(p, &self.icons, if guest { "Connect as guest" } else { "Sign in" }, Some("key"), Some("Enter"), Variant::Primary, Some(Message::Net(NetMsg::LoginSubmit))),
+            w::text_button(
+                p,
+                &self.icons,
+                if guest { "Connect as guest" } else { "Sign in" },
+                Some("key"),
+                Some("Enter"),
+                Variant::Primary,
+                Some(Message::Net(NetMsg::LoginSubmit)),
+            ),
         ];
         self.dialog_frame_with("lock", title, body.into(), foot, false, false, opened)
     }
@@ -994,10 +1215,13 @@ impl App {
             _ => ("Check this server".to_string(), ask.message.trim().to_string()),
         };
         let pal = p.clone();
-        let body = container(text(rest).size(style::META).font(style::FONT).color(color(p.ink)))
-            .padding(10)
-            .width(Length::Fill)
-            .style(move |_| container::Style { background: Some(Background::Color(color(pal.bg_deep))), border: Border { color: color(pal.line), width: 1.0, radius: 2.0.into() }, ..Default::default() });
+        let body = container(text(rest).size(style::META).font(style::FONT).color(color(p.ink))).padding(10).width(Length::Fill).style(
+            move |_| container::Style {
+                background: Some(Background::Color(color(pal.bg_deep))),
+                border: Border { color: color(pal.line), width: 1.0, radius: 2.0.into() },
+                ..Default::default()
+            },
+        );
         // Cancel-like choices first and quiet, the way every other dialog puts them; the
         // first real choice is the primary button.
         let (mut foot, mut rest) = (Vec::new(), Vec::new());
@@ -1023,16 +1247,45 @@ impl App {
         let a = &page.address;
         let head = column![
             text(format!("Shares on {}", a.host_port())).size(22).font(style::FONT_BOLD).color(color(p.ink_strong)),
-            text("Pick a share to open it. It's added to the Network section while it's connected.").size(style::META).font(style::FONT).color(color(p.ink_muted)),
+            text("Pick a share to open it. It's added to the Network section while it's connected.")
+                .size(style::META)
+                .font(style::FONT)
+                .color(color(p.ink_muted)),
         ]
         .spacing(6);
         let content: Element<'a, Message> = match &page.shares {
-            None => row![w::glyph(&self.icons, "sync", 16.0, color(p.info.ink)), text("Asking the server for its shares…").size(style::BODY).font(style::FONT).color(color(p.ink_muted))].spacing(style::SPACE_3).align_y(Alignment::Center).into(),
+            None => row![
+                w::glyph(&self.icons, "sync", 16.0, color(p.info.ink)),
+                text("Asking the server for its shares…").size(style::BODY).font(style::FONT).color(color(p.ink_muted))
+            ]
+            .spacing(style::SPACE_3)
+            .align_y(Alignment::Center)
+            .into(),
             Some(Err(e)) => {
-                let retry = w::text_button(p, &self.icons, "Try again", Some("refresh"), None, Variant::Secondary, Some(Message::Net(NetMsg::Connect { address: a.clone(), save: false })));
-                column![row![w::glyph(&self.icons, "error", 16.0, color(p.danger.ink)), text(e.clone()).size(style::BODY).font(style::FONT).color(color(p.ink))].spacing(style::SPACE_3).align_y(Alignment::Center), retry].spacing(style::SPACE_4).into()
+                let retry = w::text_button(
+                    p,
+                    &self.icons,
+                    "Try again",
+                    Some("refresh"),
+                    None,
+                    Variant::Secondary,
+                    Some(Message::Net(NetMsg::Connect { address: a.clone(), save: false })),
+                );
+                column![
+                    row![
+                        w::glyph(&self.icons, "error", 16.0, color(p.danger.ink)),
+                        text(e.clone()).size(style::BODY).font(style::FONT).color(color(p.ink))
+                    ]
+                    .spacing(style::SPACE_3)
+                    .align_y(Alignment::Center),
+                    retry
+                ]
+                .spacing(style::SPACE_4)
+                .into()
             }
-            Some(Ok(v)) if v.is_empty() => text("This server doesn't share any folders with you.").size(style::BODY).font(style::FONT).color(color(p.ink_muted)).into(),
+            Some(Ok(v)) if v.is_empty() => {
+                text("This server doesn't share any folders with you.").size(style::BODY).font(style::FONT).color(color(p.ink_muted)).into()
+            }
             Some(Ok(v)) => {
                 let mut grid = column![].spacing(style::SPACE_4);
                 let mut it = v.iter().peekable();
@@ -1048,7 +1301,14 @@ impl App {
                 grid.into()
             }
         };
-        w::fill(scrollable(container(column![head, content, Space::new().height(24)].spacing(style::SPACE_5)).padding([24, 28])).height(Length::Fill), p.bg).width(Length::Fill).height(Length::Fill).into()
+        w::fill(
+            scrollable(container(column![head, content, Space::new().height(24)].spacing(style::SPACE_5)).padding([24, 28]))
+                .height(Length::Fill),
+            p.bg,
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     }
 
     fn share_card<'a>(&'a self, server: &Address, share: &str) -> Element<'a, Message> {
@@ -1076,7 +1336,11 @@ impl App {
             .on_press(Message::Net(NetMsg::Connect { address: target, save: false }))
             .style(move |_, status| button::Style {
                 background: Some(Background::Color(color(pal.bg_raised))),
-                border: Border { color: if matches!(status, button::Status::Hovered) { color(pal.world_network) } else { color(pal.line) }, width: 1.0, radius: 2.0.into() },
+                border: Border {
+                    color: if matches!(status, button::Status::Hovered) { color(pal.world_network) } else { color(pal.line) },
+                    width: 1.0,
+                    radius: 2.0.into(),
+                },
                 text_color: color(pal.ink),
                 ..Default::default()
             });
