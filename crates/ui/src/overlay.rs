@@ -206,6 +206,8 @@ pub struct Command {
 #[derive(Debug, Clone)]
 pub enum UiMsg {
     CloseMenu,
+    /// Whether anything can be pasted (checked after a menu opens): `false` disables Paste.
+    PasteAvailable(bool),
     Pick(Box<Message>),
     MenuHover(usize),
     MenuMove(i32),
@@ -377,7 +379,7 @@ impl App {
                         e.push(item("plus", "Open in new tab", Some("Ctrl+Enter"), f(FileMsg::OpenInTab)));
                         e.push(item("columns", "Open in other pane", Some("F3"), f(FileMsg::OpenInOther)));
                     } else {
-                        e.push(item("external", "Open with…", None, f(FileMsg::OpenWith)));
+                        e.push(item("more-horizontal", "Open with…", None, f(FileMsg::OpenWith)));
                     }
                     e.push(Entry::Sep);
                     e.push(item("cut", "Cut", Some("Ctrl+X"), f(FileMsg::Cut)));
@@ -586,7 +588,7 @@ impl App {
                     Entry::Sep,
                     Entry::Heading("Show".into()),
                     toggle("columns", "Dual pane", "F3", Message::ToggleDual, self.dual()),
-                    toggle("sidebar", "Preview pane", "Space", Message::TogglePreview, self.settings.appearance.preview),
+                    toggle("info", "Preview pane", "Space", Message::TogglePreview, self.settings.appearance.preview),
                     toggle("eye", "Hidden files", "Ctrl+H", Message::ToggleHidden, self.show_hidden),
                 ]
             }
@@ -682,7 +684,7 @@ impl App {
             ("plus", "New tab", Some("Ctrl+T"), Message::NewTab),
             ("close", "Close tab", Some("Ctrl+W"), Message::CloseTab(self.tab)),
             ("columns", "Toggle dual pane", Some("F3"), Message::ToggleDual),
-            ("sidebar", "Toggle preview pane", Some("Space"), Message::TogglePreview),
+            ("info", "Toggle preview pane", Some("Space"), Message::TogglePreview),
             ("sidebar", "Toggle sidebar", Some("Ctrl+B"), Message::ToggleSidebar),
             ("eye", "Toggle hidden files", Some("Ctrl+H"), Message::ToggleHidden),
             ("grid", "View as grid", Some("Ctrl+2"), Message::SetGrid(true)),
@@ -883,6 +885,26 @@ impl App {
             }
             UiMsg::OpenMenu(target, at) => {
                 self.open_menu(target, at);
+                // Paste does nothing with an empty clipboard; find out (off the UI thread)
+                // and grey it out rather than offer it.
+                if self.clip.is_none() && self.menu.is_some() {
+                    return crate::app::background(crate::actions::system_clipboard_has_files, |has| Message::Ui(UiMsg::PasteAvailable(has)));
+                }
+                Task::none()
+            }
+            UiMsg::PasteAvailable(has) => {
+                if !has
+                    && self.clip.is_none()
+                    && let Some(menu) = self.menu.as_mut()
+                {
+                    for e in &mut menu.entries {
+                        if let Entry::Item(i) = e
+                            && i.label == "Paste"
+                        {
+                            i.msg = None;
+                        }
+                    }
+                }
                 Task::none()
             }
             UiMsg::CloseDialog => match self.dialog.take() {

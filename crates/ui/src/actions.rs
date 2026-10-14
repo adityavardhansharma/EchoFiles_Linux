@@ -232,6 +232,14 @@ fn write_system_clipboard(paths: &[PathBuf], cut: bool) {
 }
 
 /// Files another app put on the clipboard, and whether they were cut.
+/// Whether another app's clipboard holds files (only the type list is read).
+pub(crate) fn system_clipboard_has_files() -> bool {
+    std::process::Command::new("wl-paste")
+        .arg("--list-types")
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l == "x-special/gnome-copied-files" || l == "text/uri-list"))
+}
+
 fn read_system_clipboard() -> Option<(Vec<PathBuf>, bool)> {
     use std::process::Command;
     let types = Command::new("wl-paste").arg("--list-types").output().ok()?;
