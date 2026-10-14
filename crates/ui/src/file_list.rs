@@ -228,7 +228,9 @@ struct State {
     sprung: Option<usize>,
     /// Item under the pointer, and since when (for the full-name tooltip).
     hover: Option<(usize, Instant)>,
-    visible: (usize, usize),
+    /// The range last reported with [`Action::Visible`], and whether it was a grid then:
+    /// switching a list to a grid shows the same items but now needs their thumbnails.
+    visible: (usize, usize, bool),
 }
 
 /// Anchor and endpoint are content coordinates, so wheel scrolling keeps the anchor fixed.
@@ -509,6 +511,11 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                 shell.publish((self.on_action)(Action::EditorBlur));
             }
         }
+        // A focused text field (the search box, the path bar) already handled this key:
+        // Ctrl+A there selects its text, not every file in the list.
+        if matches!(event, Event::Keyboard(keyboard::Event::KeyPressed { .. })) && shell.is_event_captured() {
+            return;
+        }
         let bounds = layout.bounds();
         let (header, body) = areas(bounds, self.model.grid);
         let n = self.model.order.len();
@@ -538,8 +545,8 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                 let h = self.item_h();
                 let first = (state.offset / h) as usize * cols;
                 let last = (((state.offset + body.height) / h).ceil() as usize * cols).min(n);
-                if (first, last) != state.visible {
-                    state.visible = (first, last);
+                if (first, last, self.model.grid) != state.visible {
+                    state.visible = (first, last, self.model.grid);
                     publish(shell, Action::Visible { first, last });
                 }
                 // Spring-loading and the name tooltip wake up on their own.
