@@ -888,7 +888,9 @@ impl App {
                 // Paste does nothing with an empty clipboard; find out (off the UI thread)
                 // and grey it out rather than offer it.
                 if self.clip.is_none() && self.menu.is_some() {
-                    return crate::app::background(crate::actions::system_clipboard_has_files, |has| Message::Ui(UiMsg::PasteAvailable(has)));
+                    return crate::app::background(crate::actions::system_clipboard_has_files, |has| {
+                        Message::Ui(UiMsg::PasteAvailable(has))
+                    });
                 }
                 Task::none()
             }

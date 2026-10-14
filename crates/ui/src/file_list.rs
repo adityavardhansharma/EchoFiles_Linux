@@ -1121,7 +1121,11 @@ impl<'a, Message> FileList<'a, Message> {
         let name = l.name_bytes(i);
         let alpha = self.alpha(i);
         let icon_box = Rectangle { x: cols.icon, y: y + (rh - style::ICON_ROW) / 2.0, width: style::ICON_ROW, height: style::ICON_ROW };
-        renderer.draw_svg(Svg { opacity: alpha, ..Svg::new(self.icons.color(kinds::icon(name, if l.is_folderish(i) { Kind::Dir } else { l.kind[i] }))) }, icon_box, body);
+        renderer.draw_svg(
+            Svg { opacity: alpha, ..Svg::new(self.icons.color(kinds::icon(name, if l.is_folderish(i) { Kind::Dir } else { l.kind[i] }))) },
+            icon_box,
+            body,
+        );
         self.draw_badge(renderer, icon_box, i, body);
         let cy = y + rh / 2.0;
         if self.model.renaming != Some(pos) {
@@ -1149,11 +1153,20 @@ impl<'a, Message> FileList<'a, Message> {
                 && shown.is_ascii()
                 && let Some(at) = shown.as_bytes().windows(q.len()).position(|w| w.eq_ignore_ascii_case(q))
             {
-                let mark = Rectangle { x: cols.name + at as f32 * ADVANCE - 1.0, y: cy - 9.0, width: q.len() as f32 * ADVANCE + 2.0, height: 18.0 };
+                let mark = Rectangle {
+                    x: cols.name + at as f32 * ADVANCE - 1.0,
+                    y: cy - 9.0,
+                    width: q.len() as f32 * ADVANCE + 2.0,
+                    height: 18.0,
+                };
                 if let Some(m) = mark.intersection(&clip) {
                     let mut c = color(p.accent);
                     c.a = 0.28 * alpha;
-                    iced::advanced::Renderer::fill_quad(renderer, Quad { bounds: m, border: Border { radius: 2.0.into(), ..Border::default() }, ..Quad::default() }, c);
+                    iced::advanced::Renderer::fill_quad(
+                        renderer,
+                        Quad { bounds: m, border: Border { radius: 2.0.into(), ..Border::default() }, ..Quad::default() },
+                        c,
+                    );
                 }
             }
             for (content, x, c) in [(stem, cols.name, ink), (ext, cols.name + stem_cells as f32 * ADVANCE, ink_ext)] {
@@ -1228,7 +1241,14 @@ impl<'a, Message> FileList<'a, Message> {
             }
             None => {
                 let icon = Rectangle { x: pic.center_x() - 24.0, y: pic.center_y() - 24.0, width: 48.0, height: 48.0 };
-                renderer.draw_svg(Svg { opacity: alpha, ..Svg::new(self.icons.color(kinds::icon(name, if l.is_folderish(i) { Kind::Dir } else { l.kind[i] }))) }, icon, body);
+                renderer.draw_svg(
+                    Svg {
+                        opacity: alpha,
+                        ..Svg::new(self.icons.color(kinds::icon(name, if l.is_folderish(i) { Kind::Dir } else { l.kind[i] })))
+                    },
+                    icon,
+                    body,
+                );
                 self.draw_badge(renderer, Rectangle { x: icon.x + 24.0, y: icon.y + 24.0, width: 24.0, height: 24.0 }, i, body);
             }
         }
