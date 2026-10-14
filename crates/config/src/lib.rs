@@ -370,11 +370,15 @@ pub fn state_dir() -> PathBuf {
     xdg("XDG_STATE_HOME", ".local/state").join("echofiles")
 }
 
-/// `$XDG_RUNTIME_DIR/echofiles.sock` — the running app listens here.
+/// `$XDG_RUNTIME_DIR/echofiles.sock` — the running app listens here. A Unix socket path
+/// holds at most 107 bytes; when the runtime folder's path is too long for the longest
+/// socket name (`echofiles-ef.sock`), the private folder in the config dir is used, so
+/// the app doesn't fail to start with a vague error.
 pub fn socket_path() -> PathBuf {
+    const LONGEST: usize = "/echofiles-ef.sock".len();
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
+        .filter(|p| p.is_absolute() && p.as_os_str().len() + LONGEST <= 107)
         .unwrap_or_else(|| {
             use std::os::unix::fs::DirBuilderExt;
             let dir = config_dir().join("runtime");

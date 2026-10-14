@@ -91,7 +91,10 @@ fn main() -> iced::Result {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            eprintln!("Couldn't acquire the EchoFiles instance socket");
+            eprintln!(
+                "EchoFiles couldn't start: another copy holds its lock, or it couldn't listen on {} (check that folder is private and writable)",
+                ef_config::socket_path().display()
+            );
             return Ok(());
         }
         // Answer `ef` from here: settings, index maps and threads stay loaded.
