@@ -492,6 +492,10 @@ impl App {
                 ..Default::default()
             },
         );
+        // No tooltip while a menu is open: it drew on top of the View menu itself.
+        if self.menu.is_some() {
+            return b.into();
+        }
         self.tip(b, "View", None)
     }
 
