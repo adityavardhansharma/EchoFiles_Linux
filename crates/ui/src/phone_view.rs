@@ -326,14 +326,27 @@ impl App {
         } else {
             color(p.ink_muted)
         };
-        let head = text(name.clone())
+        let meter = match (online, battery) {
+            (true, Some((lv, ch))) => Some((lv, ch)),
+            _ => None,
+        };
+        // Room for the name: the sidebar less its padding and scrollbar, the row's padding,
+        // the icon and, when shown, the battery meter. A long name ends in "…" before the
+        // meter (the font is monospaced), and still clips there if the estimate is off.
+        let room = f32::from(self.settings.sidebar.width)
+            - 16.0
+            - 8.0
+            - 24.0
+            - 16.0
+            - style::SPACE_4
+            - meter.map_or(0.0, |(_, ch)| style::SPACE_3 + 22.0 + if ch { 13.0 } else { 0.0 });
+        let head = text(elide(&name, (room / (style::BODY * 0.6)).floor() as usize))
             .size(style::BODY)
             .font(if active { style::FONT_BOLD } else { style::FONT })
             .color(ink)
             .wrapping(text::Wrapping::None);
-        // A long name clips at its own edge instead of running under the battery meter.
         let mut top = row![container(head).width(Length::Fill).clip(true)].spacing(style::SPACE_3).align_y(Alignment::Center);
-        if let (true, Some((lv, ch))) = (online, battery) {
+        if let Some((lv, ch)) = meter {
             top = top.push(self.battery_meter(lv, ch));
         }
         let meta: Element<'a, Message> = if self.phone.code.as_ref().is_some_and(|c| c.0 == id) {
@@ -388,7 +401,7 @@ impl App {
         let tip = if online {
             format!("{name} · drop files here to send them")
         } else {
-            format!("{name} · open KDE Connect on the phone to connect")
+            format!("{name} · open EchoConnect on the phone to connect")
         };
         let item = self.tip(body, &tip, None);
         mouse_area(item)
@@ -452,7 +465,7 @@ impl App {
             column![
                 iced::widget::svg(self.icons.color("phone")).width(64).height(64),
                 self.ptb("Connect your phone", 22.0, p.ink_strong),
-                self.pt("Browse its files and photos, send files both ways, share the clipboard and see its notifications — over Wi-Fi, with the free KDE Connect app on the phone.", style::META, p.ink_muted).width(420).align_x(Alignment::Center),
+                self.pt("Browse its files and photos, send files both ways, share the clipboard and see its notifications — over Wi-Fi, with the EchoConnect app on the phone.", style::META, p.ink_muted).width(420).align_x(Alignment::Center),
                 w::text_button(p, &self.icons, "Connect phone", Some("phone"), None, Variant::Primary, Some(pm(PhoneMsg::Dialog(true)))),
             ]
             .spacing(style::SPACE_4)
@@ -690,7 +703,7 @@ impl App {
         if let Some(ip) = ip {
             meta = meta.push(fact("wifi", ip));
         }
-        meta = meta.push(fact("link", "KDE Connect".into()));
+        meta = meta.push(fact("link", "EchoConnect".into()));
         meta = meta.push(fact("shield", "Paired".into()));
 
         let (lv, ch) = self.phone.battery.get(id).copied().unwrap_or((0, false));
@@ -790,11 +803,7 @@ impl App {
             facts = facts.push(
                 row![
                     w::glyph(&self.icons, "alert", 14.0, color(p.warning.ink)),
-                    self.pt(
-                        format!("Files aren't shared: {e} Turn on Filesystem expose in KDE Connect and allow All files access."),
-                        style::META,
-                        p.warning.ink
-                    )
+                    self.pt(format!("Files aren't shared: {e}"), style::META, p.warning.ink)
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),
@@ -1173,7 +1182,7 @@ impl App {
             column![
                 w::glyph(&self.icons, "phone", 40.0, color(p.ink_faint)),
                 self.ptb(format!("{} isn't nearby", self.phone_name(id)), 18.0, p.ink_strong),
-                self.pt(format!("Open KDE Connect on the phone, on the same Wi-Fi, to see its {what}."), style::META, p.ink_muted),
+                self.pt(format!("Open EchoConnect on the phone, on the same Wi-Fi, to see its {what}."), style::META, p.ink_muted),
             ]
             .spacing(style::SPACE_4)
             .align_x(Alignment::Center),
@@ -1205,7 +1214,7 @@ impl App {
                             Some("refresh"),
                             None,
                             Variant::Secondary,
-                            Some(pm(PhoneMsg::Files(Want::Photos)))
+                            Some(pm(PhoneMsg::RetryPhotos))
                         )
                     ]
                     .spacing(style::SPACE_4)
@@ -1869,12 +1878,13 @@ impl App {
                         p.ink,
                     ));
                 } else {
-                    body = body.push(self.pt(
-                        format!("Paired with {name}. One switch left so EchoFiles can see the phone's files:"),
-                        style::BODY,
-                        p.ink,
-                    ));
-                    body = body.push(self.pt("1. In KDE Connect, open the device's Plugin settings.\n2. Turn on Filesystem expose, and allow All files access when Android asks.", style::META, p.ink_muted));
+                    body = body.push(self.pt(format!("Paired with {name}. The phone's files aren't open yet:"), style::BODY, p.ink));
+                    let why = self
+                        .phone
+                        .sftp_error
+                        .clone()
+                        .unwrap_or_else(|| "On the phone, allow All files access for EchoConnect when Android asks.".into());
+                    body = body.push(self.pt(why, style::META, p.ink_muted));
                 }
                 let status: Element<'_, Message> = if self.phone.mount.is_some() {
                     w::pill(p, "Files available", Some(p.success))
@@ -1909,7 +1919,11 @@ impl App {
                 ));
             }
             (None, None) => {
-                body = body.push(self.pt("Open EchoConnect on your phone and scan this code. Keep both on the same Wi-Fi. KDE Connect also works with manual pairing.", style::META, p.ink_muted));
+                body = body.push(self.pt(
+                    "Open EchoConnect on your phone and scan this code. Keep both on the same Wi-Fi.",
+                    style::META,
+                    p.ink_muted,
+                ));
                 if let Some(qr) = &self.phone.qr {
                     body = body.push(svg(qr.clone()).width(200).height(200));
                 }
@@ -1919,7 +1933,7 @@ impl App {
                     list = list.push(
                         row![
                             w::glyph(&self.icons, "sync", 14.0, color(p.info.ink)),
-                            self.pt("Looking for EchoConnect or KDE Connect…", style::META, p.ink_muted)
+                            self.pt("Looking for EchoConnect…", style::META, p.ink_muted)
                         ]
                         .spacing(6)
                         .align_y(Alignment::Center),
@@ -1952,18 +1966,18 @@ impl App {
                 if d.since.elapsed().as_secs() >= 10 && unpaired_none {
                     let mut help = column![
                         self.ptb("Can't see your phone?", style::BODY, p.ink_strong),
-                        self.pt("Check both are on the same Wi-Fi and the KDE Connect app is open on the phone.", style::META, p.ink_muted)
+                        self.pt("Check both are on the same Wi-Fi and EchoConnect is open on the phone.", style::META, p.ink_muted)
                     ]
                     .spacing(style::SPACE_3);
                     if self.phone.ufw == Some(true) {
                         let fw: Element<'_, Message> = match &d.firewall {
-                            Some(Ok(())) => w::pill(p, "Firewall allows KDE Connect", Some(p.success)),
+                            Some(Ok(())) => w::pill(p, "Firewall allows EchoConnect", Some(p.success)),
                             Some(Err(e)) => self.pt(format!("Couldn't change the firewall: {e}"), style::META, p.danger.ink).into(),
                             None => row![
                                 w::text_button(
                                     p,
                                     &self.icons,
-                                    if d.firewall_busy { "Asking…" } else { "Allow KDE Connect…" },
+                                    if d.firewall_busy { "Asking…" } else { "Allow EchoConnect…" },
                                     Some("shield"),
                                     None,
                                     Variant::Secondary,
@@ -2027,4 +2041,24 @@ pub fn fs_space(p: &Path) -> Option<(u64, u64)> {
     }
     let bs = s.f_frsize.max(1);
     Some((s.f_bavail * bs, s.f_blocks * bs))
+}
+
+/// `s` cut to `max` characters, ending in "…" when it was longer.
+fn elide(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn long_names_end_in_an_ellipsis() {
+        assert_eq!(super::elide("Aditya Vardhan's S24+", 30), "Aditya Vardhan's S24+");
+        assert_eq!(super::elide("Aditya Vardhan's S24+", 10), "Aditya Va…");
+        assert_eq!(super::elide("S24", 0), "…");
+    }
 }

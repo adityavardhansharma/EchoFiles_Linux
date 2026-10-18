@@ -1,10 +1,13 @@
-//! Android phones over Wi-Fi, speaking the KDE Connect protocol (version 8) ourselves —
-//! nothing from KDE runs on the laptop; the phone runs the stock KDE Connect app.
+//! The link between EchoFiles and EchoConnect, its Android app: discovery, pairing, TLS and
+//! packets, written here and used on both ends (the phone runs this crate through
+//! `echoconnect-core`). The wire format is the KDE Connect protocol (version 8), but only
+//! EchoFiles and EchoConnect link with each other; other KDE Connect devices are turned
+//! away.
 //!
 //! [`Service::start`] listens for phones (UDP 1716 and a TCP port in 1716–1764), keeps one
 //! TLS link per phone, and turns their packets into [`Event`]s. Methods on [`Service`]
-//! send requests: pair, ring, clipboard, notifications, texts, files and the phone's SFTP
-//! server (which the app then opens through GVfs like any network place).
+//! send requests: pair, ring, clipboard, notifications, texts, files and the phone's file
+//! server (which the app shows as a folder through `ef_phonefs`).
 
 mod identity;
 mod service;
@@ -19,7 +22,7 @@ pub use identity::{Trusted, dir as config_dir, host_name};
 pub use serde_json::{Value, json};
 pub use service::{Role, Service, Source, trace_to};
 
-/// Lowest and highest TCP port KDE Connect uses.
+/// Lowest and highest TCP port the link uses.
 pub const PORT_MIN: u16 = 1714;
 pub const PORT_MAX: u16 = 1764;
 /// The UDP discovery port.
@@ -57,7 +60,8 @@ impl Device {
         self.accepts.iter().any(|t| t == packet_type)
     }
 
-    /// Runs EchoConnect (our own app), not stock KDE Connect.
+    /// Runs EchoConnect or EchoFiles (lists `echofiles.*` packets) — the only peers the
+    /// link accepts.
     pub fn echoconnect(&self) -> bool {
         self.sends.iter().any(|t| t.starts_with("echofiles."))
     }
@@ -116,7 +120,7 @@ pub enum Event {
     Started {
         port: u16,
     },
-    /// Couldn't start (ports taken — is KDE Connect itself running?).
+    /// Couldn't start (ports taken — is a KDE Connect daemon running on this computer?).
     Failed(String),
     /// A phone is connected (paired or not), or its details changed.
     Device(Device),

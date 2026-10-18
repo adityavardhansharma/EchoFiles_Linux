@@ -1,77 +1,8 @@
-//! The phone's photos: where they come from, their thumbnails (EXIF previews read here,
-//! without a full decode) and the keys that remember which were imported.
+//! The phone's photos: the lock-screen picture made from the newest one's thumbnail
+//! (EchoConnect sends the list and thumbnails as packets) and the keys that remember
+//! which were imported.
 
 use super::*;
-
-pub(super) fn photo_source(rel: &str) -> Source {
-    let l = rel.to_lowercase();
-    if l.contains("screenshot") {
-        Source::Screenshots
-    } else if l.contains("whatsapp") || l.contains("telegram") || l.contains("signal") {
-        Source::Chats
-    } else if l.starts_with("dcim") {
-        Source::Camera
-    } else {
-        Source::Other
-    }
-}
-
-const PHOTO_DIRS: &[&str] = &[
-    "DCIM/Camera",
-    "DCIM/Screenshots",
-    "DCIM",
-    "Pictures/Screenshots",
-    "Pictures",
-    "Movies",
-    "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images",
-    "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video",
-    "WhatsApp/Media/WhatsApp Images",
-    "Pictures/Telegram",
-    "Telegram/Telegram Images",
-];
-
-pub(super) fn is_media(name: &str) -> Option<bool> {
-    let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
-    match ext.as_str() {
-        "jpg" | "jpeg" | "png" | "webp" | "heic" | "heif" | "gif" => Some(false),
-        "mp4" | "mov" | "3gp" | "mkv" | "webm" => Some(true),
-        _ => None,
-    }
-}
-
-/// Every photo and video in the usual folders, newest first.
-pub(super) fn scan_photos(root: &Path) -> Result<Vec<Photo>, String> {
-    use std::os::unix::fs::MetadataExt;
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    let mut any_dir = false;
-    for rel in PHOTO_DIRS {
-        let dir = root.join(rel);
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-        any_dir = true;
-        for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') {
-                continue;
-            }
-            let Some(video) = is_media(&name) else { continue };
-            let path = e.path();
-            if !seen.insert(path.clone()) {
-                continue;
-            }
-            let Ok(m) = e.metadata() else { continue };
-            if !m.is_file() || m.len() == 0 {
-                continue;
-            }
-            out.push(Photo { path, mtime: m.mtime(), size: m.len(), source: photo_source(rel), video });
-        }
-    }
-    if !any_dir {
-        return Err("No photo folders on the phone (DCIM, Pictures). If it has photos, check KDE Connect has All files access.".into());
-    }
-    out.sort_by_key(|p| std::cmp::Reverse(p.mtime));
-    Ok(out)
-}
 
 pub(super) fn thumb_cache(path: &Path, mtime: i64, tag: &str) -> PathBuf {
     let key = crate::codec::md5_hex(format!("{}\0{mtime}\0{tag}", path.display()).as_bytes());
@@ -157,47 +88,7 @@ pub(super) fn orient(img: image::DynamicImage, o: u16) -> image::DynamicImage {
     }
 }
 
-pub(super) fn to_pixels(img: image::DynamicImage) -> Pixels {
-    let rgba = img.to_rgba8();
-    Pixels { width: rgba.width(), height: rgba.height(), rgba: Arc::new(rgba.into_raw()) }
-}
-
-/// A square thumbnail for the Photos grid: cache → EXIF thumbnail → whole file (small
-/// images only). Videos get none.
-pub(super) fn photo_thumb(path: &Path, mtime: i64) -> Option<Pixels> {
-    let cache = thumb_cache(path, mtime, "tile");
-    if let Some(img) = read_image_limited(&cache).and_then(|b| decode_limited(&b)) {
-        return Some(to_pixels(img));
-    }
-    let name = path.file_name()?.to_string_lossy().into_owned();
-    if is_media(&name)? {
-        return None;
-    }
-    let mut f = std::fs::File::open(path).ok()?;
-    let mut head = vec![0u8; 128 * 1024];
-    let n = f.read(&mut head).ok()?;
-    head.truncate(n);
-    let img = match exif_thumbnail(&head) {
-        Some((jpeg, o)) => orient(decode_limited(jpeg)?, o),
-        None => {
-            let size = f.metadata().ok()?.len();
-            if size > 24 << 20 {
-                return None;
-            }
-            f.take(24 << 20).read_to_end(&mut head).ok()?;
-            decode_limited(&head)?
-        }
-    };
-    let img = img.resize_to_fill(200, 200, image::imageops::FilterType::Triangle);
-    if let Some(d) = cache.parent() {
-        let _ = std::fs::create_dir_all(d);
-        let _ = img.save(&cache);
-        trim_phone_cache(d);
-    }
-    Some(to_pixels(img))
-}
-
-/// The newest photo, sized for the phone's screen, as a base64 JPEG.
+/// A photo (or its thumbnail), sized for the drawn phone's screen, as a base64 JPEG.
 pub(super) fn screen_image(path: &Path, mtime: i64) -> Option<String> {
     let cache = thumb_cache(path, mtime, "screen").with_extension("jpg");
     let bytes = match read_image_limited(&cache) {

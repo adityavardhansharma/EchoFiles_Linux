@@ -1,9 +1,10 @@
 //! Your Android phone in EchoFiles (design system `PhoneItem`, `PhoneHub`, `PairPhone`,
 //! `PhotosPage`, `MessagesPage`, `NotificationsPage`, `PhoneSettings`).
 //!
-//! `ef_phone` speaks KDE Connect; this module keeps what the app shows — the paired
-//! phones, battery, notifications, texts, transfers and the shared clipboard — and opens
-//! the phone's files through its SFTP server mounted with GVfs, so once it's open every
+//! `ef_phone` is the link to EchoConnect on the phone; this module keeps what the app
+//! shows — the paired phones, battery, notifications, texts, transfers and the shared
+//! clipboard — and shows the phone's files as a folder (`ef_phonefs`: our own SFTP
+//! client, pinned to the key the phone named, mounted with FUSE), so once it's open every
 //! other part of EchoFiles treats it like any folder. Views are in `phone_view.rs`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -15,15 +16,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ef_config::{self as config, PhoneNotifications};
-use ef_net::{Address, Ask, Login, Mount, Protocol, Remember, gvfs};
 use ef_phone::{Device, Event, Notification, Service, Sftp, Sms, Trusted};
+use ef_phonefs::PhoneFs;
 use iced::Task;
 use iced::futures::channel::mpsc;
 
 use crate::actions::FileMsg;
 use crate::app::{App, Message, background};
 use crate::overlay::Tone;
-use crate::thumbs::Pixels;
 
 pub const IP_ID: &str = "phone-ip";
 pub const SMS_ID: &str = "phone-sms";
@@ -102,7 +102,6 @@ pub struct PairDialog {
 pub enum Want {
     Files,
     FilesInTab,
-    Photos,
     Nothing,
 }
 
@@ -191,7 +190,7 @@ pub struct DeviceState {
     pub compose: String,
     pub sftp: Option<Sftp>,
     pub sftp_error: Option<String>,
-    pub mount: Option<(Mount, PathBuf)>,
+    pub mount: Option<(Arc<PhoneFs>, PathBuf)>,
     pub space: Option<(u64, u64)>,
     pub mounting: bool,
     pub want: Option<Want>,
@@ -250,12 +249,12 @@ pub enum PhoneMsg {
     SendPaths(Vec<PathBuf>),
     Picked(Result<Vec<PathBuf>, String>),
     Ring,
-    Mounted(Result<(Mount, PathBuf), String>),
+    Mounted(Result<(Arc<PhoneFs>, PathBuf), String>),
     ImportReady(Result<(Vec<PathBuf>, PathBuf), String>),
     SaveDirReady(Result<PathBuf, String>),
     Space(Option<(u64, u64)>),
-    PhotosLoaded(Result<Vec<Photo>, String>),
-    PhotoThumb(PathBuf, Option<Pixels>),
+    /// Ask for the photo list again after it failed.
+    RetryPhotos,
     Screen(PathBuf, Option<String>),
     PhotoToggle(PathBuf),
     PhotoOpen(PathBuf),
@@ -474,6 +473,15 @@ pub fn events() -> impl iced::futures::Stream<Item = PhoneMsg> {
     })
 }
 
+/// Where a phone's files appear: `$XDG_RUNTIME_DIR/echofiles/<phone name>` — private to
+/// the user and gone at logout. The name is the one the phone gives itself, so paths read
+/// like the sidebar; an unusable name falls back to the device id.
+fn mount_point(name: &str, id: &str) -> PathBuf {
+    let clean: String = name.chars().map(|c| if c == '/' || c.is_control() { '-' } else { c }).collect();
+    let clean = clean.trim().trim_start_matches('.');
+    config::runtime_dir().join(if clean.is_empty() { id } else { clean })
+}
+
 fn seen_file() -> PathBuf {
     config::state_dir().join("phone-seen")
 }
@@ -588,7 +596,7 @@ fn allow_firewall() -> Result<(), String> {
         .args([
             "sh",
             "-c",
-            "ufw allow 1714:1764/udp comment 'KDE Connect (EchoFiles)' && ufw allow 1714:1764/tcp comment 'KDE Connect (EchoFiles)'",
+            "ufw allow 1714:1764/udp comment 'EchoFiles phone link' && ufw allow 1714:1764/tcp comment 'EchoFiles phone link'",
         ])
         .output()
         .map_err(|e| format!("Couldn't ask for your password: {e}"))?;
@@ -644,7 +652,7 @@ impl App {
 
     /// The phone's files are mounted at this root.
     pub(crate) fn phone_mount_root(&self) -> Option<&Path> {
-        self.phone.mount.as_ref().map(|(m, _)| m.root.as_path())
+        self.phone.mount.as_ref().map(|(m, _)| m.root())
     }
 
     /// The phone's storage folder (inside the mount).
@@ -693,23 +701,7 @@ impl App {
         let online = self.phone_online(&id);
         let svc = service();
         match page {
-            PhonePage::Photos if self.settings.phone.files => {
-                if self.phone.devices.get(&id).is_some_and(|d| d.echoconnect()) {
-                    if self.phone.photos.is_none() {
-                        self.phone.photos_loading = true;
-                        if let Some(s) = svc {
-                            s.send_packet(&id, "echofiles.photos.request", ef_phone::json!({}));
-                        }
-                    }
-                    return Task::none();
-                }
-                if self.phone.mount.is_none() {
-                    return self.phone_files(Want::Photos);
-                }
-                if self.phone.photos.is_none() && !self.phone.photos_loading {
-                    return self.scan_phone_photos();
-                }
-            }
+            PhonePage::Photos if self.settings.phone.files => self.request_photos(),
             PhonePage::Messages if online && self.settings.phone.messages => {
                 if let Some(s) = svc {
                     s.request_conversations(&id);
@@ -733,18 +725,63 @@ impl App {
         Task::none()
     }
 
-    fn scan_phone_photos(&mut self) -> Task<Message> {
-        let generation = self.phone.generation;
+    /// Ask EchoConnect for its photo list (newest first), unless it's here or on its way.
+    pub(crate) fn request_photos(&mut self) {
+        if self.phone.photos.is_some() || self.phone.photos_loading || !self.settings.phone.files {
+            return;
+        }
         if let (Some(s), Some(id)) = (service(), self.phone_id())
-            && self.phone.devices.get(&id).is_some_and(|d| d.echoconnect())
+            && s.send_packet(&id, "echofiles.photos.request", ef_phone::json!({}))
         {
             self.phone.photos_loading = true;
-            s.send_packet(&id, "echofiles.photos.request", ef_phone::json!({}));
+        }
+    }
+
+    /// The photo the drawn phone shows as its lock screen: the newest camera photo.
+    fn screen_photo(&self) -> Option<(PathBuf, i64)> {
+        let Some(Ok(list)) = &self.phone.photos else { return None };
+        list.iter()
+            .find(|p| p.source == Source::Camera && !p.video)
+            .or_else(|| list.iter().find(|p| !p.video))
+            .map(|p| (p.path.clone(), p.mtime))
+    }
+
+    /// Make the lock-screen picture from the newest photo's thumbnail, fetching that
+    /// thumbnail first if it isn't here yet.
+    pub(crate) fn want_screen(&mut self) -> Task<Message> {
+        if self.settings.phone.picture != config::PhonePicture::Photo {
             return Task::none();
         }
-        let Some(root) = self.phone_storage().map(Path::to_path_buf) else { return Task::none() };
-        self.phone.photos_loading = true;
-        background(move || scan_photos(&root), move |r| scoped(generation, PhoneMsg::PhotosLoaded(r)))
+        let Some((path, mtime)) = self.screen_photo() else { return Task::none() };
+        if self.phone.screen.as_ref().is_some_and(|(p, _)| p == &path) {
+            return Task::none();
+        }
+        match self.phone.photo_thumbs.get(&path) {
+            Some(Some(iced::advanced::image::Handle::Path(_, file))) => self.screen_from(path, file.clone(), mtime),
+            Some(_) => Task::none(),
+            None => {
+                if !self.phone.thumb_wait.values().any(|(p, _)| p == &path) && !self.phone.photo_queue.iter().any(|(p, _)| p == &path) {
+                    self.phone.photo_queue.push_front((path, mtime));
+                }
+                self.pump_photo_thumbs()
+            }
+        }
+    }
+
+    /// Size the thumbnail `file` of `photo` for the drawn phone's screen.
+    pub(crate) fn screen_from(&self, photo: PathBuf, file: PathBuf, mtime: i64) -> Task<Message> {
+        let generation = self.phone.generation;
+        background(move || screen_image(&file, mtime), move |b| scoped(generation, PhoneMsg::Screen(photo.clone(), b)))
+    }
+
+    /// The newest photo's thumbnail arrived: it becomes the lock screen.
+    pub(crate) fn thumb_arrived(&self, photo: &Path, file: &Path) -> Task<Message> {
+        match self.screen_photo() {
+            Some((p, mtime)) if p == photo && self.settings.phone.picture == config::PhonePicture::Photo => {
+                self.screen_from(p, file.to_path_buf(), mtime)
+            }
+            _ => Task::none(),
+        }
     }
 
     /// Get the phone's files mounted (asking it to start its SFTP server first), then `want`.
@@ -778,38 +815,22 @@ impl App {
     fn mount_phone(&mut self, s: Sftp) -> Task<Message> {
         let generation = self.phone.generation;
         self.phone.mounting = true;
-        let address = Address {
-            protocol: Protocol::Sftp,
-            host: s.ip.clone(),
-            port: Some(s.port),
-            user: Some(s.user.clone()),
-            domain: None,
-            share: None,
-            path: String::new(),
+        let remote = ef_phonefs::Remote {
+            ip: s.ip,
+            port: s.port,
+            user: s.user,
+            password: s.password,
+            fingerprint: s.host_key_fingerprint,
+            base: s.path,
         };
-        let (user, password) = (s.user.clone(), s.password.clone());
-        let op = gvfs::next_op();
+        let at = self.phone_id().map(|id| mount_point(&self.phone_name(&id), &id));
         background(
             move || {
-                gvfs::mount(&address, op, move |ask| match ask {
-                    Ask::Login(l) => l.answer(Some(Login {
-                        user: user.clone(),
-                        domain: String::new(),
-                        password: password.clone(),
-                        anonymous: false,
-                        remember: Remember::Never,
-                    })),
-                    // GVfs owns the SSH host-key prompt; let the user review it. Text
-                    // labels and a substring fingerprint are not an authentication API.
-                    Ask::Question(q) => crate::network::forward_ask(Ask::Question(q)),
-                    Ask::Withdrawn(_) => {}
+                let at = at.ok_or("No phone is selected.")?;
+                ef_phonefs::mount(&remote, &at).map(|fs| {
+                    let root = fs.root().to_path_buf();
+                    (Arc::new(fs), root)
                 })
-                .map(|m| {
-                    let candidate = m.root.join(s.path.trim_start_matches('/'));
-                    let storage = if !s.path.is_empty() && candidate.is_dir() { candidate } else { m.root.clone() };
-                    (m, storage)
-                })
-                .map_err(|e| e.to_string())
             },
             move |r| scoped(generation, PhoneMsg::Mounted(r)),
         )
@@ -848,9 +869,6 @@ impl App {
     fn after_mount(&mut self, want: Want, storage: &Path) -> Task<Message> {
         self.phone.want = None;
         let mut tasks = Vec::new();
-        if self.phone.photos.is_none() && !self.phone.photos_loading {
-            tasks.push(self.scan_phone_photos());
-        }
         match want {
             Want::Files => {
                 let (path, reveal) = self.phone.browse_after_mount.take().unwrap_or((PathBuf::new(), None));
@@ -860,7 +878,7 @@ impl App {
                 }
             }
             Want::FilesInTab => tasks.push(self.update(Message::OpenTab(storage.to_path_buf()))),
-            Want::Photos | Want::Nothing => {}
+            Want::Nothing => {}
         }
         Task::batch(tasks)
     }
@@ -879,7 +897,7 @@ impl App {
         self.phone.mounting = false;
         self.phone.space = None;
         let Some((m, _)) = self.phone.mount.take() else { return Task::none() };
-        let root = m.root.clone();
+        let root = m.root().to_path_buf();
         let home = config::home();
         let hidden = self.show_hidden;
         let mut tasks = Vec::new();
@@ -891,17 +909,14 @@ impl App {
                 tasks.push(pane.load(home.clone(), hidden));
             }
         }
-        std::thread::spawn(move || {
-            let _ = gvfs::unmount(&m, true);
-        });
+        std::thread::spawn(move || m.unmount());
         Task::batch(tasks)
     }
 
+    /// Ask EchoConnect for queued thumbnails, a few at a time; they arrive as transfers.
     fn pump_photo_thumbs(&mut self) -> Task<Message> {
-        let generation = self.phone.generation;
-        let mut tasks = Vec::new();
         while self.phone.photo_jobs < PHOTO_JOBS {
-            let Some((p, m)) = self.phone.photo_queue.pop_front() else { break };
+            let Some((p, _)) = self.phone.photo_queue.pop_front() else { break };
             if self.phone.photo_thumbs.contains_key(&p) {
                 continue;
             }
@@ -917,10 +932,11 @@ impl App {
                 }
                 continue;
             }
-            let q = p.clone();
-            tasks.push(background(move || photo_thumb(&q, m), move |px| scoped(generation, PhoneMsg::PhotoThumb(p.clone(), px))));
+            // Not one of EchoConnect's photos: nothing to ask for.
+            self.phone.photo_jobs = self.phone.photo_jobs.saturating_sub(1);
+            self.phone.photo_thumbs.insert(p, None);
         }
-        Task::batch(tasks)
+        Task::none()
     }
 
     /// Queue thumbnails for what the Photos page shows.
@@ -989,7 +1005,7 @@ impl App {
             return Task::none();
         }
         if !self.phone_online(&id) {
-            self.toast_error(format!("{} isn't nearby", self.phone_name(&id)), "Open KDE Connect on the phone, on the same Wi-Fi.".into());
+            self.toast_error(format!("{} isn't nearby", self.phone_name(&id)), "Open EchoConnect on the phone, on the same Wi-Fi.".into());
             return Task::none();
         }
         if let Some(s) = service() {
@@ -1047,7 +1063,7 @@ impl App {
             let fingerprint = theme.to_string();
             if self.phone.last_theme != fingerprint {
                 self.phone.last_theme = fingerprint;
-                for d in self.phone.devices.values().filter(|d| d.paired && d.echoconnect()) {
+                for d in self.phone.devices.values().filter(|d| d.paired) {
                     s.send_packet(&d.id, "echofiles.theme", theme.clone());
                 }
             }
@@ -1214,5 +1230,14 @@ mod review_tests {
         assert_ne!(key, import_key("b", Some(Path::new("/mount")), &photo));
         let other = Photo { path: PathBuf::from("/mount/other/a.jpg"), ..photo.clone() };
         assert_ne!(key, import_key("a", Some(Path::new("/mount")), &other));
+    }
+
+    #[test]
+    fn mount_points_are_one_safe_folder() {
+        let base = config::runtime_dir();
+        assert_eq!(mount_point("Aditya's S24+", "abc"), base.join("Aditya's S24+"));
+        assert_eq!(mount_point("a/../b", "abc"), base.join("a-..-b"));
+        assert_eq!(mount_point("..", "abc"), base.join("abc"));
+        assert_eq!(mount_point("  ", "abc"), base.join("abc"));
     }
 }

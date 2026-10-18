@@ -3,7 +3,7 @@ name = "echoconnect-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "EchoConnect's Rust core for Android: the KDE Connect protocol (phone role) exposed to Kotlin through UniFFI"
+description = "EchoConnect's Rust core for Android: the EchoFiles link (phone role) exposed to Kotlin through UniFFI"
 
 [lib]
 name = "echoconnect"
@@ -16,6 +16,7 @@ path = "src/bindgen.rs"
 [dependencies]
 ef-phone.workspace = true
 getrandom = "0.3"
+rustix.workspace = true
 russh = "0.63.3"
 russh-sftp = "3.0.1"
 serde_json = "1"

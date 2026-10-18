@@ -20,9 +20,7 @@ impl App {
                         state.want = None;
                     }
                     if let PhoneMsg::Mounted(Ok((m, _))) = *inner {
-                        std::thread::spawn(move || {
-                            let _ = gvfs::unmount(&m, true);
-                        });
+                        std::thread::spawn(move || m.unmount());
                     }
                     return Task::none();
                 }
@@ -34,9 +32,7 @@ impl App {
                 return task;
             }
             if let PhoneMsg::Mounted(Ok((m, _))) = *inner {
-                std::thread::spawn(move || {
-                    let _ = gvfs::unmount(&m, true);
-                });
+                std::thread::spawn(move || m.unmount());
             }
             return Task::none();
         }
@@ -213,7 +209,7 @@ impl App {
                 }
                 self.phone.last_image = bytes.clone();
                 if let Some(s) = service() {
-                    for d in self.phone.devices.values().filter(|d| d.paired && d.echoconnect()) {
+                    for d in self.phone.devices.values().filter(|d| d.paired) {
                         if bytes.len() <= 48 * 1024 {
                             s.send_packet(
                                 &d.id,
@@ -330,7 +326,8 @@ impl App {
                     }
                     (None, _) => self.toast_error(
                         "That isn't an IP address".into(),
-                        "Type the phone's address, like 192.168.1.20. KDE Connect shows it under its own device name.".into(),
+                        "Type the phone's address, like 192.168.1.20 — it's in the phone's Wi-Fi settings, under the network's details."
+                            .into(),
                     ),
                     _ => {}
                 }
@@ -390,7 +387,7 @@ impl App {
                 let t = self.after_mount(want, &storage);
                 let s2 = storage.clone();
                 let space = background(move || crate::phone_view::fs_space(&s2), move |r| scoped(generation, PhoneMsg::Space(r)));
-                Task::batch([t, space, crate::network::refresh_mounts_task()])
+                Task::batch([t, space])
             }
             PhoneMsg::Space(s) => {
                 self.phone.space = s;
@@ -402,45 +399,21 @@ impl App {
                 let wanted = self.phone.want.take().is_some_and(|w| w != Want::Nothing);
                 self.phone.sftp_error = Some(e.clone());
                 if wanted {
-                    self.toast_error(
-                        "Couldn't open the phone's files".into(),
-                        format!("{e} Check that Filesystem expose is on in KDE Connect."),
-                    );
+                    self.toast_error("Couldn't open the phone's files".into(), e.clone());
                 }
                 Task::none()
             }
-            PhoneMsg::PhotosLoaded(r) => {
-                let generation = self.phone.generation;
+            PhoneMsg::RetryPhotos => {
+                self.phone.photos = None;
                 self.phone.photos_loading = false;
-                let newest = match &r {
-                    Ok(list) => list
-                        .iter()
-                        .find(|p| p.source == Source::Camera && !p.video)
-                        .or_else(|| list.iter().find(|p| !p.video))
-                        .map(|p| (p.path.clone(), p.mtime)),
-                    Err(_) => None,
-                };
-                self.phone.photos = Some(r);
-                let mut tasks = vec![self.want_photo_thumbs()];
-                if let Some((path, mtime)) = newest
-                    && self.phone.screen.as_ref().is_none_or(|(p, _)| p != &path)
-                {
-                    let q = path.clone();
-                    tasks.push(background(move || screen_image(&q, mtime), move |b| scoped(generation, PhoneMsg::Screen(path.clone(), b))));
-                }
-                Task::batch(tasks)
+                self.request_photos();
+                Task::none()
             }
             PhoneMsg::Screen(path, b64) => {
                 if let Some(b) = b64 {
                     self.phone.screen = Some((path, b));
                 }
                 Task::none()
-            }
-            PhoneMsg::PhotoThumb(path, px) => {
-                self.phone.photo_jobs = self.phone.photo_jobs.saturating_sub(1);
-                let h = px.map(|px| iced::advanced::image::Handle::from_rgba(px.width, px.height, (*px.rgba).clone()));
-                self.phone.photo_thumbs.insert(path, h);
-                self.pump_photo_thumbs()
             }
             PhoneMsg::PhotoToggle(p) => {
                 if !self.phone.photo_sel.remove(&p) {
@@ -691,9 +664,7 @@ impl App {
                         state.photos = None;
                         state.photos_loading = false;
                         if let Some((m, _)) = state.mount.take() {
-                            std::thread::spawn(move || {
-                                let _ = gvfs::unmount(&m, true);
-                            });
+                            std::thread::spawn(move || m.unmount());
                         }
                     }
                 }

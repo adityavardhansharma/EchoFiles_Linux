@@ -1,0 +1,16 @@
+[package]
+name = "echofiles-phonefs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The phone's files as a folder: an SFTP client pinned to EchoConnect's host key, mounted with FUSE"
+
+[lib]
+name = "ef_phonefs"
+
+[dependencies]
+fuser = "0.18"
+libc = "0.2"
+russh = "0.63.3"
+russh-sftp = "3.0.1"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "time", "sync"] }

@@ -1,6 +1,7 @@
 //! Discovery, links and packets.
 //!
-//! Connection set-up, as KDE Connect does it: whoever hears the other's UDP identity opens
+//! Connection set-up (the KDE Connect protocol, version 8, which the link is built on):
+//! whoever hears the other's UDP identity opens
 //! the TCP connection, sends its identity in plain text and becomes the TLS *server*; the
 //! side that accepted reads that identity and becomes the TLS *client*. With protocol 8
 //! both then send their identity again inside TLS. Each link is one thread that writes
@@ -38,6 +39,10 @@ const MAX_LINE: usize = 8 << 20;
 /// Before pairing only identity and pair packets are expected: small ones. Anyone on the
 /// network can open a link, so they don't get to make us buffer megabytes.
 const MAX_UNPAIRED_LINE: usize = 64 << 10;
+/// EchoFiles only links with EchoConnect (and EchoConnect only with EchoFiles): a peer
+/// that lists none of the `echofiles.*` packets — stock KDE Connect, GSConnect — is
+/// turned away before it can pair or show up.
+const NOT_OURS: &str = "not EchoFiles or EchoConnect";
 
 /// Packet types both ends send. Most are a request and its reply sharing one type
 /// (`echofiles.files.list`, `echofiles.photos.read`…), or a feature that runs both ways
@@ -110,8 +115,8 @@ pub enum Role {
 
 impl Role {
     /// What this end sends, and so what the other end accepts (each side enables a
-    /// feature when the other lists its packets). `echofiles.*` are EchoConnect's own;
-    /// stock KDE Connect ignores them.
+    /// feature when the other lists its packets). Listing `echofiles.*` is also how each
+    /// end knows the other is EchoFiles or EchoConnect.
     fn sends(self) -> Vec<&'static str> {
         let own = match self {
             Role::Laptop => LAPTOP_ONLY,
@@ -597,7 +602,7 @@ impl Service {
         }
     }
 
-    /// Connect straight to a phone's KDE Connect port (1716 unless it says otherwise) —
+    /// Connect straight to a phone's link port (1716 unless it says otherwise) —
     /// the way in when broadcasts don't get through.
     pub fn connect_to(&self, to: SocketAddr) {
         connect_bounded(&self.inner, to);
@@ -1078,6 +1083,9 @@ fn run_link<S: Sock>(
             && let Some(body) = pending_plain.take()
         {
             let d = device_from(&body, ip, &cert, &identity::trusted(&inner.dir));
+            if !d.echoconnect() {
+                break Err(io::Error::other(NOT_OURS));
+            }
             if !register(&d, &tx) {
                 break Err(io::Error::other("identity certificate mismatch"));
             }
@@ -1104,6 +1112,9 @@ fn run_link<S: Sock>(
                             return Ok(());
                         }
                         pending_plain = None;
+                        if !d.echoconnect() {
+                            return Err(io::Error::other(NOT_OURS));
+                        }
                         if !register(&d, &tx) {
                             return Err(io::Error::other("identity certificate mismatch"));
                         }

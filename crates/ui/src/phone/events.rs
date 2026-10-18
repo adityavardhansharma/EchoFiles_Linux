@@ -84,8 +84,11 @@ impl App {
                     {
                         s.send_clipboard(&id, &self.phone.clip_last, true, false);
                     }
-                    if self.settings.phone.files && self.phone.mount.is_none() && Some(&id) == self.phone_id().as_ref() {
-                        return self.phone_files(Want::Nothing);
+                    if self.settings.phone.files && Some(&id) == self.phone_id().as_ref() {
+                        self.request_photos();
+                        if self.phone.mount.is_none() {
+                            return self.phone_files(Want::Nothing);
+                        }
                     }
                 }
                 Task::none()
@@ -98,9 +101,7 @@ impl App {
                     state.mounting = false;
                     state.want = None;
                     if let Some((m, _)) = state.mount.take() {
-                        std::thread::spawn(move || {
-                            let _ = gvfs::unmount(&m, true);
-                        });
+                        std::thread::spawn(move || m.unmount());
                     }
                 }
                 if self.phone.active_id == id {
@@ -165,9 +166,7 @@ impl App {
                 if let Some(state) = self.phone.states.remove(&id)
                     && let Some((m, _)) = state.mount
                 {
-                    std::thread::spawn(move || {
-                        let _ = gvfs::unmount(&m, true);
-                    });
+                    std::thread::spawn(move || m.unmount());
                 }
                 let index = config::state_dir().join("phone-index").join(format!("{id}.jsonl"));
                 std::thread::spawn(move || {
@@ -323,10 +322,7 @@ impl App {
                         let wanted = self.phone.want.take().is_some_and(|w| w != Want::Nothing);
                         self.phone.sftp_error = Some(e.clone());
                         if wanted {
-                            self.toast_error(
-                                "The phone didn't share its files".into(),
-                                format!("{e} In KDE Connect, turn on Filesystem expose and allow All files access."),
-                            );
+                            self.toast_error("The phone didn't share its files".into(), e.clone());
                         }
                         Task::none()
                     }
@@ -568,6 +564,10 @@ impl App {
                             self.phone.photo_thumbs.insert(path, None);
                             return self.pump_photo_thumbs();
                         }
+                        // The list itself failed: the Photos page says so, with Try again.
+                        if self.phone.photos.is_none() {
+                            self.phone.photos = Some(Err(self.phone.extra_status.clone()));
+                        }
                     }
                     "echofiles.photos" => {
                         let mut photos = match self.phone.photos.take() {
@@ -607,7 +607,8 @@ impl App {
                         }
                         photos.sort_by_key(|p| std::cmp::Reverse(p.mtime));
                         self.phone.photos = Some(Ok(photos));
-                        return self.want_photo_thumbs();
+                        let thumbs = self.want_photo_thumbs();
+                        return Task::batch([thumbs, self.want_screen()]);
                     }
                     "echofiles.files.list" if self.settings.phone.phone_index => {
                         if let Some(mut scan) = self.phone.index_scan.take() {
@@ -668,8 +669,9 @@ impl App {
                 }
                 if let Some(remote) = self.phone.remote_thumb.remove(&transfer) {
                     self.phone.photo_jobs = self.phone.photo_jobs.saturating_sub(1);
-                    self.phone.photo_thumbs.insert(remote, result.as_ref().ok().map(iced::advanced::image::Handle::from_path));
-                    return self.pump_photo_thumbs();
+                    self.phone.photo_thumbs.insert(remote.clone(), result.as_ref().ok().map(iced::advanced::image::Handle::from_path));
+                    let screen = result.as_ref().map_or_else(|_| Task::none(), |file| self.thumb_arrived(&remote, file));
+                    return Task::batch([self.pump_photo_thumbs(), screen]);
                 }
                 if let Some(kind) = self.phone.payloads.remove(&transfer) {
                     if result.is_err() && kind == "photo-copy" {

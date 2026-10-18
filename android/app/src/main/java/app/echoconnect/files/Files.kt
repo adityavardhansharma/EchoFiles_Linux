@@ -37,7 +37,7 @@ object Files : Plugin {
 
     override fun onPacket(ctx: Context, laptop: String, type: String, body: JSONObject) {
         if (!Prefs.on(ctx, "files") || !allowed()) {
-            Connect.send(type, JSONObject().put("requestId", body.optString("requestId")).put("error", "Enable Files and All files access on your phone"), laptop)
+            fail(laptop, type, body, "Turn on Files in EchoConnect and allow All files access on the phone.")
             return
         }
         Work.run {
@@ -52,8 +52,18 @@ object Files : Plugin {
                 }
                 "echofiles.files.read" -> Connect.sendFile(resolve(body.getString("path")), "echofiles.files.read", body)
             } } catch (error: Exception) {
-                Connect.send(type, JSONObject().put("requestId", body.optString("requestId")).put("error", error.message ?: "Could not read shared storage"), laptop)
+                fail(laptop, type, body, error.message ?: "Could not read shared storage")
             }
+        }
+    }
+
+    /** Say why a request failed, in the reply EchoFiles waits for: the file server's answer
+     *  (`kdeconnect.sftp` with `errorMessage`), or the request's own type with `error`. */
+    private fun fail(laptop: String, type: String, body: JSONObject, message: String) {
+        if (type == "kdeconnect.sftp.request") {
+            Connect.send("kdeconnect.sftp", JSONObject().put("errorMessage", message), laptop)
+        } else {
+            Connect.send(type, JSONObject().put("requestId", body.optString("requestId")).put("error", message), laptop)
         }
     }
     override fun onIncoming(ctx: Context, laptop: String, transfer: Long, name: String, size: Long, type: String, body: JSONObject): Boolean {

@@ -1,4 +1,4 @@
-//! TLS the KDE Connect way: both ends present self-signed certificates and accept any
+//! TLS as the link protocol does it: both ends present self-signed certificates and accept any
 //! certificate during the handshake. Trust is decided afterwards, by comparing the peer's
 //! certificate with the one it paired with (`identity::trusted`).
 

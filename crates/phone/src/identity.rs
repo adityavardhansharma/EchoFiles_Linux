@@ -1,4 +1,4 @@
-//! This laptop's KDE Connect identity (device id, certificate, key) and the phones it trusts.
+//! This device's link identity (device id, certificate, key) and the devices it trusts.
 //!
 //! Everything lives in `~/.config/echofiles/phone/`: an atomically published mode-600
 //! `identity.json` bundle (legacy split identities remain readable), and `trusted/<device id>` — one file per paired phone
@@ -61,8 +61,8 @@ pub fn host_name() -> String {
     if name.trim().is_empty() { "EchoFiles".into() } else { name }
 }
 
-/// Load the identity, making one the first time (32 hex characters, the form current
-/// KDE Connect expects; the certificate's common name is the device id).
+/// Load the identity, making one the first time (32 hex characters, the form the link
+/// protocol expects; the certificate's common name is the device id).
 pub fn load_or_create(d: &Path) -> io::Result<Identity> {
     std::fs::create_dir_all(d)?;
     let lock = std::fs::OpenOptions::new()
@@ -114,8 +114,8 @@ pub fn load_or_create(d: &Path) -> io::Result<Identity> {
     let key = rcgen::KeyPair::generate().map_err(|e| io::Error::other(e.to_string()))?;
     let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).map_err(|e| io::Error::other(e.to_string()))?;
     params.distinguished_name.push(rcgen::DnType::CommonName, id.clone());
-    params.distinguished_name.push(rcgen::DnType::OrganizationName, "KDE");
-    params.distinguished_name.push(rcgen::DnType::OrganizationalUnitName, "KDE Connect");
+    params.distinguished_name.push(rcgen::DnType::OrganizationName, "EchoFiles");
+    params.distinguished_name.push(rcgen::DnType::OrganizationalUnitName, "EchoConnect");
     params.not_before = rcgen::date_time_ymd(2024, 1, 1);
     params.not_after = rcgen::date_time_ymd(2034, 1, 1);
     let cert = params.self_signed(&key).map_err(|e| io::Error::other(e.to_string()))?;

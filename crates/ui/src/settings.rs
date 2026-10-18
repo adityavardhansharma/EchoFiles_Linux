@@ -1056,7 +1056,7 @@ impl App {
         let this = match self.phone_id() {
             None => vec![self.setting(
                 "No phone yet",
-                "Pair your Android phone over Wi-Fi with the free KDE Connect app.",
+                "Pair your Android phone over Wi-Fi with the EchoConnect app.",
                 w::text_button(p, &self.icons, "Connect phone", Some("phone"), None, Variant::Primary, Some(ph(PhoneMsg::Dialog(true)))),
             )],
             Some(id) => {
@@ -1122,7 +1122,7 @@ impl App {
             vec![
                 self.setting(
                     "Files and photos",
-                    "Browse the phone in the sidebar and copy both ways. Needs Filesystem expose on in KDE Connect.",
+                    "Browse the phone in the sidebar and copy both ways. EchoConnect needs All files access on the phone.",
                     sw(s.files, PhoneMsg::SetFiles),
                 ),
                 self.setting(
@@ -1235,7 +1235,7 @@ impl App {
         self.page(
             self.page_head(
                 "Phone",
-                "Your Android phone over Wi-Fi, through the KDE Connect app. Features you turn off stop on both devices.",
+                "Your Android phone over Wi-Fi, through the EchoConnect app. Features you turn off stop on both devices.",
             ),
             groups,
         )
