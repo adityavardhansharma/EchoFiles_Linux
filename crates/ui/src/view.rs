@@ -62,7 +62,7 @@ impl App {
         let home = config::home();
         let phone = self.phone_storage().filter(|s| location.starts_with(s)).map(Path::to_path_buf);
         let (base, mut out) = if let Some(storage) = phone {
-            // The phone's storage: its name, never kdeconnect@192.168.….
+            // The phone's storage: its name, never the mount folder's path.
             let rest = location.strip_prefix(&storage).unwrap_or(Path::new("")).to_path_buf();
             let name = self.phone_id().map(|i| self.phone_name(&i)).unwrap_or_else(|| "Phone".into());
             (rest, vec![(Some("phone"), name, storage)])
@@ -831,11 +831,14 @@ impl App {
         let renaming = self.rename.as_ref().filter(|r| r.pane == pane.id).and_then(|r| r.pos);
         let editor: Option<Element<'a, Message>> = self.rename.as_ref().filter(|_| renaming.is_some()).map(|r| {
             let pal = self.palette.clone();
+            // In the grid the field stands in for the centred label, so it matches it.
+            let (size, align) = if pane.grid { (style::META, Alignment::Center) } else { (style::BODY, Alignment::Start) };
             text_input("", &r.value)
                 .id(RENAME_ID)
                 .on_input(|v| Message::File(FileMsg::RenameDraft(v)))
                 .on_submit(Message::File(FileMsg::RenameCommit))
-                .size(style::BODY)
+                .size(size)
+                .align_x(align)
                 .font(style::FONT)
                 .padding([3, 6])
                 .style(move |_, _| text_input::Style {
@@ -871,6 +874,7 @@ impl App {
                 active,
                 dragging: self.drag.is_some(),
                 renaming,
+                rename_chars: self.rename.as_ref().map_or(0, |r| r.value.chars().count()),
                 thumb,
                 highlight: if pane.everywhere() { "" } else { pane.query.trim() },
             },
