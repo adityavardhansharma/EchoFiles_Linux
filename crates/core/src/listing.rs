@@ -180,6 +180,15 @@ pub fn open_dir(dir: &Path) -> io::Result<OwnedFd> {
 
 /// Phase A: names and types only. Enough to paint the first frame.
 pub fn read_names(dir: &Path, fd: &OwnedFd) -> io::Result<Listing> {
+    read_names_with(dir, fd, std::time::Duration::MAX, |_| {})
+}
+
+/// Phase A, handing `partial` the names read so far every `every` while reading takes
+/// that long — a phone folder arrives in batches over Wi-Fi, so it can be painted as it
+/// comes. A local folder is read long before the first hand-over.
+pub fn read_names_with(dir: &Path, fd: &OwnedFd, every: std::time::Duration, mut partial: impl FnMut(&Listing)) -> io::Result<Listing> {
+    let started = std::time::Instant::now();
+    let mut next = every;
     let mut listing = Listing { dir: dir.to_path_buf(), ..Default::default() };
     let mut buf: Vec<MaybeUninit<u8>> = Vec::with_capacity(DENTS_BUF);
     buf.resize(DENTS_BUF, MaybeUninit::uninit());
@@ -198,6 +207,10 @@ pub fn read_names(dir: &Path, fd: &OwnedFd) -> io::Result<Listing> {
             _ => Kind::Other,
         };
         listing.push(name, kind);
+        if listing.len() % 64 == 0 && started.elapsed() >= next {
+            partial(&listing);
+            next = started.elapsed() + every;
+        }
     }
     if listing.name_off.is_empty() {
         listing.name_off.push(0);

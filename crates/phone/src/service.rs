@@ -56,6 +56,7 @@ const BOTH_SEND: &[&str] = &[
     "echofiles.dnd",
     "echofiles.files.list",
     "echofiles.files.read",
+    "echofiles.files.thumb",
     "echofiles.files.write",
     "echofiles.photos.read",
     "echofiles.settings",

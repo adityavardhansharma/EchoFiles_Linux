@@ -24,6 +24,7 @@ use iced::futures::channel::mpsc;
 use crate::actions::FileMsg;
 use crate::app::{App, Message, background};
 use crate::overlay::Tone;
+use crate::thumbs::Pixels;
 
 pub const IP_ID: &str = "phone-ip";
 pub const SMS_ID: &str = "phone-sms";
@@ -299,6 +300,87 @@ pub enum PhoneMsg {
 }
 
 static SERVICE: OnceLock<Service> = OnceLock::new();
+
+/// The mounted phone, for thumbnail jobs off the UI thread: its id, where its files are,
+/// and whether its EchoConnect makes thumbnails by path.
+static THUMB_TARGET: Mutex<Option<(String, PathBuf, bool)>> = Mutex::new(None);
+/// Thumbnail requests waiting for the phone: request id → where to hand the picture file.
+static THUMB_WAIT: OnceLock<Mutex<HashMap<String, std::sync::mpsc::SyncSender<Result<PathBuf, String>>>>> = OnceLock::new();
+/// Incoming thumbnail transfers → their request ids.
+static THUMB_TRANSFERS: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
+static THUMB_NEXT: AtomicU64 = AtomicU64::new(1);
+
+fn thumb_wait() -> &'static Mutex<HashMap<String, std::sync::mpsc::SyncSender<Result<PathBuf, String>>>> {
+    THUMB_WAIT.get_or_init(Default::default)
+}
+
+fn thumb_transfers() -> &'static Mutex<HashMap<u64, String>> {
+    THUMB_TRANSFERS.get_or_init(Default::default)
+}
+
+pub(crate) fn set_thumb_target(target: Option<(String, PathBuf, bool)>) {
+    *THUMB_TARGET.lock().unwrap() = target;
+}
+
+/// A thumbnail for `p` if it's on the mounted phone (`None` when it isn't): EchoConnect's
+/// own small picture when it makes them, else the camera preview from the file's first
+/// bytes — never the whole photo over Wi-Fi.
+pub(crate) fn phone_thumb(p: &Path, cancel: &std::sync::atomic::AtomicBool) -> Option<Option<Pixels>> {
+    let (id, root, by_path) = THUMB_TARGET.lock().unwrap().clone()?;
+    let rel = p.strip_prefix(&root).ok()?.to_string_lossy().into_owned();
+    if by_path && let Some(px) = ask_thumb(&id, &rel, cancel) {
+        return Some(Some(px));
+    }
+    Some(crate::thumbs::head_preview(p))
+}
+
+/// Ask EchoConnect for `rel`'s thumbnail and wait (up to 15 s, or until cancelled).
+fn ask_thumb(id: &str, rel: &str, cancel: &std::sync::atomic::AtomicBool) -> Option<Pixels> {
+    let request = format!("thumb-{}", THUMB_NEXT.fetch_add(1, Ordering::Relaxed));
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    thumb_wait().lock().unwrap().insert(request.clone(), tx);
+    let sent = service().is_some_and(|s| s.send_packet(id, "echofiles.files.thumb", ef_phone::json!({"path": rel, "requestId": request})));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let got = sent
+        .then(|| {
+            loop {
+                if cancel.load(Ordering::Relaxed) {
+                    break None;
+                }
+                match rx.recv_timeout(Duration::from_millis(200)) {
+                    Ok(r) => break r.ok(),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline => {}
+                    Err(_) => break None,
+                }
+            }
+        })
+        .flatten();
+    thumb_wait().lock().unwrap().remove(&request);
+    let file = got?;
+    let px = crate::thumbs::small_image(&file);
+    let _ = std::fs::remove_file(&file);
+    px
+}
+
+/// Whether a thumbnail request is still waiting (so its picture is worth taking).
+pub(crate) fn thumb_wanted(request: &str) -> bool {
+    thumb_wait().lock().unwrap().contains_key(request)
+}
+
+/// The picture (or the phone's error) for a thumbnail request.
+pub(crate) fn thumb_answer(request: &str, result: Result<PathBuf, String>) {
+    match thumb_wait().lock().unwrap().remove(request) {
+        Some(tx) => {
+            let _ = tx.try_send(result);
+        }
+        // Nobody waits any more (scrolled away): don't keep the file.
+        None => {
+            if let Ok(f) = result {
+                let _ = std::fs::remove_file(f);
+            }
+        }
+    }
+}
 static EVENTS: OnceLock<Mutex<Option<mpsc::UnboundedReceiver<PhoneMsg>>>> = OnceLock::new();
 static EVENT_TX: OnceLock<mpsc::UnboundedSender<PhoneMsg>> = OnceLock::new();
 
@@ -896,6 +978,7 @@ impl App {
         self.phone.sftp = None;
         self.phone.mounting = false;
         self.phone.space = None;
+        set_thumb_target(None);
         let Some((m, _)) = self.phone.mount.take() else { return Task::none() };
         let root = m.root().to_path_buf();
         let home = config::home();

@@ -354,6 +354,18 @@ impl App {
                     }
                     return Task::none();
                 }
+                if kind == "echofiles.files.thumb" {
+                    let request = body["requestId"].as_str().unwrap_or("").to_string();
+                    if let Some(s) = service() {
+                        if thumb_wanted(&request) {
+                            thumb_transfers().lock().unwrap().insert(transfer, request);
+                            s.accept_file(transfer, config::state_dir().join("phone-file-thumbs"));
+                        } else {
+                            s.reject_file(transfer);
+                        }
+                    }
+                    return Task::none();
+                }
                 if kind == "echofiles.photos.thumb" {
                     if let Some(path) = self.phone.remote_ids.get(&body["id"].as_u64().unwrap_or(0)).cloned() {
                         self.phone.thumb_wait.remove(&body["id"].as_u64().unwrap_or(0));
@@ -441,6 +453,12 @@ impl App {
             }
             Event::Other { id, kind, body } => {
                 match kind.as_str() {
+                    // A thumbnail the phone couldn't make (no payload, just why).
+                    "echofiles.files.thumb" => {
+                        if let Some(request) = body["requestId"].as_str() {
+                            thumb_answer(request, Err(body["error"].as_str().unwrap_or("No thumbnail").to_string()));
+                        }
+                    }
                     "echofiles.clipboard.image.inline" if self.settings.phone.clipboard => {
                         let data = body["data"].as_str().unwrap_or("");
                         if data.len() <= 65536
@@ -640,6 +658,7 @@ impl App {
                 // Photo thumbnails and clipboard images are the app's own traffic, not files
                 // you sent or received; they stay out of "Received from phone".
                 let internal = self.phone.remote_thumb.contains_key(&transfer)
+                    || thumb_transfers().lock().unwrap().contains_key(&transfer)
                     || self.phone.payloads.get(&transfer).is_some_and(|k| k == "echofiles.clipboard.image");
                 if !internal {
                     self.phone.moved.insert(0, Moved { transfer, name, size, upload, done, result: None, at: SystemTime::now() });
@@ -648,6 +667,11 @@ impl App {
                 Task::none()
             }
             Event::TransferDone { id, transfer, upload, result } => {
+                let thumb = thumb_transfers().lock().unwrap().remove(&transfer);
+                if let Some(request) = thumb {
+                    thumb_answer(&request, result);
+                    return Task::none();
+                }
                 // Mark the row finished first: some branches below return early, which left
                 // finished transfers showing a full progress bar forever.
                 if let Some(m) = self.phone.moved.iter_mut().find(|m| m.transfer == transfer) {

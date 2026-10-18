@@ -20,7 +20,7 @@ pub type Job = (PathBuf, i64, Arc<AtomicBool>);
 use iced::advanced::image::Handle;
 
 const SIZE: u32 = 128;
-const MAX_JOBS: usize = 2;
+const MAX_JOBS: usize = 4;
 // Every cached handle is at most SIZE² RGBA bytes (32 MiB at this entry budget).
 const KEEP: usize = 512;
 
@@ -271,6 +271,26 @@ fn write_cached(file: &Path, px: &Pixels, uri: &str, mtime: i64) {
     }
 }
 
+/// A small picture file (the phone's own thumbnail) as a grid thumbnail.
+pub(crate) fn small_image(file: &Path) -> Option<Pixels> {
+    let t = image::open(file).ok()?.thumbnail(SIZE, SIZE).to_rgba8();
+    Some(Pixels { width: t.width(), height: t.height(), rgba: std::sync::Arc::new(t.into_raw()) })
+}
+
+/// The camera's preview embedded in a JPEG, read from its first 128 KB only (a phone
+/// photo is several MB over Wi-Fi). None for other files or when it has no preview.
+pub(crate) fn head_preview(p: &Path) -> Option<Pixels> {
+    use std::io::Read;
+    if !matches!(ext(p).as_str(), "jpg" | "jpeg" | "jfif") {
+        return None;
+    }
+    let mut data = Vec::with_capacity(128 << 10);
+    std::fs::File::open(p).ok()?.take(128 << 10).read_to_end(&mut data).ok()?;
+    let t = image::load_from_memory_with_format(crate::jpeg::exif_thumbnail(&data)?, image::ImageFormat::Jpeg).ok()?;
+    let t = t.thumbnail(SIZE, SIZE).to_rgba8();
+    Some(Pixels { width: t.width(), height: t.height(), rgba: std::sync::Arc::new(t.into_raw()) })
+}
+
 fn decode(p: &Path) -> Option<Pixels> {
     // Big JPEGs (photos): their 1/8-scale DC image is enough for a thumbnail and many
     // times faster to get than a full decode.
@@ -405,12 +425,19 @@ fn load_uncropped(p: &Path, mtime: i64, cancel: &AtomicBool) -> Option<Pixels> {
     if std::fs::read_to_string(&fail).is_ok_and(|m| m.trim().parse::<i64>().ok() == Some(mtime)) {
         return None;
     }
-    let px = if DECODE.contains(&ext(p).as_str()) { decode(p) } else { run_thumbnailer(p, &u, cancel) };
+    // On the phone: its own thumbnail, never the whole file over Wi-Fi.
+    let (px, phone) = match crate::phone::phone_thumb(p, cancel) {
+        Some(px) => (px, true),
+        None => (if DECODE.contains(&ext(p).as_str()) { decode(p) } else { run_thumbnailer(p, &u, cancel) }, false),
+    };
     if cancel.load(Ordering::Relaxed) {
         return None;
     }
     match &px {
         Some(px) => write_cached(&base.join("normal").join(&name), px, &u, mtime),
+        // A phone thumbnail can fail for now (older EchoConnect, phone asleep) and work
+        // later: no failure record for those.
+        None if phone => {}
         None => {
             let _ = std::fs::create_dir_all(base.join("fail/echofiles"));
             let _ = std::fs::write(&fail, mtime.to_string());

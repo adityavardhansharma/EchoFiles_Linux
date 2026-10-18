@@ -1,15 +1,21 @@
 package app.echoconnect.files
 
+import android.content.ContentUris
 import android.content.Context
+import android.graphics.Bitmap
+import android.media.ThumbnailUtils
 import android.os.Build
+import android.provider.MediaStore
+import android.util.Size
 import android.os.Environment
 import app.echoconnect.*
 import org.json.JSONObject
 import org.json.JSONArray
+import java.io.ByteArrayOutputStream
 import java.io.File
 
 object Files : Plugin {
-    override val handles = setOf("kdeconnect.sftp.request", "echofiles.files.list", "echofiles.files.read", "echofiles.files.write")
+    override val handles = setOf("kdeconnect.sftp.request", "echofiles.files.list", "echofiles.files.read", "echofiles.files.write", "echofiles.files.thumb")
     fun allowed() = Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
     @Suppress("DEPRECATION") private fun root() = Environment.getExternalStorageDirectory().canonicalFile
     private fun resolve(path: String): File {
@@ -51,10 +57,34 @@ object Files : Plugin {
                     Connect.send("echofiles.files.list", JSONObject().put("requestId", body.optString("requestId")).put("path", body.optString("path")).put("entries", entries).put("next", if (offset + 500 < files.size) offset + 500 else -1), laptop)
                 }
                 "echofiles.files.read" -> Connect.sendFile(resolve(body.getString("path")), "echofiles.files.read", body)
+                "echofiles.files.thumb" -> {
+                    val file = resolve(body.getString("path"))
+                    val bitmap = thumbnail(ctx, file)
+                    val out = ByteArrayOutputStream(); bitmap.compress(Bitmap.CompressFormat.JPEG, 80, out); bitmap.recycle()
+                    Connect.sendBytes("echofiles.files.thumb", JSONObject().put("requestId", body.optString("requestId")).put("path", body.getString("path")).put("filename", "thumb.jpg"), out.toByteArray())
+                }
             } } catch (error: Exception) {
                 fail(laptop, type, body, error.message ?: "Could not read shared storage")
             }
         }
+    }
+
+    private val videoExtensions = setOf("mp4", "mov", "3gp", "mkv", "webm")
+
+    /** A small picture of [file] for EchoFiles' grid: Android's own cached thumbnail when
+     *  the media library knows the file (no decoding at all), else one made from the file. */
+    private fun thumbnail(ctx: Context, file: File): Bitmap {
+        val size = Size(256, 256)
+        val id = runCatching {
+            ctx.contentResolver.query(MediaStore.Files.getContentUri("external"), arrayOf("_id"), "_data = ?", arrayOf(file.path), null)
+                ?.use { c -> if (c.moveToFirst()) c.getLong(0) else null }
+        }.getOrNull()
+        if (id != null) {
+            runCatching { ctx.contentResolver.loadThumbnail(ContentUris.withAppendedId(MediaStore.Files.getContentUri("external"), id), size, null) }
+                .getOrNull()?.let { return it }
+        }
+        return if (file.extension.lowercase() in videoExtensions) ThumbnailUtils.createVideoThumbnail(file, size, null)
+        else ThumbnailUtils.createImageThumbnail(file, size, null)
     }
 
     /** Say why a request failed, in the reply EchoFiles waits for: the file server's answer

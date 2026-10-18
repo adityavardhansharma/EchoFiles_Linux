@@ -30,8 +30,15 @@ use russh_sftp::protocol::{FileAttributes, OpenFlags as Open, StatusCode};
 
 /// How long the kernel may keep names and attributes before asking again.
 const TTL: Duration = Duration::from_secs(1);
-/// Attributes learned from a listing answer lookups this long without a round trip.
-const FRESH: Duration = Duration::from_secs(2);
+/// Attributes learned from a listing answer lookups this long without a round trip. Long
+/// enough to outlast a big folder's listing, so the file manager's stat of each entry
+/// that follows doesn't go back to the phone.
+const FRESH: Duration = Duration::from_secs(10);
+/// A finished listing is reused while its folder's modified time is unchanged, for at most
+/// this long (an edit inside a file doesn't touch the folder's time).
+const CACHE_FOR: Duration = Duration::from_secs(600);
+/// Most entries handed over per readdir call (the kernel asks again for the rest).
+const READDIR_MAX: usize = 512;
 /// Largest read the phone's server answers in one reply.
 const READ_PIECE: u32 = 256 * 1024;
 /// Writes go out in pieces this big, all in flight at once.
@@ -123,6 +130,7 @@ pub fn mount(remote: &Remote, at: &Path) -> Result<PhoneFs, String> {
         open: Arc::new(Mutex::new(HashMap::new())),
         dirs: Arc::new(Mutex::new(HashMap::new())),
         next_fh: AtomicU64::new(1),
+        cache: Arc::new(Mutex::new(HashMap::new())),
         uid: unsafe { libc::getuid() },
         gid: unsafe { libc::getgid() },
     };
@@ -312,8 +320,61 @@ fn parent_of(path: &str) -> &str {
 
 // ------------------------------------------------------------------------------ filesystem
 
-/// A directory's entries and their attributes, as read at opendir.
-type Listing = Arc<Vec<(String, FileAttributes)>>;
+type Entries = Vec<(String, FileAttributes)>;
+
+/// An open directory's listing, filled as the phone's batches arrive so the first entries
+/// can be shown before the last are statted.
+struct Dir {
+    path: String,
+    state: Mutex<DirState>,
+    changed: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct DirState {
+    entries: Entries,
+    done: bool,
+    error: Option<Errno>,
+}
+
+impl Dir {
+    fn new(path: String, entries: Entries, done: bool) -> Arc<Dir> {
+        Arc::new(Dir { path, state: Mutex::new(DirState { entries, done, error: None }), changed: tokio::sync::Notify::new() })
+    }
+
+    fn push(&self, batch: Entries) {
+        self.state.lock().unwrap().entries.extend(batch);
+        self.changed.notify_waiters();
+    }
+
+    fn finish(&self, error: Option<Errno>) {
+        {
+            let mut s = self.state.lock().unwrap();
+            s.done = true;
+            s.error = error;
+        }
+        self.changed.notify_waiters();
+    }
+
+    /// Entries from `index` on, once there are some or the listing has ended.
+    fn from(&self, index: usize) -> Option<(Entries, Option<Errno>)> {
+        let s = self.state.lock().unwrap();
+        if s.entries.len() > index || s.done {
+            let start = index.min(s.entries.len());
+            let end = (start + READDIR_MAX).min(s.entries.len());
+            Some((s.entries[start..end].to_vec(), s.error))
+        } else {
+            None
+        }
+    }
+}
+
+/// A finished listing of one folder, kept for the next visit.
+struct Cached {
+    mtime: u32,
+    entries: Arc<Entries>,
+    at: Instant,
+}
 
 struct Fs {
     sftp: Arc<RawSftpSession>,
@@ -323,9 +384,10 @@ struct Fs {
     nodes: Arc<Mutex<Nodes>>,
     /// Open file handle → the server's handle.
     open: Arc<Mutex<HashMap<u64, String>>>,
-    /// Open directory → its listing, read whole at opendir.
-    dirs: Arc<Mutex<HashMap<u64, Listing>>>,
+    /// Open directory → its listing, filling in as the phone answers.
+    dirs: Arc<Mutex<HashMap<u64, Arc<Dir>>>>,
     next_fh: AtomicU64,
+    cache: Arc<Mutex<HashMap<String, Cached>>>,
     uid: u32,
     gid: u32,
 }
@@ -336,11 +398,20 @@ struct Ctx {
     sftp: Arc<RawSftpSession>,
     base: String,
     nodes: Arc<Mutex<Nodes>>,
+    /// Finished listings by folder path.
+    cache: Arc<Mutex<HashMap<String, Cached>>>,
     uid: u32,
     gid: u32,
 }
 
 impl Ctx {
+    /// Something in `path`'s folder changed: its kept listing is out of date.
+    fn changed(&self, path: &str) {
+        let mut cache = self.cache.lock().unwrap();
+        cache.remove(parent_of(path));
+        cache.remove(path);
+    }
+
     fn remote(&self, path: &str) -> String {
         if path.is_empty() { if self.base.is_empty() { "/".into() } else { self.base.clone() } } else { format!("{}/{path}", self.base) }
     }
@@ -459,7 +530,14 @@ async fn read_exact(sftp: &RawSftpSession, handle: &str, offset: u64, len: u32) 
 
 impl Fs {
     fn ctx(&self) -> Ctx {
-        Ctx { sftp: self.sftp.clone(), base: self.base.clone(), nodes: self.nodes.clone(), uid: self.uid, gid: self.gid }
+        Ctx {
+            sftp: self.sftp.clone(),
+            base: self.base.clone(),
+            nodes: self.nodes.clone(),
+            cache: self.cache.clone(),
+            uid: self.uid,
+            gid: self.gid,
+        }
     }
 
     fn spawn(&self, f: impl Future<Output = ()> + Send + 'static) {
@@ -483,10 +561,26 @@ impl Fs {
         self.next_fh.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Answer a directory read from the listing opendir took, `.` and `..` first.
-    fn listing(&self, ino: INodeNo, fh: FileHandle) -> Option<(String, Listing)> {
-        let list = self.dirs.lock().unwrap().get(&fh.0).cloned()?;
-        Some((self.path(ino)?, list))
+    fn dir(&self, fh: FileHandle) -> Option<Arc<Dir>> {
+        self.dirs.lock().unwrap().get(&fh.0).cloned()
+    }
+
+    /// Run `then` with `dir`'s entries from `index` on as soon as there are some (or the
+    /// listing has ended): at once if they're here, else when the next batch lands.
+    fn when_ready(&self, dir: Arc<Dir>, index: usize, then: impl FnOnce(&Dir, Entries, Option<Errno>) + Send + 'static) {
+        if let Some((entries, error)) = dir.from(index) {
+            return then(&dir, entries, error);
+        }
+        self.spawn(async move {
+            loop {
+                let mut wait = std::pin::pin!(dir.changed.notified());
+                wait.as_mut().enable();
+                if let Some((entries, error)) = dir.from(index) {
+                    return then(&dir, entries, error);
+                }
+                wait.await;
+            }
+        });
     }
 }
 
@@ -583,6 +677,7 @@ impl Filesystem for Fs {
                 if let Err(e) = r {
                     return reply.error(errno(&e));
                 }
+                ctx.changed(&path);
             }
             match ctx.stat(&path).await {
                 Ok(a) => reply.attr(&TTL, &ctx.attr(ino.0, &a)),
@@ -601,6 +696,7 @@ impl Filesystem for Fs {
             if let Err(e) = ctx.sftp.mkdir(ctx.remote(&path), FileAttributes::empty()).await {
                 return reply.error(errno(&e));
             }
+            ctx.changed(&path);
             match ctx.entry(&path).await {
                 Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
                 Err(e) => reply.error(e),
@@ -618,6 +714,7 @@ impl Filesystem for Fs {
             match ctx.sftp.remove(ctx.remote(&path)).await {
                 Ok(_) => {
                     ctx.nodes.lock().unwrap().removed(&path);
+                    ctx.changed(&path);
                     reply.ok()
                 }
                 Err(e) => reply.error(errno(&e)),
@@ -635,6 +732,7 @@ impl Filesystem for Fs {
             match ctx.sftp.rmdir(ctx.remote(&path)).await {
                 Ok(_) => {
                     ctx.nodes.lock().unwrap().removed(&path);
+                    ctx.changed(&path);
                     reply.ok()
                 }
                 Err(e) => reply.error(errno(&e)),
@@ -667,6 +765,8 @@ impl Filesystem for Fs {
             match ctx.sftp.rename(ctx.remote(&from), ctx.remote(&to)).await {
                 Ok(_) => {
                     ctx.nodes.lock().unwrap().moved(&from, &to);
+                    ctx.changed(&from);
+                    ctx.changed(&to);
                     reply.ok()
                 }
                 Err(e) => reply.error(errno(&e)),
@@ -707,6 +807,7 @@ impl Filesystem for Fs {
                 Err(e) => return reply.error(errno(&e)),
             };
             open.lock().unwrap().insert(fh, h);
+            ctx.changed(&path);
             match ctx.entry(&path).await {
                 Ok(attr) => reply.created(&TTL, &attr, Generation(0), FileHandle(fh), FopenFlags::empty()),
                 Err(e) => reply.error(e),
@@ -792,6 +893,7 @@ impl Filesystem for Fs {
             }
             if let Some(p) = path {
                 ctx.nodes.lock().unwrap().attrs.remove(&p);
+                ctx.changed(&p);
             }
             reply.written(data.len() as u32);
         });
@@ -834,86 +936,126 @@ impl Filesystem for Fs {
         let fh = self.new_fh();
         let dirs = self.dirs.clone();
         self.spawn(async move {
-            let h = match ctx.sftp.opendir(ctx.remote(&path)).await {
+            let remote = ctx.remote(&path);
+            // The folder's own time says whether the listing kept from last time still holds.
+            let top = match ctx.sftp.stat(remote.clone()).await {
+                Ok(a) => a.attrs,
+                Err(e) => return reply.error(errno(&e)),
+            };
+            let mtime = top.mtime.unwrap_or(0);
+            let kept =
+                ctx.cache.lock().unwrap().get(&path).filter(|c| c.mtime == mtime && c.at.elapsed() < CACHE_FOR).map(|c| c.entries.clone());
+            if let Some(entries) = kept {
+                {
+                    let mut n = ctx.nodes.lock().unwrap();
+                    n.learn(&path, &top);
+                    for (name, a) in entries.iter() {
+                        if let Some(p) = join(&path, OsStr::new(name)) {
+                            n.learn(&p, a);
+                        }
+                    }
+                }
+                dirs.lock().unwrap().insert(fh, Dir::new(path, (*entries).clone(), true));
+                return reply.opened(FileHandle(fh), FopenFlags::empty());
+            }
+            let h = match ctx.sftp.opendir(remote).await {
                 Ok(h) => h.handle,
                 Err(e) => return reply.error(errno(&e)),
             };
-            let mut list = Vec::new();
-            let result = loop {
+            ctx.nodes.lock().unwrap().learn(&path, &top);
+            let dir = Dir::new(path.clone(), Vec::new(), false);
+            dirs.lock().unwrap().insert(fh, dir.clone());
+            // Open now; readdir hands entries over as the phone's batches arrive.
+            reply.opened(FileHandle(fh), FopenFlags::empty());
+            let error = loop {
                 match ctx.sftp.readdir(h.clone()).await {
-                    Ok(names) => list
-                        .extend(names.files.into_iter().filter(|f| f.filename != "." && f.filename != "..").map(|f| (f.filename, f.attrs))),
-                    Err(e) if is_eof(&e) => break Ok(()),
-                    Err(e) => break Err(errno(&e)),
+                    Ok(names) => {
+                        let batch: Entries = names
+                            .files
+                            .into_iter()
+                            .filter(|f| f.filename != "." && f.filename != "..")
+                            .map(|f| (f.filename, f.attrs))
+                            .collect();
+                        {
+                            let mut n = ctx.nodes.lock().unwrap();
+                            for (name, a) in &batch {
+                                if let Some(p) = join(&path, OsStr::new(name)) {
+                                    n.learn(&p, a);
+                                }
+                            }
+                        }
+                        dir.push(batch);
+                    }
+                    Err(e) if is_eof(&e) => break None,
+                    Err(e) => break Some(errno(&e)),
                 }
             };
             let _ = ctx.sftp.close(h).await;
-            if let Err(e) = result {
-                return reply.error(e);
+            dir.finish(error);
+            if error.is_none() {
+                let entries = Arc::new(dir.state.lock().unwrap().entries.clone());
+                ctx.cache.lock().unwrap().insert(path, Cached { mtime, entries, at: Instant::now() });
             }
-            {
-                let mut n = ctx.nodes.lock().unwrap();
-                for (name, a) in &list {
-                    if let Some(p) = join(&path, OsStr::new(name)) {
-                        n.learn(&p, a);
-                    }
-                }
-            }
-            dirs.lock().unwrap().insert(fh, Arc::new(list));
-            reply.opened(FileHandle(fh), FopenFlags::empty());
         });
     }
 
     fn readdir(&self, _req: &Request, ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
-        let Some((path, list)) = self.listing(ino, fh) else { return reply.error(Errno::EBADF) };
+        let Some(dir) = self.dir(fh) else { return reply.error(Errno::EBADF) };
         let ctx = self.ctx();
-        let mut n = self.nodes.lock().unwrap();
-        let up = n.by_path.get(parent_of(&path)).copied().unwrap_or(ino.0);
-        let dots = [(ino.0, ".".to_string()), (up, "..".to_string())];
-        let mut i = offset as usize;
-        while i < dots.len() {
-            if reply.add(INodeNo(dots[i].0), i as u64 + 1, FileType::Directory, &dots[i].1) {
-                return reply.ok();
+        // Offsets 0 and 1 are `.` and `..`; entry k is offset k + 2.
+        let start = (offset as usize).saturating_sub(2);
+        self.when_ready(dir, start, move |dir, entries, error| {
+            if let (true, Some(e)) = (entries.is_empty() && offset >= 2, error) {
+                return reply.error(e);
             }
-            i += 1;
-        }
-        for (k, (name, a)) in list.iter().enumerate().skip(i - dots.len()) {
-            let Some(p) = join(&path, OsStr::new(name)) else { continue };
-            let attr = ctx.attr(n.ino(&p), a);
-            if reply.add(attr.ino, (k + dots.len()) as u64 + 1, attr.kind, name) {
-                break;
+            let mut n = ctx.nodes.lock().unwrap();
+            let up = n.by_path.get(parent_of(&dir.path)).copied().unwrap_or(ino.0);
+            let dots = [(ino.0, "."), (up, "..")];
+            for (i, (d, name)) in dots.iter().enumerate().skip(offset as usize) {
+                if reply.add(INodeNo(*d), i as u64 + 1, FileType::Directory, name) {
+                    return reply.ok();
+                }
             }
-        }
-        reply.ok();
+            for (k, (name, a)) in entries.iter().enumerate() {
+                let Some(p) = join(&dir.path, OsStr::new(name)) else { continue };
+                let attr = ctx.attr(n.ino(&p), a);
+                if reply.add(attr.ino, (start + k + 3) as u64, attr.kind, name) {
+                    break;
+                }
+            }
+            reply.ok();
+        });
     }
 
     fn readdirplus(&self, _req: &Request, ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectoryPlus) {
-        let Some((path, list)) = self.listing(ino, fh) else { return reply.error(Errno::EBADF) };
+        let Some(dir) = self.dir(fh) else { return reply.error(Errno::EBADF) };
         let ctx = self.ctx();
-        let mut n = self.nodes.lock().unwrap();
-        let here = n.fresh(&path).map(|a| ctx.attr(ino.0, &a));
-        let up_path = parent_of(&path).to_string();
-        let up = n.by_path.get(&up_path).copied().unwrap_or(ino.0);
-        let dir = FileAttributes { permissions: Some(libc::S_IFDIR | 0o755), ..FileAttributes::empty() };
-        let dots = [(ino.0, ".", here.unwrap_or_else(|| ctx.attr(ino.0, &dir))), (up, "..", ctx.attr(up, &dir))];
-        let mut i = offset as usize;
-        while i < dots.len() {
-            let (d, name, attr) = &dots[i];
-            if reply.add(INodeNo(*d), i as u64 + 1, name, &TTL, attr, Generation(0)) {
-                return reply.ok();
+        let start = (offset as usize).saturating_sub(2);
+        self.when_ready(dir, start, move |dir, entries, error| {
+            if let (true, Some(e)) = (entries.is_empty() && offset >= 2, error) {
+                return reply.error(e);
             }
-            i += 1;
-        }
-        for (k, (name, a)) in list.iter().enumerate().skip(i - dots.len()) {
-            let Some(p) = join(&path, OsStr::new(name)) else { continue };
-            let attr = ctx.attr(n.ino(&p), a);
-            if reply.add(attr.ino, (k + dots.len()) as u64 + 1, name, &TTL, &attr, Generation(0)) {
-                break;
+            let mut n = ctx.nodes.lock().unwrap();
+            let folder = FileAttributes { permissions: Some(libc::S_IFDIR | 0o755), ..FileAttributes::empty() };
+            let here = n.fresh(&dir.path).map_or_else(|| ctx.attr(ino.0, &folder), |a| ctx.attr(ino.0, &a));
+            let up = n.by_path.get(parent_of(&dir.path)).copied().unwrap_or(ino.0);
+            let dots = [(ino.0, ".", here), (up, "..", ctx.attr(up, &folder))];
+            for (i, (d, name, attr)) in dots.iter().enumerate().skip(offset as usize) {
+                if reply.add(INodeNo(*d), i as u64 + 1, name, &TTL, attr, Generation(0)) {
+                    return reply.ok();
+                }
             }
-            // Each entry handed out with attributes counts as a lookup.
-            n.entered(&p);
-        }
-        reply.ok();
+            for (k, (name, a)) in entries.iter().enumerate() {
+                let Some(p) = join(&dir.path, OsStr::new(name)) else { continue };
+                let attr = ctx.attr(n.ino(&p), a);
+                if reply.add(attr.ino, (start + k + 3) as u64, name, &TTL, &attr, Generation(0)) {
+                    break;
+                }
+                // Each entry handed out with attributes counts as a lookup.
+                n.entered(&p);
+            }
+            reply.ok();
+        });
     }
 
     fn releasedir(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, _flags: OpenFlags, reply: ReplyEmpty) {

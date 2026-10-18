@@ -382,6 +382,10 @@ impl App {
             PhoneMsg::Mounted(Ok((m, storage))) => {
                 let generation = self.phone.generation;
                 self.phone.mounting = false;
+                if let Some(id) = self.phone_id() {
+                    let by_path = self.phone.devices.get(&id).is_some_and(|d| d.can("echofiles.files.thumb"));
+                    set_thumb_target(Some((id, m.root().to_path_buf(), by_path)));
+                }
                 self.phone.mount = Some((m, storage.clone()));
                 let want = self.phone.want.unwrap_or(Want::Nothing);
                 let t = self.after_mount(want, &storage);
