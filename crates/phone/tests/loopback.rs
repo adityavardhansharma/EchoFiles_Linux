@@ -139,18 +139,19 @@ fn bluetooth_only() {
     let (da, db) = (dir("laptop"), dir("phone"));
     let (ta, ra) = mpsc::channel();
     let (tb, rb) = mpsc::channel();
-    let a = Service::start_as(da.clone(), Some("laptop".into()), "laptop", move |e| {
+    let a = Service::start_bluetooth_only(da.clone(), Some("laptop".into()), "laptop", move |e| {
         let _ = ta.send(e);
     })
     .unwrap();
-    let b = Service::start_as(db.clone(), Some("phone".into()), "phone", move |e| {
+    let b = Service::start_bluetooth_only(db.clone(), Some("phone".into()), "phone", move |e| {
         let _ = tb.send(e);
     })
     .unwrap();
     let (x, y) = std::os::unix::net::UnixStream::pair().unwrap();
     b.adopt(x.into(), true);
     a.adopt(y.into(), false);
-    // By id: pair_and_talk's services run at the same time and announce over UDP.
+    // No UDP here, or on a network that loops broadcasts back (CI) the two would also
+    // link over LAN. By id: pair_and_talk's services run at the same time.
     let (want_a, want_b) = (a.device_id().to_string(), b.device_id().to_string());
     let phone = wait(&ra, "laptop sees phone over bluetooth", |e| match e {
         Event::Device(d) if d.id == want_b && d.bluetooth => Some(d.clone()),
