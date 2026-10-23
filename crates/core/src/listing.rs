@@ -207,7 +207,7 @@ pub fn read_names_with(dir: &Path, fd: &OwnedFd, every: std::time::Duration, mut
             _ => Kind::Other,
         };
         listing.push(name, kind);
-        if listing.len() % 64 == 0 && started.elapsed() >= next {
+        if listing.len().is_multiple_of(64) && started.elapsed() >= next {
             partial(&listing);
             next = started.elapsed() + every;
         }

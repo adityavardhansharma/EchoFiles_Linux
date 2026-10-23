@@ -304,13 +304,15 @@ static SERVICE: OnceLock<Service> = OnceLock::new();
 /// The mounted phone, for thumbnail jobs off the UI thread: its id, where its files are,
 /// and whether its EchoConnect makes thumbnails by path.
 static THUMB_TARGET: Mutex<Option<(String, PathBuf, bool)>> = Mutex::new(None);
+/// Where a thumbnail request hands its picture file.
+type ThumbReply = std::sync::mpsc::SyncSender<Result<PathBuf, String>>;
 /// Thumbnail requests waiting for the phone: request id → where to hand the picture file.
-static THUMB_WAIT: OnceLock<Mutex<HashMap<String, std::sync::mpsc::SyncSender<Result<PathBuf, String>>>>> = OnceLock::new();
+static THUMB_WAIT: OnceLock<Mutex<HashMap<String, ThumbReply>>> = OnceLock::new();
 /// Incoming thumbnail transfers → their request ids.
 static THUMB_TRANSFERS: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
 static THUMB_NEXT: AtomicU64 = AtomicU64::new(1);
 
-fn thumb_wait() -> &'static Mutex<HashMap<String, std::sync::mpsc::SyncSender<Result<PathBuf, String>>>> {
+fn thumb_wait() -> &'static Mutex<HashMap<String, ThumbReply>> {
     THUMB_WAIT.get_or_init(Default::default)
 }
 
