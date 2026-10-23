@@ -463,6 +463,28 @@ impl Service {
     /// Like [`Service::start_in`], announcing itself as `kind` ("phone" for a stand-in phone
     /// in tests and demos).
     pub fn start_as(dir: PathBuf, name: Option<String>, kind: &str, emit: impl Fn(Event) + Send + Sync + 'static) -> io::Result<Service> {
+        Service::start_with(dir, name, kind, true, emit)
+    }
+
+    /// Like [`Service::start_as`], without UDP discovery: nothing on the network finds
+    /// it and it finds nothing, so only links handed to [`Service::adopt`] (Bluetooth)
+    /// reach it. Tests use it to keep a Bluetooth link from also pairing over LAN.
+    pub fn start_bluetooth_only(
+        dir: PathBuf,
+        name: Option<String>,
+        kind: &str,
+        emit: impl Fn(Event) + Send + Sync + 'static,
+    ) -> io::Result<Service> {
+        Service::start_with(dir, name, kind, false, emit)
+    }
+
+    fn start_with(
+        dir: PathBuf,
+        name: Option<String>,
+        kind: &str,
+        lan: bool,
+        emit: impl Fn(Event) + Send + Sync + 'static,
+    ) -> io::Result<Service> {
         let mut me = identity::load_or_create(&dir)?;
         if let Some(n) = name {
             me.name = n;
@@ -526,14 +548,15 @@ impl Service {
 
         // UDP: hear phones announce themselves. Port 1716 may be taken (another KDE
         // Connect); we still announce ourselves and accept their connections.
-        match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, UDP_PORT)) {
-            Ok(sock) => {
+        match lan.then(|| UdpSocket::bind((Ipv4Addr::UNSPECIFIED, UDP_PORT))) {
+            None => {}
+            Some(Ok(sock)) => {
                 let _ = sock.set_broadcast(true);
                 *inner.udp.lock().unwrap() = sock.try_clone().ok();
                 let i = inner.clone();
                 std::thread::Builder::new().name("phone-udp".into()).spawn(move || listen_udp(&i, sock))?;
             }
-            Err(_) => {
+            Some(Err(_)) => {
                 if let Ok(sock) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) {
                     let _ = sock.set_broadcast(true);
                     *inner.udp.lock().unwrap() = Some(sock);
