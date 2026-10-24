@@ -468,9 +468,10 @@ impl Service {
     }
 
     /// Like [`Service::start_as`], without UDP discovery: nothing on the network finds
-    /// it and it finds nothing, so only links handed to [`Service::adopt`] (Bluetooth)
-    /// reach it. Tests use it to keep a Bluetooth link from also pairing over LAN.
-    pub fn start_bluetooth_only(
+    /// it and it finds nothing, so only links it's told about reach it
+    /// ([`Service::connect_to`], or Bluetooth through [`Service::adopt`]). Tests use it
+    /// so a network that loops broadcasts back (CI) doesn't add a second link to a peer.
+    pub fn start_without_discovery(
         dir: PathBuf,
         name: Option<String>,
         kind: &str,
