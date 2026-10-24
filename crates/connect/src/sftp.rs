@@ -1,6 +1,8 @@
-//! The SFTP server the laptop browses the phone through (KDE Connect's `kdeconnect.sftp`):
-//! one random user and password per start, a fresh Ed25519 host key, and only the shared
-//! folders (internal storage, SD cards) are reachable.
+//! The SFTP server EchoFiles browses the phone through: one random user and password per
+//! start, an Ed25519 host key that stays the same across starts (EchoFiles checks it
+//! against the fingerprint sent over the paired link), and only the shared folders
+//! (internal storage, SD cards) are reachable. Errors carry `errno N` so the laptop's
+//! folder reports the same error the phone hit (not empty, exists, no space…).
 
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -13,7 +15,11 @@ use russh::keys::PrivateKey;
 use russh::keys::ssh_key::private::Ed25519Keypair;
 use russh::server::{Auth, ChannelOpenHandle, Msg, Server as _, Session};
 use russh::{Channel, ChannelId};
-use russh_sftp::protocol::{Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version};
+use russh_sftp::extensions::{STATVFS, Statvfs, StatvfsExtension};
+use russh_sftp::protocol::{
+    Attrs, Data, ExtendedReply, File, FileAttributes, Handle, Name, OpenFlags, Packet, Status, StatusCode, Version,
+};
+use russh_sftp::server::StatusReply;
 
 pub struct Server {
     rt: Option<tokio::runtime::Runtime>,
@@ -38,8 +44,8 @@ fn random_hex(n: usize) -> String {
 }
 
 impl Server {
-    /// Serve `roots` on a free port in 1739–1764.
-    pub fn start(roots: Vec<String>) -> Result<Server, String> {
+    /// Serve `roots` on a free port in 1739–1764, with the host key made from `seed`.
+    pub fn start(roots: Vec<String>, seed: [u8; 32]) -> Result<Server, String> {
         let roots: Vec<PathBuf> = roots.into_iter().filter_map(|p| std::fs::canonicalize(p).ok()).filter(|p| p.is_dir()).collect();
         if roots.is_empty() {
             return Err("Nothing to share: allow All files access for EchoConnect.".into());
@@ -50,8 +56,6 @@ impl Server {
             .thread_name("sftp")
             .build()
             .map_err(|e| e.to_string())?;
-        let mut seed = [0u8; 32];
-        getrandom::fill(&mut seed).map_err(|e| e.to_string())?;
         let key = PrivateKey::from(Ed25519Keypair::from_seed(&seed));
         let user = "echoconnect".to_string();
         let password = random_hex(16);
@@ -70,6 +74,8 @@ impl Server {
             auth_rejection_time: Duration::from_secs(2),
             auth_rejection_time_initial: Some(Duration::from_secs(0)),
             inactivity_timeout: Some(Duration::from_secs(3600)),
+            // Small status replies to writes otherwise wait on Nagle + delayed ACK (~40 ms each).
+            nodelay: true,
             keys: vec![key],
             ..Default::default()
         });
@@ -164,11 +170,15 @@ fn ok(id: u32) -> Status {
     Status { id, status_code: StatusCode::Ok, error_message: "Ok".into(), language_tag: "en-US".into() }
 }
 
-fn code(e: std::io::Error) -> StatusCode {
-    match e.kind() {
+fn code(e: std::io::Error) -> StatusReply {
+    let status = match e.kind() {
         std::io::ErrorKind::NotFound => StatusCode::NoSuchFile,
         std::io::ErrorKind::PermissionDenied => StatusCode::PermissionDenied,
         _ => StatusCode::Failure,
+    };
+    match e.raw_os_error() {
+        Some(n) => status.with_message(format!("errno {n}")),
+        None => status.into(),
     }
 }
 
@@ -191,19 +201,21 @@ fn normal(base: &Path, path: &str) -> PathBuf {
 
 impl Sftp {
     /// The path, if it's inside a shared folder (the bare `/` lists them).
-    fn inside(&self, path: &str) -> Result<PathBuf, StatusCode> {
+    fn inside(&self, path: &str) -> Result<PathBuf, StatusReply> {
         let p = normal(&self.roots[0], path);
         let mut ancestor = p.as_path();
         while !ancestor.exists() {
             // A dangling symlink must not become a writable escape hatch.
             if std::fs::symlink_metadata(ancestor).is_ok() {
-                return Err(StatusCode::PermissionDenied);
+                return Err(StatusCode::PermissionDenied.into());
             }
-            ancestor = ancestor.parent().ok_or(StatusCode::PermissionDenied)?;
+            ancestor = ancestor.parent().ok_or(StatusReply::from(StatusCode::PermissionDenied))?;
         }
         let resolved = std::fs::canonicalize(ancestor).map_err(code)?;
-        let target = resolved.join(p.strip_prefix(ancestor).map_err(|_| StatusCode::PermissionDenied)?);
-        if self.roots.iter().any(|r| target.starts_with(r)) { Ok(target) } else { Err(StatusCode::PermissionDenied) }
+        let rest = p.strip_prefix(ancestor).map_err(|_| StatusReply::from(StatusCode::PermissionDenied))?;
+        // `join("")` would add a trailing slash, and "file/" fails with ENOTDIR.
+        let target = if rest.as_os_str().is_empty() { resolved } else { resolved.join(rest) };
+        if self.roots.iter().any(|r| target.starts_with(r)) { Ok(target) } else { Err(StatusCode::PermissionDenied.into()) }
     }
 
     fn handle(&mut self, o: Open) -> String {
@@ -219,43 +231,45 @@ fn attrs(m: &std::fs::Metadata) -> FileAttributes {
 }
 
 impl russh_sftp::server::Handler for Sftp {
-    type Error = StatusCode;
+    type Error = StatusReply;
 
-    fn unimplemented(&self) -> StatusCode {
-        StatusCode::OpUnsupported
+    fn unimplemented(&self) -> StatusReply {
+        StatusCode::OpUnsupported.into()
     }
 
-    async fn init(&mut self, _: u32, _: HashMap<String, String>) -> Result<Version, StatusCode> {
-        Ok(Version::new())
+    async fn init(&mut self, _: u32, _: HashMap<String, String>) -> Result<Version, StatusReply> {
+        let mut v = Version::new();
+        v.extensions.insert(STATVFS.to_string(), "2".to_string());
+        Ok(v)
     }
 
-    async fn realpath(&mut self, id: u32, path: String) -> Result<Name, StatusCode> {
+    async fn realpath(&mut self, id: u32, path: String) -> Result<Name, StatusReply> {
         let p = normal(&self.roots[0], if path.is_empty() { "." } else { &path });
         Ok(Name { id, files: vec![File::dummy(p.to_string_lossy())] })
     }
 
-    async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, StatusCode> {
+    async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, StatusReply> {
         let p = self.inside(&path)?;
         let m = std::fs::metadata(&p).map_err(code)?;
         Ok(Attrs { id, attrs: attrs(&m) })
     }
 
-    async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, StatusCode> {
+    async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, StatusReply> {
         let p = self.inside(&path)?;
         let m = std::fs::symlink_metadata(&p).map_err(code)?;
         Ok(Attrs { id, attrs: attrs(&m) })
     }
 
-    async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, StatusCode> {
+    async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, StatusReply> {
         match self.open.get(&handle) {
             Some(Open::File(f)) => Ok(Attrs { id, attrs: attrs(&f.metadata().map_err(code)?) }),
-            _ => Err(StatusCode::Failure),
+            _ => Err(StatusCode::Failure.into()),
         }
     }
 
-    async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, StatusCode> {
+    async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, StatusReply> {
         let p = self.inside(&path)?;
-        let files = blocking(|| -> Result<Vec<File>, StatusCode> {
+        let files = blocking(|| -> Result<Vec<File>, StatusReply> {
             let mut files = Vec::new();
             for e in std::fs::read_dir(&p).map_err(code)?.flatten() {
                 if let Ok(m) = e.metadata() {
@@ -267,7 +281,7 @@ impl russh_sftp::server::Handler for Sftp {
         Ok(Handle { id, handle: self.handle(Open::Dir(files.into(), false)) })
     }
 
-    async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, StatusCode> {
+    async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, StatusReply> {
         match self.open.get_mut(&handle) {
             Some(Open::Dir(files, done)) if !*done => {
                 // Up to 256 per reply; Eof once all went out.
@@ -277,16 +291,16 @@ impl russh_sftp::server::Handler for Sftp {
                     *done = true;
                 }
                 if chunk.is_empty() {
-                    return Err(StatusCode::Eof);
+                    return Err(StatusCode::Eof.into());
                 }
                 Ok(Name { id, files: chunk })
             }
-            Some(Open::Dir(..)) => Err(StatusCode::Eof),
-            _ => Err(StatusCode::Failure),
+            Some(Open::Dir(..)) => Err(StatusCode::Eof.into()),
+            _ => Err(StatusCode::Failure.into()),
         }
     }
 
-    async fn open(&mut self, id: u32, filename: String, flags: OpenFlags, _: FileAttributes) -> Result<Handle, StatusCode> {
+    async fn open(&mut self, id: u32, filename: String, flags: OpenFlags, _: FileAttributes) -> Result<Handle, StatusReply> {
         let p = self.inside(&filename)?;
         let mut o = std::fs::OpenOptions::new();
         o.read(flags.contains(OpenFlags::READ))
@@ -302,8 +316,8 @@ impl russh_sftp::server::Handler for Sftp {
         Ok(Handle { id, handle: self.handle(Open::File(f)) })
     }
 
-    async fn read(&mut self, id: u32, handle: String, offset: u64, len: u32) -> Result<Data, StatusCode> {
-        let Some(Open::File(f)) = self.open.get_mut(&handle) else { return Err(StatusCode::Failure) };
+    async fn read(&mut self, id: u32, handle: String, offset: u64, len: u32) -> Result<Data, StatusReply> {
+        let Some(Open::File(f)) = self.open.get_mut(&handle) else { return Err(StatusCode::Failure.into()) };
         let mut data = vec![0u8; len.min(256 * 1024) as usize];
         let n = blocking(|| {
             f.seek(SeekFrom::Start(offset))?;
@@ -311,14 +325,14 @@ impl russh_sftp::server::Handler for Sftp {
         })
         .map_err(code)?;
         if n == 0 {
-            return Err(StatusCode::Eof);
+            return Err(StatusCode::Eof.into());
         }
         data.truncate(n);
         Ok(Data { id, data })
     }
 
-    async fn write(&mut self, id: u32, handle: String, offset: u64, data: Vec<u8>) -> Result<Status, StatusCode> {
-        let Some(Open::File(f)) = self.open.get_mut(&handle) else { return Err(StatusCode::Failure) };
+    async fn write(&mut self, id: u32, handle: String, offset: u64, data: Vec<u8>) -> Result<Status, StatusReply> {
+        let Some(Open::File(f)) = self.open.get_mut(&handle) else { return Err(StatusCode::Failure.into()) };
         blocking(|| {
             f.seek(SeekFrom::Start(offset))?;
             f.write_all(&data)
@@ -327,49 +341,83 @@ impl russh_sftp::server::Handler for Sftp {
         Ok(ok(id))
     }
 
-    async fn close(&mut self, id: u32, handle: String) -> Result<Status, StatusCode> {
+    async fn close(&mut self, id: u32, handle: String) -> Result<Status, StatusReply> {
         if let Some(Open::File(f)) = self.open.remove(&handle) {
             let _ = blocking(|| f.sync_all());
         }
         Ok(ok(id))
     }
 
-    async fn remove(&mut self, id: u32, filename: String) -> Result<Status, StatusCode> {
+    async fn remove(&mut self, id: u32, filename: String) -> Result<Status, StatusReply> {
         std::fs::remove_file(self.inside(&filename)?).map_err(code)?;
         Ok(ok(id))
     }
 
-    async fn mkdir(&mut self, id: u32, path: String, _: FileAttributes) -> Result<Status, StatusCode> {
+    async fn mkdir(&mut self, id: u32, path: String, _: FileAttributes) -> Result<Status, StatusReply> {
         std::fs::create_dir(self.inside(&path)?).map_err(code)?;
         Ok(ok(id))
     }
 
-    async fn rmdir(&mut self, id: u32, path: String) -> Result<Status, StatusCode> {
+    async fn rmdir(&mut self, id: u32, path: String) -> Result<Status, StatusReply> {
         std::fs::remove_dir(self.inside(&path)?).map_err(code)?;
         Ok(ok(id))
     }
 
-    async fn rename(&mut self, id: u32, oldpath: String, newpath: String) -> Result<Status, StatusCode> {
+    async fn rename(&mut self, id: u32, oldpath: String, newpath: String) -> Result<Status, StatusReply> {
         std::fs::rename(self.inside(&oldpath)?, self.inside(&newpath)?).map_err(code)?;
         Ok(ok(id))
     }
 
-    async fn setstat(&mut self, id: u32, path: String, a: FileAttributes) -> Result<Status, StatusCode> {
+    async fn setstat(&mut self, id: u32, path: String, a: FileAttributes) -> Result<Status, StatusReply> {
         let p = self.inside(&path)?;
-        if let Some(mtime) = a.mtime
-            && let Ok(f) = std::fs::File::options().write(true).open(&p)
-        {
-            let _ = f.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(mtime as u64));
+        if a.size.is_some() || a.mtime.is_some() {
+            let f = blocking(|| std::fs::File::options().write(true).open(&p)).map_err(code)?;
+            set(&f, &a).map_err(code)?;
         }
         Ok(ok(id))
     }
 
-    async fn fsetstat(&mut self, id: u32, handle: String, a: FileAttributes) -> Result<Status, StatusCode> {
-        if let (Some(mtime), Some(Open::File(f))) = (a.mtime, self.open.get(&handle)) {
-            let _ = f.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(mtime as u64));
+    async fn fsetstat(&mut self, id: u32, handle: String, a: FileAttributes) -> Result<Status, StatusReply> {
+        if let Some(Open::File(f)) = self.open.get(&handle) {
+            set(f, &a).map_err(code)?;
         }
         Ok(ok(id))
     }
+
+    async fn extended(&mut self, id: u32, request: String, data: Vec<u8>) -> Result<Packet, StatusReply> {
+        if request != STATVFS {
+            return Err(StatusCode::OpUnsupported.into());
+        }
+        let ext: StatvfsExtension = russh_sftp::de::from_bytes(&mut data.into()).map_err(|_| StatusReply::from(StatusCode::BadMessage))?;
+        let p = self.inside(&ext.path)?;
+        let v = rustix::fs::statvfs(&p).map_err(|e| code(e.into()))?;
+        let s = Statvfs {
+            block_size: v.f_bsize,
+            fragment_size: v.f_frsize,
+            blocks: v.f_blocks,
+            blocks_free: v.f_bfree,
+            blocks_avail: v.f_bavail,
+            inodes: v.f_files,
+            inodes_free: v.f_ffree,
+            inodes_avail: v.f_favail,
+            fs_id: v.f_fsid,
+            flags: v.f_flag.bits(),
+            name_max: v.f_namemax,
+        };
+        let data = russh_sftp::ser::to_bytes(&s).map_err(|_| StatusReply::from(StatusCode::Failure))?.to_vec();
+        Ok(Packet::ExtendedReply(ExtendedReply { id, data }))
+    }
+}
+
+/// Apply a size (truncate or extend) and a modification time from `a`.
+fn set(f: &std::fs::File, a: &FileAttributes) -> std::io::Result<()> {
+    if let Some(size) = a.size {
+        f.set_len(size)?;
+    }
+    if let Some(mtime) = a.mtime {
+        f.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(mtime as u64))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -393,10 +441,15 @@ mod tests {
         let outside = root.join("outside");
         std::fs::create_dir_all(&outside).unwrap();
         std::os::unix::fs::symlink(&outside, shared.join("escape")).unwrap();
+        let shared = std::fs::canonicalize(&shared).unwrap();
         let server = Sftp { roots: Arc::new(vec![shared.clone()]), open: HashMap::new(), next: 0 };
         assert!(server.inside("escape/private.txt").is_err());
         assert!(server.inside("../outside/private.txt").is_err());
         assert_eq!(server.inside("new.txt").unwrap(), shared.join("new.txt"));
+        std::fs::write(shared.join("note.txt"), "hi").unwrap();
+        let note = server.inside("note.txt").unwrap();
+        assert_eq!(note, std::fs::canonicalize(shared.join("note.txt")).unwrap());
+        assert!(std::fs::metadata(&note).is_ok(), "existing files resolve without a trailing slash");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

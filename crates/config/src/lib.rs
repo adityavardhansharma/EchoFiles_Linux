@@ -370,6 +370,19 @@ pub fn state_dir() -> PathBuf {
     xdg("XDG_STATE_HOME", ".local/state").join("echofiles")
 }
 
+/// `$XDG_RUNTIME_DIR/echofiles` — per-login, private: the phone's folder is mounted here.
+/// Without a runtime dir, a private folder in the config dir stands in.
+pub fn runtime_dir() -> PathBuf {
+    use std::os::unix::fs::DirBuilderExt;
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .map(|p| p.join("echofiles"))
+        .unwrap_or_else(|| config_dir().join("runtime"));
+    let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
+    dir
+}
+
 /// `$XDG_RUNTIME_DIR/echofiles.sock` — the running app listens here. A Unix socket path
 /// holds at most 107 bytes; when the runtime folder's path is too long for the longest
 /// socket name (`echofiles-ef.sock`), the private folder in the config dir is used, so

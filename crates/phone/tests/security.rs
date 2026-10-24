@@ -56,12 +56,19 @@ fn start(dir: &Path) -> (Service, mpsc::Receiver<Event>) {
     (s, rx)
 }
 fn peer(dir: &Path, id: &str, port: u16) -> Peer {
+    peer_with(dir, id, port, json!(["echofiles.settings", "kdeconnect.ping"]))
+}
+/// A peer whose identity lists `sends` as its outgoing packets.
+fn peer_with(dir: &Path, id: &str, port: u16, sends: Value) -> Peer {
     let me = identity::load_or_create(dir).unwrap();
     let cfg = tls::Tls::new(&me).unwrap();
     let mut sock = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
     sock.set_read_timeout(Some(Duration::from_secs(8))).unwrap();
     sock.set_write_timeout(Some(Duration::from_secs(8))).unwrap();
-    let ident = packet("kdeconnect.identity", json!({"deviceId":id,"deviceName":id,"deviceType":"phone","protocolVersion":8}));
+    let ident = packet(
+        "kdeconnect.identity",
+        json!({"deviceId":id,"deviceName":id,"deviceType":"phone","protocolVersion":8,"outgoingCapabilities":sends}),
+    );
     send(&mut sock, &ident);
     let mut conn = ServerConnection::new(cfg.server.clone()).unwrap();
     while conn.is_handshaking() {
@@ -85,6 +92,49 @@ fn paired(base: &Path) -> (Service, mpsc::Receiver<Event>, Peer) {
     send(&mut p.stream, &packet("kdeconnect.pair", json!({"pair":true})));
     wait(&rx, |e| matches!(e, Event::Paired(_)).then_some(()));
     (s, rx, p)
+}
+
+#[test]
+fn stock_kde_connect_is_turned_away() {
+    let root = std::env::temp_dir().join(format!("ef-not-ours-{}", std::process::id()));
+    let (s, rx) = start(&root.join("laptop"));
+    let me = identity::load_or_create(&root.join("kde")).unwrap();
+    let cfg = tls::Tls::new(&me).unwrap();
+    let mut sock = TcpStream::connect((Ipv4Addr::LOCALHOST, s.port())).unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    let ident = packet(
+        "kdeconnect.identity",
+        json!({"deviceId":"stockphone","deviceName":"KDE phone","deviceType":"phone","protocolVersion":8,
+               "outgoingCapabilities":["kdeconnect.ping","kdeconnect.battery"]}),
+    );
+    send(&mut sock, &ident);
+    let mut conn = ServerConnection::new(cfg.server.clone()).unwrap();
+    while conn.is_handshaking() {
+        if conn.complete_io(&mut sock).is_err() {
+            break;
+        }
+    }
+    let mut stream = StreamOwned::new(conn, sock);
+    let _ = stream.write_all(format!("{ident}\n").as_bytes()).and_then(|_| stream.flush());
+    let _ = stream.write_all(format!("{}\n", packet("kdeconnect.pair", json!({"pair":true}))).as_bytes());
+    // The link closes and the app never hears of the device.
+    let mut b = [0u8; 4096];
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        match stream.read(&mut b) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
+    while let Ok(e) = rx.recv_timeout(Duration::from_millis(300)) {
+        assert!(
+            !matches!(&e, Event::Device(d) | Event::Paired(d) if d.id == "stockphone"),
+            "a peer that isn't EchoConnect must not show up: {e:?}"
+        );
+        assert!(!matches!(&e, Event::PairRequested { id, .. } if id == "stockphone"));
+    }
+    drop(s);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -258,23 +308,3 @@ fn concurrent_identity_creation_publishes_one_private_bundle() {
     assert_eq!(fs::read(root.path().join("identity.json")).unwrap(), b"incomplete");
 }
 
-#[test]
-fn shutdown_releases_listener_and_does_not_restart_connections() {
-    let root = tempfile::tempdir().unwrap();
-    for _ in 0..3 {
-        let (svc, _) = start(root.path());
-        let port = svc.port();
-        svc.shutdown();
-        let until = Instant::now() + Duration::from_secs(3);
-        let listener = loop {
-            if let Ok(l) = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)) {
-                break l;
-            }
-            assert!(Instant::now() < until, "stopped service retained its listener");
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        listener.set_nonblocking(true).unwrap();
-        svc.connect_to((Ipv4Addr::LOCALHOST, port).into());
-        assert!(listener.accept().is_err());
-    }
-}

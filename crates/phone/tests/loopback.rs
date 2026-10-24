@@ -10,7 +10,9 @@ fn start(name: &str) -> (Service, mpsc::Receiver<Event>, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!("ef-phone-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let (tx, rx) = mpsc::channel();
-    let svc = Service::start_in(dir.clone(), Some(name.to_string()), move |e| {
+    // No UDP discovery: b dials a directly. Where broadcasts loop back (CI) the two would
+    // also find each other and open a second link, which can swallow the pair request.
+    let svc = Service::start_without_discovery(dir.clone(), Some(name.to_string()), "laptop", move |e| {
         let _ = tx.send(e);
     })
     .expect("start");
@@ -39,7 +41,7 @@ fn pair_and_talk() {
     // b connects to a's TCP port: b is the TLS server, a the client.
     b.connect_to(SocketAddr::from((Ipv4Addr::LOCALHOST, a.port())));
     // Match by device id, not name: the other test in this file runs in parallel with
-    // its own "laptop" and "phone", and their UDP announcements reach these services too.
+    // its own "laptop" and "phone".
     let (want_a, want_b) = (a.device_id().to_string(), b.device_id().to_string());
     let b_id = wait(&ra, "a sees b", |e| match e {
         Event::Device(d) if d.id == want_b => Some(d.id.clone()),
@@ -139,18 +141,19 @@ fn bluetooth_only() {
     let (da, db) = (dir("laptop"), dir("phone"));
     let (ta, ra) = mpsc::channel();
     let (tb, rb) = mpsc::channel();
-    let a = Service::start_as(da.clone(), Some("laptop".into()), "laptop", move |e| {
+    let a = Service::start_without_discovery(da.clone(), Some("laptop".into()), "laptop", move |e| {
         let _ = ta.send(e);
     })
     .unwrap();
-    let b = Service::start_as(db.clone(), Some("phone".into()), "phone", move |e| {
+    let b = Service::start_without_discovery(db.clone(), Some("phone".into()), "phone", move |e| {
         let _ = tb.send(e);
     })
     .unwrap();
     let (x, y) = std::os::unix::net::UnixStream::pair().unwrap();
     b.adopt(x.into(), true);
     a.adopt(y.into(), false);
-    // By id: pair_and_talk's services run at the same time and announce over UDP.
+    // No UDP here, or on a network that loops broadcasts back (CI) the two would also
+    // link over LAN. By id: pair_and_talk's services run at the same time.
     let (want_a, want_b) = (a.device_id().to_string(), b.device_id().to_string());
     let phone = wait(&ra, "laptop sees phone over bluetooth", |e| match e {
         Event::Device(d) if d.id == want_b && d.bluetooth => Some(d.clone()),

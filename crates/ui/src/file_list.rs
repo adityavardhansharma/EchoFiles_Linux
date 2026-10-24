@@ -35,6 +35,8 @@ const SCROLLBAR: f32 = 6.0;
 const TILE_W: f32 = 104.0;
 const TILE_H: f32 = 132.0;
 const THUMB: f32 = 88.0;
+/// Widest the grid's rename field grows for a long name.
+const GRID_EDITOR_MAX: f32 = 320.0;
 /// Pointer travel before a press becomes a drag.
 const DRAG_START: f32 = 6.0;
 /// Hovering a folder this long during a drag opens it (spring-loading).
@@ -109,6 +111,8 @@ pub struct Model<'a> {
     pub dragging: bool,
     /// Position being renamed; the editor child sits over its name.
     pub renaming: Option<usize>,
+    /// Characters in the name being typed, so the grid's field grows with it.
+    pub rename_chars: usize,
     /// Decoded thumbnail for an entry, if ready.
     pub thumb: Box<dyn Fn(usize) -> Option<aimage::Handle> + 'a>,
     /// The search box's filter text: where it matches, a name is highlighted.
@@ -364,7 +368,16 @@ impl<'a, Message> FileList<'a, Message> {
     fn editor_rect(&self, state: &State, body: Rectangle, bounds: Rectangle, pos: usize) -> Rectangle {
         let r = self.item_rect(state, body, pos);
         if self.model.grid {
-            Rectangle { x: r.x - 8.0, y: r.y + THUMB + 6.0, width: r.width + 16.0, height: 26.0 }
+            // Sized to the name (as the label is drawn), centred under the picture and kept
+            // inside the pane; wider than the tile only when the name needs it, floating over
+            // the neighbours' labels rather than crossing the tile's own frame.
+            let name = self.model.order.get(pos).map(|&i| self.model.listing.name_bytes(i as usize)).unwrap_or_default();
+            let cells = String::from_utf8_lossy(name).chars().count().max(self.model.rename_chars) + 2;
+            let lo = body.x + 2.0;
+            let hi = body.x + body.width - SCROLLBAR - 2.0;
+            let width = (cells as f32 * style::META * 0.6 + 14.0).min(GRID_EDITOR_MAX).min(hi - lo).max(r.width);
+            let x = (r.center_x() - width / 2.0).min(hi - width).max(lo);
+            Rectangle { x, y: r.y + THUMB + 7.0, width, height: 24.0 }
         } else {
             let cols = columns(bounds);
             Rectangle { x: cols.name - 6.0, y: r.y + (r.height - 24.0) / 2.0, width: cols.name_w + 12.0, height: 24.0 }
@@ -1054,6 +1067,15 @@ impl<'a, Message> FileList<'a, Message> {
             }
             return;
         }
+        if self.model.grid && self.model.renaming == Some(pos) {
+            // The rename field is the focus now; a frame round the whole tile would cross it.
+            let pic = Rectangle { height: THUMB + 6.0, ..r };
+            renderer.fill_quad(
+                Quad { bounds: pic, border: Border { radius: 2.0.into(), ..Border::default() }, ..Quad::default() },
+                color(p.selection),
+            );
+            return;
+        }
         if selected || hover == Some(pos) || is_cursor {
             let bg = if selected {
                 color(p.selection)
@@ -1363,6 +1385,8 @@ mod tests {
             active: true,
             dragging: false,
             renaming: None,
+            rename_chars: 0,
+            highlight: "",
             thumb: Box::new(|_| None),
         };
         run(FileList::new(model, &palette, &icons, &dates, |a| a));

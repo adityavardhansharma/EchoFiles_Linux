@@ -105,7 +105,8 @@ pub enum NetMsg {
         op: u64,
         address: Address,
         save: bool,
-        result: Result<Mount, ef_net::Error>,
+        /// Boxed: a mount is big, and every `Message` would be as big as this one.
+        result: Box<Result<Mount, ef_net::Error>>,
     },
     Shares {
         op: u64,
@@ -138,10 +139,6 @@ enum Event {
 
 static EVENTS: OnceLock<Mutex<Option<mpsc::UnboundedReceiver<Event>>>> = OnceLock::new();
 static EVENT_TX: OnceLock<mpsc::UnboundedSender<Event>> = OnceLock::new();
-
-pub(crate) fn forward_ask(ask: Ask) {
-    let _ = event_tx().unbounded_send(Event::Ask(ask));
-}
 
 fn event_tx() -> mpsc::UnboundedSender<Event> {
     EVENT_TX
@@ -268,11 +265,7 @@ impl App {
             out.push(Place { key: s.uri.clone(), name, address, mount: mi.map(|i| &self.net.mounts[i]), saved: true });
         }
         for (i, m) in self.net.mounts.iter().enumerate() {
-            // The phone's files show under Phone, not as a server.
-            if used.contains(&i)
-                || self.is_phone_path(&m.root)
-                || m.address.as_ref().is_some_and(|a| a.user.as_deref() == Some("kdeconnect"))
-            {
+            if used.contains(&i) {
                 continue;
             }
             let key = m.address.as_ref().map(Address::uri).unwrap_or_else(|| m.root.to_string_lossy().into_owned());
@@ -388,7 +381,7 @@ impl App {
         let ask = asker();
         background(
             move || gvfs::mount(&a, op, ask),
-            move |result| Message::Net(NetMsg::Connected { op, address: address.clone(), save, result }),
+            move |result| Message::Net(NetMsg::Connected { op, address: address.clone(), save, result: Box::new(result) }),
         )
     }
 
@@ -581,6 +574,7 @@ impl App {
             }
             NetMsg::Connect { address, save } => self.connect(address, save),
             NetMsg::Connected { op, address, save, result } => {
+                let result = *result;
                 self.net.connecting.retain(|(o, _)| *o != op);
                 self.close_questions_for(op);
                 let from_form = self.net.form.as_ref().is_some_and(|f| f.busy == Some(op));
@@ -731,12 +725,7 @@ impl App {
     pub(crate) fn network_section(&self) -> Element<'_, Message> {
         let p = &self.palette;
         let open = self.settings.sidebar.network_open;
-        let connected = self
-            .net
-            .mounts
-            .iter()
-            .filter(|m| !self.is_phone_path(&m.root) && m.address.as_ref().is_none_or(|a| a.user.as_deref() != Some("kdeconnect")))
-            .count();
+        let connected = self.net.mounts.len();
         let add = self.tip(
             w::icon_button(p, &self.icons, "plus", Some(Message::Net(NetMsg::Open(None))), false),
             "Connect to server",

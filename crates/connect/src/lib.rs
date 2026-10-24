@@ -89,6 +89,26 @@ fn event_json(e: &Event, progress: &Mutex<HashMap<u64, (u64, Arc<AtomicU64>)>>) 
     }
 }
 
+/// The file server's host key seed, made once and kept with the pairings: the server's
+/// key then stays the same however often Android restarts it.
+fn host_key_seed(dir: &std::path::Path) -> Result<[u8; 32], String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = dir.join("sftp-host-key");
+    if let Ok(b) = std::fs::read(&path)
+        && let Ok(seed) = <[u8; 32]>::try_from(b.as_slice())
+    {
+        return Ok(seed);
+    }
+    let mut seed = [0u8; 32];
+    getrandom::fill(&mut seed).map_err(|e| e.to_string())?;
+    let tmp = dir.join("sftp-host-key.tmp");
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).map_err(|e| e.to_string())?;
+    f.write_all(&seed).and_then(|_| f.sync_all()).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    Ok(seed)
+}
+
 fn parse(body: &str) -> Value {
     serde_json::from_str(body).unwrap_or_else(|_| json!({}))
 }
@@ -231,13 +251,14 @@ impl Core {
             .to_string()
     }
 
-    /// Serve `roots` (name → folder) over SFTP for the laptop and tell it how to connect.
+    /// Serve `roots` (name → folder) over SFTP for the laptop and tell it how to connect,
+    /// including the host key's fingerprint, which EchoFiles pins.
     /// Returns the port, or an error.
     pub fn start_sftp(&self, laptop: String, roots: Vec<String>, names: Vec<String>) -> Result<u16, CoreError> {
         let mut slot = self.sftp.lock().unwrap();
         let server = match slot.take() {
             Some(s) => s,
-            None => sftp::Server::start(roots.clone()).map_err(CoreError::Failed)?,
+            None => sftp::Server::start(roots.clone(), host_key_seed(&self.dir).map_err(CoreError::Failed)?).map_err(CoreError::Failed)?,
         };
         let port = server.port();
         let body = json!({
