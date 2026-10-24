@@ -2,8 +2,8 @@
 //! `LS_COLORS`, hyperlinks, `--format`, `-0`, and EchoFiles' JSON, budget and summary.
 
 use std::collections::HashMap;
-use std::os::unix::ffi::OsStrExt;
 use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use crate::filter::{FType, Hit};
@@ -157,7 +157,9 @@ impl Sgr {
     }
 
     fn plain(&self) -> bool {
-        self.fg.is_none() && self.bg.is_none() && !(self.bold || self.dimmed || self.italic || self.underline || self.blink || self.reverse || self.hidden || self.strike)
+        self.fg.is_none()
+            && self.bg.is_none()
+            && !(self.bold || self.dimmed || self.italic || self.underline || self.blink || self.reverse || self.hidden || self.strike)
     }
 
     /// `text` wrapped in this style's codes (attributes, then background, then
@@ -168,7 +170,16 @@ impl Sgr {
             return;
         }
         let mut codes: Vec<String> = Vec::new();
-        for (on, c) in [(self.bold, "1"), (self.dimmed, "2"), (self.italic, "3"), (self.underline, "4"), (self.blink, "5"), (self.reverse, "7"), (self.hidden, "8"), (self.strike, "9")] {
+        for (on, c) in [
+            (self.bold, "1"),
+            (self.dimmed, "2"),
+            (self.italic, "3"),
+            (self.underline, "4"),
+            (self.blink, "5"),
+            (self.reverse, "7"),
+            (self.hidden, "8"),
+            (self.strike, "9"),
+        ] {
             if on {
                 codes.push(c.into());
             }
@@ -199,7 +210,10 @@ const FD_DEFAULT: &str = include_str!("fd_ls_colors.txt");
 /// What `lscolors` starts from before reading a palette.
 const BASE: &str = "rs=0:lc=\x1b[:rc=m:cl=\x1b[K:ex=01;32:sg=30;43:su=37;41:di=01;34:st=37;44:ow=34;42:tw=30;42:ln=01;36:bd=01;33:cd=01;33:do=01;35:pi=33:so=01;35:";
 
-const INDICATORS: [&str; 24] = ["no", "fi", "di", "ln", "pi", "so", "do", "bd", "cd", "or", "su", "sg", "st", "ow", "tw", "ex", "mi", "ca", "mh", "lc", "rc", "ec", "rs", "cl"];
+const INDICATORS: [&str; 24] = [
+    "no", "fi", "di", "ln", "pi", "so", "do", "bd", "cd", "or", "su", "sg", "st", "ow", "tw", "ex", "mi", "ca", "mh", "lc", "rc", "ec",
+    "rs", "cl",
+];
 
 /// `LS_COLORS` colouring, matching fd (which uses the `lscolors` crate): file-type
 /// indicators with ls's fallbacks, and suffix rules where later entries win and matching
@@ -268,7 +282,10 @@ impl LsColors {
 
     fn suffix_style(&self, name: &[u8]) -> Option<&Sgr> {
         let exact = self.suffixes.iter().position(|(sfx, _, _)| name.ends_with(sfx));
-        let folded = self.suffixes.iter().position(|(sfx, _, cs)| !cs && name.len() >= sfx.len() && name[name.len() - sfx.len()..].eq_ignore_ascii_case(sfx));
+        let folded = self
+            .suffixes
+            .iter()
+            .position(|(sfx, _, cs)| !cs && name.len() >= sfx.len() && name[name.len() - sfx.len()..].eq_ignore_ascii_case(sfx));
         let i = match (exact, folded) {
             (Some(a), Some(b)) => a.min(b),
             (Some(a), None) | (None, Some(a)) => a,
@@ -285,9 +302,10 @@ impl LsColors {
             "mi" => "or",
             k => k,
         };
-        self.indicators.get(key).or_else(|| self.indicators.get(fallback)).or_else(|| {
-            if key == "fi" && !self.file_normal_fallback { None } else { self.indicators.get("no") }
-        })
+        self.indicators
+            .get(key)
+            .or_else(|| self.indicators.get(fallback))
+            .or_else(|| if key == "fi" && !self.file_normal_fallback { None } else { self.indicators.get("no") })
     }
 
     fn has(&self, key: &str) -> bool {
@@ -301,7 +319,11 @@ impl LsColors {
         let meta = || std::fs::metadata(path).ok();
         let key = match h.ftype {
             FType::File => {
-                let m = h.meta.as_deref().map(|m| (m.mode, m.nlink)).or_else(|| meta().map(|m| (std::os::unix::fs::MetadataExt::mode(&m), std::os::unix::fs::MetadataExt::nlink(&m))));
+                let m = h
+                    .meta
+                    .as_deref()
+                    .map(|m| (m.mode, m.nlink))
+                    .or_else(|| meta().map(|m| (std::os::unix::fs::MetadataExt::mode(&m), std::os::unix::fs::MetadataExt::nlink(&m))));
                 let (mode, nlink) = m.unwrap_or((0, 1));
                 if self.has("su") && mode & 0o4000 != 0 {
                     "su"
@@ -316,7 +338,8 @@ impl LsColors {
                 }
             }
             FType::Dir => {
-                let mode = h.meta.as_deref().map(|m| m.mode).or_else(|| meta().map(|m| std::os::unix::fs::MetadataExt::mode(&m))).unwrap_or(0);
+                let mode =
+                    h.meta.as_deref().map(|m| m.mode).or_else(|| meta().map(|m| std::os::unix::fs::MetadataExt::mode(&m))).unwrap_or(0);
                 if self.has("tw") && mode & 0o1002 == 0o1002 {
                     "tw"
                 } else if self.has("ow") && mode & 0o002 != 0 {
@@ -478,7 +501,15 @@ pub struct Template {
 
 impl Template {
     pub fn parse(fmt: &str) -> Template {
-        const PATS: [(&str, Option<Tok>); 7] = [("{{", None), ("}}", None), ("{//}", Some(Tok::Parent)), ("{/.}", Some(Tok::BaseNoExt)), ("{/}", Some(Tok::Base)), ("{.}", Some(Tok::NoExt)), ("{}", Some(Tok::Path))];
+        const PATS: [(&str, Option<Tok>); 7] = [
+            ("{{", None),
+            ("}}", None),
+            ("{//}", Some(Tok::Parent)),
+            ("{/.}", Some(Tok::BaseNoExt)),
+            ("{/}", Some(Tok::Base)),
+            ("{.}", Some(Tok::NoExt)),
+            ("{}", Some(Tok::Path)),
+        ];
         let b = fmt.as_bytes();
         let mut toks = Vec::new();
         let mut buf: Vec<u8> = Vec::new();
@@ -532,7 +563,9 @@ impl Template {
         let p = Path::new(OsStr::from_bytes(path));
         let basename = |p: &Path| -> OsString { p.file_name().unwrap_or(p.as_os_str()).to_os_string() };
         let dirname = |p: &Path| -> OsString {
-            p.parent().map(|d| if d.as_os_str().is_empty() { OsString::from(".") } else { d.as_os_str().to_os_string() }).unwrap_or_else(|| p.as_os_str().to_os_string())
+            p.parent()
+                .map(|d| if d.as_os_str().is_empty() { OsString::from(".") } else { d.as_os_str().to_os_string() })
+                .unwrap_or_else(|| p.as_os_str().to_os_string())
         };
         let no_ext = |p: &Path| -> OsString {
             let joined = PathBuf::from(dirname(p)).join(p.file_stem().unwrap_or(p.as_os_str()));
@@ -575,7 +608,10 @@ impl Template {
 // ---------------------------------------------------------------------------------------
 
 /// Where the hits are, grouped by their first folders below the root, and by extension.
-pub fn summary(hits: &[Hit], roots: &[RootView]) -> (Vec<(String, usize)>, Vec<(String, usize)>) {
+/// Result counts by folder and by extension, largest first.
+pub type Breakdown = (Vec<(String, usize)>, Vec<(String, usize)>);
+
+pub fn summary(hits: &[Hit], roots: &[RootView]) -> Breakdown {
     let mut by_dir: HashMap<Vec<u8>, usize> = HashMap::new();
     let mut by_ext: HashMap<String, usize> = HashMap::new();
     for h in hits {
@@ -618,7 +654,7 @@ pub fn summary(hits: &[Hit], roots: &[RootView]) -> (Vec<(String, usize)>, Vec<(
     (dirs, exts)
 }
 
-pub fn write_summary(breakdown: &(Vec<(String, usize)>, Vec<(String, usize)>), total: usize, out: &mut Vec<u8>) {
+pub fn write_summary(breakdown: &Breakdown, total: usize, out: &mut Vec<u8>) {
     let (dirs, exts) = breakdown;
     let _ = writeln!(out, "# {total} results. By folder:");
     for (d, n) in dirs.iter().take(10) {
@@ -646,10 +682,25 @@ pub struct FileFacts {
 }
 
 const LOCKFILES: &[&str] = &[
-    "cargo.lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "gemfile.lock", "composer.lock", "go.sum", "flake.lock", "uv.lock",
-    "pipfile.lock", "bun.lockb", "mix.lock", "pubspec.lock", "podfile.lock", "packages.lock.json",
+    "cargo.lock",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "gemfile.lock",
+    "composer.lock",
+    "go.sum",
+    "flake.lock",
+    "uv.lock",
+    "pipfile.lock",
+    "bun.lockb",
+    "mix.lock",
+    "pubspec.lock",
+    "podfile.lock",
+    "packages.lock.json",
 ];
-const GENERATED_DIRS: &[&str] = &["/target/", "/dist/", "/build/", "/node_modules/", "/.next/", "/__pycache__/", "/out/", "/.gradle/", "/vendor/"];
+const GENERATED_DIRS: &[&str] =
+    &["/target/", "/dist/", "/build/", "/node_modules/", "/.next/", "/__pycache__/", "/out/", "/.gradle/", "/vendor/"];
 
 pub fn facts(h: &Hit) -> Option<FileFacts> {
     if h.ftype != FType::File {

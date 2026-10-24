@@ -289,7 +289,8 @@ impl Filters {
 
     /// Whether name checks or ranking read the folded name (EchoFiles word patterns).
     pub fn needs_fold(&self, rank: bool) -> bool {
-        self.patterns.iter().any(|p| p.syntax == crate::pattern::Syntax::Words && !p.full_path) || (rank && self.patterns.first().is_some_and(|p| p.syntax == crate::pattern::Syntax::Words))
+        self.patterns.iter().any(|p| p.syntax == crate::pattern::Syntax::Words && !p.full_path)
+            || (rank && self.patterns.first().is_some_and(|p| p.syntax == crate::pattern::Syntax::Words))
     }
 
     /// Name-only checks: patterns and extension. `folded` is the folded name if at hand.

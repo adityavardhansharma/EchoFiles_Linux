@@ -9,8 +9,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use russh::keys::ssh_key::private::Ed25519Keypair;
 use russh::keys::PrivateKey;
+use russh::keys::ssh_key::private::Ed25519Keypair;
 use russh::server::{Auth, ChannelOpenHandle, Msg, Server as _, Session};
 use russh::{Channel, ChannelId};
 use russh_sftp::protocol::{Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version};
@@ -44,7 +44,12 @@ impl Server {
         if roots.is_empty() {
             return Err("Nothing to share: allow All files access for EchoConnect.".into());
         }
-        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().thread_name("sftp").build().map_err(|e| e.to_string())?;
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .thread_name("sftp")
+            .build()
+            .map_err(|e| e.to_string())?;
         let mut seed = [0u8; 32];
         getrandom::fill(&mut seed).map_err(|e| e.to_string())?;
         let key = PrivateKey::from(Ed25519Keypair::from_seed(&seed));
@@ -81,7 +86,9 @@ impl Server {
     pub fn user(&self) -> String {
         self.user.clone()
     }
-    pub fn fingerprint(&self) -> String { self.fingerprint.clone() }
+    pub fn fingerprint(&self) -> String {
+        self.fingerprint.clone()
+    }
     pub fn password(&self) -> String {
         self.password.clone()
     }
@@ -110,11 +117,7 @@ impl russh::server::Handler for Conn {
     type Error = russh::Error;
 
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
-        if user == self.app.user && password == self.app.password {
-            Ok(Auth::Accept)
-        } else {
-            Ok(Auth::reject())
-        }
+        if user == self.app.user && password == self.app.password { Ok(Auth::Accept) } else { Ok(Auth::reject()) }
     }
 
     async fn channel_open_session(&mut self, channel: Channel<Msg>, reply: ChannelOpenHandle, _: &mut Session) -> Result<(), Self::Error> {
@@ -193,7 +196,9 @@ impl Sftp {
         let mut ancestor = p.as_path();
         while !ancestor.exists() {
             // A dangling symlink must not become a writable escape hatch.
-            if std::fs::symlink_metadata(ancestor).is_ok() { return Err(StatusCode::PermissionDenied); }
+            if std::fs::symlink_metadata(ancestor).is_ok() {
+                return Err(StatusCode::PermissionDenied);
+            }
             ancestor = ancestor.parent().ok_or(StatusCode::PermissionDenied)?;
         }
         let resolved = std::fs::canonicalize(ancestor).map_err(code)?;
@@ -300,7 +305,11 @@ impl russh_sftp::server::Handler for Sftp {
     async fn read(&mut self, id: u32, handle: String, offset: u64, len: u32) -> Result<Data, StatusCode> {
         let Some(Open::File(f)) = self.open.get_mut(&handle) else { return Err(StatusCode::Failure) };
         let mut data = vec![0u8; len.min(256 * 1024) as usize];
-        let n = blocking(|| { f.seek(SeekFrom::Start(offset))?; f.read(&mut data) }).map_err(code)?;
+        let n = blocking(|| {
+            f.seek(SeekFrom::Start(offset))?;
+            f.read(&mut data)
+        })
+        .map_err(code)?;
         if n == 0 {
             return Err(StatusCode::Eof);
         }
@@ -310,7 +319,11 @@ impl russh_sftp::server::Handler for Sftp {
 
     async fn write(&mut self, id: u32, handle: String, offset: u64, data: Vec<u8>) -> Result<Status, StatusCode> {
         let Some(Open::File(f)) = self.open.get_mut(&handle) else { return Err(StatusCode::Failure) };
-        blocking(|| { f.seek(SeekFrom::Start(offset))?; f.write_all(&data) }).map_err(code)?;
+        blocking(|| {
+            f.seek(SeekFrom::Start(offset))?;
+            f.write_all(&data)
+        })
+        .map_err(code)?;
         Ok(ok(id))
     }
 
@@ -375,8 +388,10 @@ mod tests {
     fn shared_roots_reject_symlink_escapes() {
         use super::*;
         let root = std::env::temp_dir().join(format!("echo-sftp-test-{}", std::process::id()));
-        let shared = root.join("shared"); std::fs::create_dir_all(&shared).unwrap();
-        let outside = root.join("outside"); std::fs::create_dir_all(&outside).unwrap();
+        let shared = root.join("shared");
+        std::fs::create_dir_all(&shared).unwrap();
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
         std::os::unix::fs::symlink(&outside, shared.join("escape")).unwrap();
         let server = Sftp { roots: Arc::new(vec![shared.clone()]), open: HashMap::new(), next: 0 };
         assert!(server.inside("escape/private.txt").is_err());
@@ -384,5 +399,4 @@ mod tests {
         assert_eq!(server.inside("new.txt").unwrap(), shared.join("new.txt"));
         std::fs::remove_dir_all(root).unwrap();
     }
-
 }

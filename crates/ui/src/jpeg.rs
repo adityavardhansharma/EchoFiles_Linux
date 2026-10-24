@@ -47,7 +47,11 @@ impl Huff {
                 let (r, sz) = ((sym >> 4) as u32, (sym & 15) as u32);
                 let total = len as u32 + sz;
                 if total <= AC_BITS {
-                    let entry = if sz == 0 && r == 0 { total as u16 | 1 << 10 } else { total as u16 | ((if sz == 0 { 16 } else { r + 1 }) as u16) << 5 };
+                    let entry = if sz == 0 && r == 0 {
+                        total as u16 | 1 << 10
+                    } else {
+                        total as u16 | ((if sz == 0 { 16 } else { r + 1 }) as u16) << 5
+                    };
                     let c = ((code + i) as u32) << (AC_BITS - len as u32);
                     let span = 1u32 << (AC_BITS - len as u32);
                     for f in 0..span {
@@ -373,11 +377,16 @@ pub fn decode_eighth(data: &[u8]) -> Option<Small> {
             } else if adobe_rgb {
                 rgb.extend_from_slice(&[level(&comps[0], x, y), level(&comps[1], x, y), level(&comps[2], x, y)]);
             } else {
-                let (yy, cb, cr) = (level(&comps[0], x, y) as f32, level(&comps[1], x, y) as f32 - 128.0, level(&comps[2], x, y) as f32 - 128.0);
+                let (yy, cb, cr) =
+                    (level(&comps[0], x, y) as f32, level(&comps[1], x, y) as f32 - 128.0, level(&comps[2], x, y) as f32 - 128.0);
                 let r = yy + 1.402 * cr;
                 let g = yy - 0.344_136 * cb - 0.714_136 * cr;
                 let b = yy + 1.772 * cb;
-                rgb.extend_from_slice(&[r.round().clamp(0.0, 255.0) as u8, g.round().clamp(0.0, 255.0) as u8, b.round().clamp(0.0, 255.0) as u8]);
+                rgb.extend_from_slice(&[
+                    r.round().clamp(0.0, 255.0) as u8,
+                    g.round().clamp(0.0, 255.0) as u8,
+                    b.round().clamp(0.0, 255.0) as u8,
+                ]);
             }
         }
     }
@@ -456,7 +465,7 @@ fn scan(
         let stride = c.bw;
         for by in 0..bh {
             for bx in 0..bw {
-                if restart > 0 && done > 0 && done % restart == 0 {
+                if restart > 0 && done > 0 && done.is_multiple_of(restart) {
                     bits.restart();
                     pred.iter_mut().for_each(|p| *p = 0);
                 }
@@ -468,7 +477,7 @@ fn scan(
         let (mcux, mcuy) = (width.div_ceil(8 * hmax), height.div_ceil(8 * vmax));
         for my in 0..mcuy {
             for mx in 0..mcux {
-                if restart > 0 && done > 0 && done % restart == 0 {
+                if restart > 0 && done > 0 && done.is_multiple_of(restart) {
                     bits.restart();
                     pred.iter_mut().for_each(|p| *p = 0);
                 }
@@ -616,7 +625,14 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src.png");
-        assert!(std::process::Command::new("magick").args(["-size", "1001x777", "-seed", "7", "plasma:fractal"]).arg(&src).status().unwrap().success());
+        assert!(
+            std::process::Command::new("magick")
+                .args(["-size", "1001x777", "-seed", "7", "plasma:fractal"])
+                .arg(&src)
+                .status()
+                .unwrap()
+                .success()
+        );
         let variants: &[(&str, &[&str])] = &[
             ("420.jpg", &["-sampling-factor", "4:2:0", "-quality", "90"]),
             ("444.jpg", &["-sampling-factor", "4:4:4"]),
@@ -633,9 +649,12 @@ mod tests {
         }
         // Restart markers every MCU, and optimized tables, via cjpeg.
         if let Ok(ppm) = std::process::Command::new("magick").arg(&src).arg("ppm:-").output() {
-            for (name, args) in [("restart.jpg", &["-restart", "1B"][..]), ("optimize.jpg", &["-optimize"][..]), ("progcjpeg.jpg", &["-progressive"][..])] {
+            for (name, args) in
+                [("restart.jpg", &["-restart", "1B"][..]), ("optimize.jpg", &["-optimize"][..]), ("progcjpeg.jpg", &["-progressive"][..])]
+            {
                 let out = dir.path().join(name);
-                let mut c = std::process::Command::new("cjpeg").args(args).arg("-outfile").arg(&out).stdin(std::process::Stdio::piped()).spawn();
+                let mut c =
+                    std::process::Command::new("cjpeg").args(args).arg("-outfile").arg(&out).stdin(std::process::Stdio::piped()).spawn();
                 if let Ok(child) = c.as_mut() {
                     use std::io::Write;
                     child.stdin.take().unwrap().write_all(&ppm.stdout).unwrap();
@@ -685,7 +704,13 @@ mod tests {
                 std::hint::black_box(image::load_from_memory(&data).unwrap().thumbnail(128, 128));
             }
             let full = t.elapsed() / 5;
-            eprintln!("{:<16} dc {:>8.2?}  full {:>8.2?}  ({:.1}x)", f.file_name().unwrap().to_string_lossy(), ours, full, full.as_secs_f64() / ours.as_secs_f64());
+            eprintln!(
+                "{:<16} dc {:>8.2?}  full {:>8.2?}  ({:.1}x)",
+                f.file_name().unwrap().to_string_lossy(),
+                ours,
+                full,
+                full.as_secs_f64() / ours.as_secs_f64()
+            );
         }
         // Real photos, if any are around.
         for f in ["/usr/share/sddm/themes/maldives/background.jpg", "/usr/share/omarchy/themes/ethereal/backgrounds/1-cosmic.jpg"] {
@@ -698,7 +723,12 @@ mod tests {
             let img = image::load_from_memory(&data).unwrap();
             std::hint::black_box(img.thumbnail(128, 128));
             let full = t.elapsed();
-            eprintln!("{f}: {}x{} dc {ours:.2?} full {full:.2?} ({:.1}x)", img.width(), img.height(), full.as_secs_f64() / ours.as_secs_f64());
+            eprintln!(
+                "{f}: {}x{} dc {ours:.2?} full {full:.2?} ({:.1}x)",
+                img.width(),
+                img.height(),
+                full.as_secs_f64() / ours.as_secs_f64()
+            );
         }
         // A camera-style file: an APP1 EXIF block whose IFD1 points at a preview JPEG.
         let thumb = dir.path().join("thumb.jpg");
@@ -737,7 +767,10 @@ mod tests {
         // Arithmetic coding isn't handled: the caller falls back.
         let arith = dir.path().join("arith.jpg");
         if std::process::Command::new("magick").arg(&src).arg("ppm:-").output().is_ok() {
-            let _ = std::process::Command::new("sh").arg("-c").arg(format!("magick {} ppm:- | cjpeg -arithmetic -outfile {}", src.display(), arith.display())).status();
+            let _ = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("magick {} ppm:- | cjpeg -arithmetic -outfile {}", src.display(), arith.display()))
+                .status();
             if let Ok(d) = std::fs::read(&arith) {
                 assert!(decode_eighth(&d).is_none());
             }

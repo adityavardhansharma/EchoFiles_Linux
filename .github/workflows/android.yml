@@ -2,8 +2,9 @@ name: EchoConnect release
 
 # Manual only: Actions → EchoConnect release → Run workflow.
 # Signs the release APK and attaches EchoConnect.apk to the echoconnect-v<version>
-# GitHub release. Without the ECHOCONNECT_* signing secrets it signs with a one-off key.
-# Tests are not run here; use the "Rust regression tests" workflow.
+# GitHub release. Without the ECHOCONNECT_* signing secrets the run fails, unless
+# "Sign with a one-off test key" is ticked (installing such a build means uninstalling
+# the previous one). The Rust core's tests run first.
 on:
   workflow_dispatch:
     inputs:
@@ -15,6 +16,11 @@ on:
         description: Create a draft release for review
         required: true
         default: true
+        type: boolean
+      test_key:
+        description: Sign with a one-off test key when the signing secrets are missing
+        required: true
+        default: false
         type: boolean
 
 permissions:
@@ -49,6 +55,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: gradle/actions/setup-gradle@v4
       - run: cargo install cargo-ndk --locked
+      - name: Rust core tests
+        run: cargo test -p echofiles-phone -p echoconnect-core --locked -- --test-threads=1
       - name: Signed release APK
         env:
           KEYSTORE_BASE64: ${{ secrets.ECHOCONNECT_KEYSTORE_BASE64 }}
@@ -56,12 +64,16 @@ jobs:
           ECHOCONNECT_KEY_ALIAS: ${{ secrets.ECHOCONNECT_KEY_ALIAS }}
           ECHOCONNECT_KEY_PASSWORD: ${{ secrets.ECHOCONNECT_KEY_PASSWORD }}
           ECHOCONNECT_KEYSTORE: ${{ runner.temp }}/echoconnect.jks
+          TEST_KEY: ${{ inputs.test_key }}
         run: |
           trap 'rm -f "$ECHOCONNECT_KEYSTORE"' EXIT
           if [[ -n "$KEYSTORE_BASE64" ]]; then
             printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$ECHOCONNECT_KEYSTORE"
+          elif [[ "$TEST_KEY" != true ]]; then
+            echo '::error::The ECHOCONNECT_* signing secrets are not set. Add them, or rerun with "Sign with a one-off test key".'
+            exit 1
           else
-            # No signing secrets yet: sign with a key made for this run only. Each release
+            # Asked for explicitly: sign with a key made for this run only. Each release
             # then has a different key, so installing it means uninstalling the previous one.
             echo '::warning::No signing secrets set; signing with a one-off key. Uninstall the old EchoConnect before installing this APK.'
             ECHOCONNECT_KEYSTORE_PASSWORD=$(openssl rand -hex 24)
@@ -73,8 +85,8 @@ jobs:
               -storepass "$ECHOCONNECT_KEYSTORE_PASSWORD" -keypass "$ECHOCONNECT_KEY_PASSWORD"
           fi
           cd android
-          ./gradlew assembleRelease
-          cp app/build/outputs/apk/release/app-release.apk EchoConnect.apk
+          ./gradlew assembleFullRelease
+          cp app/build/outputs/apk/full/release/app-full-release.apk EchoConnect.apk
           sha256sum EchoConnect.apk > SHA256SUMS
       - name: Publish the release
         env:

@@ -158,11 +158,19 @@ pub fn order(listing: &Listing, keys: &NameKeys, spec: SortSpec, show_hidden: bo
                 keys.get(x).cmp(keys.get(y)).then_with(|| listing.name_bytes(x).cmp(listing.name_bytes(y)))
             })
         };
-        if parallel { v.par_sort_unstable_by(cmp) } else { v.sort_unstable_by(cmp) }
+        if parallel {
+            v.par_sort_unstable_by(cmp)
+        } else {
+            v.sort_unstable_by(cmp)
+        }
         let mut out: Vec<u32> = v.into_iter().map(|(_, i)| i).collect();
         if spec.descending {
             // Keep folders first when reversing the name order.
-            let split = if spec.folders_first { out.iter().position(|&i| listing.kind[i as usize] != Kind::Dir).unwrap_or(out.len()) } else { out.len() };
+            let split = if spec.folders_first {
+                out.iter().position(|&i| listing.kind[i as usize] != Kind::Dir).unwrap_or(out.len())
+            } else {
+                out.len()
+            };
             out[..split].reverse();
             out[split..].reverse();
         }
@@ -170,7 +178,11 @@ pub fn order(listing: &Listing, keys: &NameKeys, spec: SortSpec, show_hidden: bo
     }
     let mut idx: Vec<u32> = (0..listing.len() as u32).filter(|&i| visible(i as usize)).collect();
     let cmp = |a: &u32, b: &u32| compare(listing, keys, spec, *a as usize, *b as usize);
-    if parallel { idx.par_sort_unstable_by(cmp) } else { idx.sort_unstable_by(cmp) }
+    if parallel {
+        idx.par_sort_unstable_by(cmp)
+    } else {
+        idx.sort_unstable_by(cmp)
+    }
     idx
 }
 
@@ -196,9 +208,7 @@ fn compare(l: &Listing, keys: &NameKeys, spec: SortSpec, a: usize, b: usize) -> 
         SortBy::Modified => l.mtime[a].cmp(&l.mtime[b]),
         SortBy::Kind => extension(l.name_bytes(a)).cmp(extension(l.name_bytes(b))),
     };
-    let ord = primary
-        .then_with(|| keys.get(a).cmp(keys.get(b)))
-        .then_with(|| l.name_bytes(a).cmp(l.name_bytes(b)));
+    let ord = primary.then_with(|| keys.get(a).cmp(keys.get(b))).then_with(|| l.name_bytes(a).cmp(l.name_bytes(b)));
     if spec.descending { ord.reverse() } else { ord }
 }
 

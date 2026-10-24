@@ -38,7 +38,7 @@ enum Fast {
     Exact(Vec<u8>),
     Suffix(Vec<u8>),
     Prefix(Vec<u8>),
-    Contains(memchr::memmem::Finder<'static>),
+    Contains(Box<memchr::memmem::Finder<'static>>),
     /// `*`: anything (within one component).
     All,
 }
@@ -296,7 +296,7 @@ fn fast_path(comps: &[Comp]) -> Fast {
     match t.as_slice() {
         [Tok::Star] => Fast::All,
         [Tok::Star, rest @ .., Tok::Star] if !rest.is_empty() => match lit_bytes(rest) {
-            Some(l) => Fast::Contains(memchr::memmem::Finder::new(&l).into_owned()),
+            Some(l) => Fast::Contains(Box::new(memchr::memmem::Finder::new(&l).into_owned())),
             None => Fast::None,
         },
         [Tok::Star, rest @ ..] => lit_bytes(rest).map_or(Fast::None, Fast::Suffix),

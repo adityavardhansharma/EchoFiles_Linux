@@ -77,14 +77,9 @@ mod embedded {
 
 impl Icons {
     pub fn new(palette: &Palette) -> Self {
-        let color = embedded::COLOR
-            .iter()
-            .map(|(name, svg)| (*name, svg::Handle::from_memory(palette.recolor_icon(svg).into_bytes())))
-            .collect();
-        let glyph = embedded::GLYPHS
-            .iter()
-            .map(|(name, svg)| (*name, svg::Handle::from_memory(svg.as_bytes())))
-            .collect();
+        let color =
+            embedded::COLOR.iter().map(|(name, svg)| (*name, svg::Handle::from_memory(palette.recolor_icon(svg).into_bytes()))).collect();
+        let glyph = embedded::GLYPHS.iter().map(|(name, svg)| (*name, svg::Handle::from_memory(svg.as_bytes()))).collect();
         Self { color, glyph }
     }
 

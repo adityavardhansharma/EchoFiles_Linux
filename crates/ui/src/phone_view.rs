@@ -9,7 +9,7 @@ use std::time::SystemTime;
 
 use ef_config::PhonePicture;
 use ef_theme::{Palette, Rgb};
-use iced::widget::{button, column, container, image, mouse_area, pin, row, scrollable, stack, svg, text, text_input, Space};
+use iced::widget::{Space, button, column, container, image, mouse_area, pin, row, scrollable, stack, svg, text, text_input};
 use iced::{Alignment, Background, Border, Color, ContentFit, Element, Font, Length, Padding};
 
 use crate::app::{App, Message};
@@ -45,7 +45,8 @@ fn local(secs: i64) -> libc::tm {
 }
 
 const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const MONTHS: [&str; 12] =
+    ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 fn now_secs() -> i64 {
     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
@@ -85,31 +86,56 @@ fn device_svg(p: &Palette, state: DeviceState, wallpaper: Option<&str>, battery:
     let frame = hex(slot("slate-deep", p.ink_faint));
     let key = hex(slot("slate", p.ink_muted));
     let (x, y, wd, ht, r) = (14, 14, 276, 592, 30);
-    let mut s = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 304 620"><defs><clipPath id="c"><rect x="{x}" y="{y}" width="{wd}" height="{ht}" rx="{r}"/></clipPath></defs>"#);
-    s += &format!(r#"<rect x="300" y="128" width="4" height="70" rx="1.5" fill="{key}"/><rect x="300" y="214" width="4" height="38" rx="1.5" fill="{key}"/>"#);
+    let mut s = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 304 620"><defs><clipPath id="c"><rect x="{x}" y="{y}" width="{wd}" height="{ht}" rx="{r}"/></clipPath></defs>"#
+    );
+    s += &format!(
+        r#"<rect x="300" y="128" width="4" height="70" rx="1.5" fill="{key}"/><rect x="300" y="214" width="4" height="38" rx="1.5" fill="{key}"/>"#
+    );
     s += &format!(r#"<rect x="2" y="2" width="300" height="616" rx="40" fill="{frame}"/>"#);
-    s += &format!(r#"<g fill="{key}"><rect x="2" y="70" width="4" height="3"/><rect x="298" y="70" width="4" height="3"/><rect x="2" y="548" width="4" height="3"/><rect x="298" y="548" width="4" height="3"/></g>"#);
+    s += &format!(
+        r#"<g fill="{key}"><rect x="2" y="70" width="4" height="3"/><rect x="298" y="70" width="4" height="3"/><rect x="2" y="548" width="4" height="3"/><rect x="298" y="548" width="4" height="3"/></g>"#
+    );
     s += r##"<rect x="8" y="8" width="288" height="604" rx="35" fill="#020203"/><g clip-path="url(#c)">"##;
     if state == DeviceState::Away {
         s += &format!(r##"<rect x="{x}" y="{y}" width="{wd}" height="{ht}" fill="#040506"/>"##);
     } else {
         s += &format!(r##"<rect x="{x}" y="{y}" width="{wd}" height="{ht}" fill="#0b0d14"/>"##);
         match wallpaper {
-            Some(b64) => s += &format!(r##"<image x="{x}" y="{y}" width="{wd}" height="{ht}" preserveAspectRatio="xMidYMid slice" xlink:href="data:image/jpeg;base64,{b64}"/><rect x="{x}" y="{y}" width="{wd}" height="200" fill="#000" fill-opacity="0.28"/><rect x="{x}" y="430" width="{wd}" height="176" fill="#000" fill-opacity="0.32"/>"##),
+            Some(b64) => {
+                s += &format!(
+                    r##"<image x="{x}" y="{y}" width="{wd}" height="{ht}" preserveAspectRatio="xMidYMid slice" xlink:href="data:image/jpeg;base64,{b64}"/><rect x="{x}" y="{y}" width="{wd}" height="200" fill="#000" fill-opacity="0.28"/><rect x="{x}" y="430" width="{wd}" height="176" fill="#000" fill-opacity="0.32"/>"##
+                )
+            }
             None => {
-                s += &format!(r#"<circle cx="300" cy="300" r="110" fill="{}" fill-opacity="0.5"/><circle cx="10" cy="520" r="120" fill="{}" fill-opacity="0.35"/><circle cx="260" cy="620" r="130" fill="{}" fill-opacity="0.45"/>"#, hex(p.world_network), hex(p.accent), hex(p.world_linux));
+                s += &format!(
+                    r#"<circle cx="300" cy="300" r="110" fill="{}" fill-opacity="0.5"/><circle cx="10" cy="520" r="120" fill="{}" fill-opacity="0.35"/><circle cx="260" cy="620" r="130" fill="{}" fill-opacity="0.45"/>"#,
+                    hex(p.world_network),
+                    hex(p.accent),
+                    hex(p.world_linux)
+                );
             }
         }
         // status bar: notification dots, signal, wifi, battery
         s += r##"<g fill="#fff"><circle cx="80" cy="36" r="3.2" fill-opacity="0.85"/><rect x="88" y="32.5" width="7" height="7" rx="1.5" fill-opacity="0.85"/><path d="M196 40h2v2h-2zM199.5 37h2v5h-2zM203 34h2v8h-2zM206.5 31h2v11h-2z"/><path d="M212 35.2a9 9 0 0 1 12 0l-6 7z"/></g>"##;
         let lv = (battery.clamp(0, 100) as f32) / 100.0;
-        s += &format!(r##"<rect x="264" y="31" width="8" height="12" rx="2" fill="none" stroke="#fff" stroke-width="1.2"/><rect x="266" y="{:.1}" width="4" height="{:.1}" rx="0.8" fill="#fff"/>"##, 33.0 + 8.0 * (1.0 - lv), 8.0 * lv);
+        s += &format!(
+            r##"<rect x="264" y="31" width="8" height="12" rx="2" fill="none" stroke="#fff" stroke-width="1.2"/><rect x="266" y="{:.1}" width="4" height="{:.1}" rx="0.8" fill="#fff"/>"##,
+            33.0 + 8.0 * (1.0 - lv),
+            8.0 * lv
+        );
         match state {
             DeviceState::Ringing => {
-                s += &format!(r##"<rect x="26" y="380" width="252" height="92" rx="26" fill="#0b0f24" fill-opacity="0.66"/><circle cx="66" cy="426" r="22" fill="{}"/><path d="M56 432h20l-3-4v-6a7 7 0 0 0-14 0v6zM63 435.5a3 3 0 0 0 6 0" fill="none" stroke="#fff" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>"##, hex(p.accent));
+                s += &format!(
+                    r##"<rect x="26" y="380" width="252" height="92" rx="26" fill="#0b0f24" fill-opacity="0.66"/><circle cx="66" cy="426" r="22" fill="{}"/><path d="M56 432h20l-3-4v-6a7 7 0 0 0-14 0v6zM63 435.5a3 3 0 0 0 6 0" fill="none" stroke="#fff" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>"##,
+                    hex(p.accent)
+                );
             }
             _ => {
-                s += &format!(r##"<rect x="26" y="392" width="252" height="78" rx="26" fill="#0b0f24" fill-opacity="0.55"/><rect x="42" y="408" width="18" height="18" rx="9" fill="{}"/><path d="M46.5 415l4.5-1.4 4.5 1.4v5.2l-4.5 1.4-4.5-1.4z" fill="none" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/>"##, hex(p.accent));
+                s += &format!(
+                    r##"<rect x="26" y="392" width="252" height="78" rx="26" fill="#0b0f24" fill-opacity="0.55"/><rect x="42" y="408" width="18" height="18" rx="9" fill="{}"/><path d="M46.5 415l4.5-1.4 4.5 1.4v5.2l-4.5 1.4-4.5-1.4z" fill="none" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/>"##,
+                    hex(p.accent)
+                );
             }
         }
         s += r##"<g fill="none" stroke="#fff" stroke-opacity="0.8" stroke-width="1.5" stroke-linecap="round"><path d="M145 530a7 7 0 0 1 14 0v6M141 528a11 11 0 0 1 22 0v8M152 530v10M148 534v5M156 534v4"/></g>"##;
@@ -143,7 +169,11 @@ fn ring_svg(p: &Palette, pct: f32, fill: Rgb) -> svg::Handle {
 fn bordered(p: &Palette, bg: Rgb, edge: Rgb) -> impl Fn(&iced::Theme) -> container::Style + use<> {
     let (bg, edge) = (color(bg), color(edge));
     let _ = p;
-    move |_| container::Style { background: Some(Background::Color(bg)), border: Border { color: edge, width: 1.0, radius: 4.0.into() }, ..Default::default() }
+    move |_| container::Style {
+        background: Some(Background::Color(bg)),
+        border: Border { color: edge, width: 1.0, radius: 4.0.into() },
+        ..Default::default()
+    }
 }
 
 impl App {
@@ -170,11 +200,22 @@ impl App {
         let lv = level.clamp(0, 100) as u16;
         let (f, edge) = (color(fill), color(p.ink_muted));
         let inner = row![
-            container(Space::new()).width(Length::FillPortion(lv.max(1))).height(Length::Fill).style(move |_| container::Style { background: Some(Background::Color(f)), border: Border { radius: 1.0.into(), ..Border::default() }, ..Default::default() }),
+            container(Space::new()).width(Length::FillPortion(lv.max(1))).height(Length::Fill).style(move |_| container::Style {
+                background: Some(Background::Color(f)),
+                border: Border { radius: 1.0.into(), ..Border::default() },
+                ..Default::default()
+            }),
             Space::new().width(Length::FillPortion((100 - lv).max(1))),
         ];
-        let body = container(inner).width(20).height(10).padding(1).style(move |_| container::Style { border: Border { color: edge, width: 1.0, radius: 3.0.into() }, ..Default::default() });
-        let tip = container(Space::new()).width(2).height(4).style(move |_| container::Style { background: Some(Background::Color(edge)), ..Default::default() });
+        let body = container(inner)
+            .width(20)
+            .height(10)
+            .padding(1)
+            .style(move |_| container::Style { border: Border { color: edge, width: 1.0, radius: 3.0.into() }, ..Default::default() });
+        let tip = container(Space::new())
+            .width(2)
+            .height(4)
+            .style(move |_| container::Style { background: Some(Background::Color(edge)), ..Default::default() });
         let mut r = row![body, tip].spacing(0).align_y(Alignment::Center);
         if charging {
             r = r.push(Space::new().width(2));
@@ -200,7 +241,8 @@ impl App {
             return col.into();
         }
         for t in &self.phone.trusted {
-            let here = current.as_deref() == Some(t.id.as_str()) && (pane.phone.is_some() || (!pane.special() && self.is_phone_path(&pane.location)));
+            let here = current.as_deref() == Some(t.id.as_str())
+                && (pane.phone.is_some() || (!pane.special() && self.is_phone_path(&pane.location)));
             if !open && !here {
                 continue;
             }
@@ -210,7 +252,13 @@ impl App {
                 let files_active = !pane.special() && storage.as_ref().is_some_and(|s| pane.location.starts_with(s));
                 col = col.push(self.phone_sub("folder", "Files", pm(PhoneMsg::Files(Want::Files)), files_active, None));
                 let new = self.photos_new_count();
-                col = col.push(self.phone_sub("image", "Photos", pm(PhoneMsg::Open(PhonePage::Photos)), pane.phone == Some(PhonePage::Photos), (new > 0).then(|| format!("{new} new"))));
+                col = col.push(self.phone_sub(
+                    "image",
+                    "Photos",
+                    pm(PhoneMsg::Open(PhonePage::Photos)),
+                    pane.phone == Some(PhonePage::Photos),
+                    (new > 0).then(|| format!("{new} new")),
+                ));
             }
         }
         if open {
@@ -224,14 +272,23 @@ impl App {
         let tint = if active { color(p.accent_ink) } else { color(p.ink_muted) };
         let mut r = row![
             w::glyph(&self.icons, icon, 16.0, tint),
-            text(label.to_string()).size(style::BODY).font(if active { style::FONT_BOLD } else { style::FONT }).color(color(if active { p.ink_strong } else { p.ink })).width(Length::Fill),
+            text(label.to_string())
+                .size(style::BODY)
+                .font(if active { style::FONT_BOLD } else { style::FONT })
+                .color(color(if active { p.ink_strong } else { p.ink }))
+                .width(Length::Fill),
         ]
         .spacing(style::SPACE_4)
         .align_y(Alignment::Center);
         if let Some(t) = trail {
             r = r.push(self.pt(t, style::LABEL, p.ink_muted));
         }
-        w::row_button(p, container(r).height(style::ROW).align_y(Alignment::Center).padding(Padding { left: 16.0, ..Padding::ZERO }).into(), active, Some(msg))
+        w::row_button(
+            p,
+            container(r).height(style::ROW).align_y(Alignment::Center).padding(Padding { left: 16.0, ..Padding::ZERO }).into(),
+            active,
+            Some(msg),
+        )
     }
 
     fn phone_item<'a>(&'a self, id: &str, active: bool) -> Element<'a, Message> {
@@ -239,8 +296,19 @@ impl App {
         let name = self.phone_name(id);
         let online = self.phone_online(id);
         let battery = self.phone.battery.get(id).copied();
-        let ink = if active { color(p.ink_strong) } else if online { color(p.ink) } else { color(p.ink_muted) };
-        let head = text(name.clone()).size(style::BODY).font(if active { style::FONT_BOLD } else { style::FONT }).color(ink).wrapping(text::Wrapping::None).width(Length::Fill);
+        let ink = if active {
+            color(p.ink_strong)
+        } else if online {
+            color(p.ink)
+        } else {
+            color(p.ink_muted)
+        };
+        let head = text(name.clone())
+            .size(style::BODY)
+            .font(if active { style::FONT_BOLD } else { style::FONT })
+            .color(ink)
+            .wrapping(text::Wrapping::None)
+            .width(Length::Fill);
         let mut top = row![head].spacing(style::SPACE_3).align_y(Alignment::Center);
         if let (true, Some((lv, ch))) = (online, battery) {
             top = top.push(self.battery_meter(lv, ch));
@@ -249,7 +317,8 @@ impl App {
             w::pill(p, "Pairing…", Some(p.info))
         } else if online {
             let ip = self.phone.devices.get(id).map(|d| d.ip.to_string()).unwrap_or_default();
-            let mut r = row![self.pt(format!("Wi-Fi · {ip}"), style::LABEL, p.ink_muted).wrapping(text::Wrapping::None).width(Length::Fill)];
+            let mut r =
+                row![self.pt(format!("Wi-Fi · {ip}"), style::LABEL, p.ink_muted).wrapping(text::Wrapping::None).width(Length::Fill)];
             if let Some((lv, _)) = battery {
                 r = r.push(self.pt(format!("{lv}%"), style::LABEL, p.ink));
             }
@@ -258,19 +327,48 @@ impl App {
             let seen = self.phone.seen.get(id).map(|s| format!("Not nearby · {}", phone::ago(*s))).unwrap_or_else(|| "Not nearby".into());
             self.pt(seen, style::LABEL, p.ink_muted).wrapping(text::Wrapping::None).into()
         };
-        let tint = if active { color(p.accent_ink) } else if online { color(p.world_phone) } else { color(p.ink_muted) };
-        let r = row![container(w::glyph(&self.icons, "phone", 16.0, tint)).padding([2, 0]), column![top, meta].spacing(3).width(Length::Fill).clip(true)].spacing(style::SPACE_4).align_y(Alignment::Start);
+        let tint = if active {
+            color(p.accent_ink)
+        } else if online {
+            color(p.world_phone)
+        } else {
+            color(p.ink_muted)
+        };
+        let r = row![
+            container(w::glyph(&self.icons, "phone", 16.0, tint)).padding([2, 0]),
+            column![top, meta].spacing(3).width(Length::Fill).clip(true)
+        ]
+        .spacing(style::SPACE_4)
+        .align_y(Alignment::Start);
         let drop = self.drag.is_some() && self.drop_place.as_ref() == Some(&drop_target());
-        let body = w::row_button(p, container(r).padding(Padding { top: 6.0, bottom: 6.0, left: 0.0, right: 0.0 }).into(), active, Some(pm(PhoneMsg::Select(id.to_string()))));
+        let body = w::row_button(
+            p,
+            container(r).padding(Padding { top: 6.0, bottom: 6.0, left: 0.0, right: 0.0 }).into(),
+            active,
+            Some(pm(PhoneMsg::Select(id.to_string()))),
+        );
         let body: Element<'a, Message> = if drop {
             let pal = p.clone();
-            container(body).style(move |_| container::Style { background: Some(Background::Color(color(pal.accent_soft))), border: Border { color: color(pal.accent), width: 1.0, radius: 2.0.into() }, ..Default::default() }).into()
+            container(body)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(color(pal.accent_soft))),
+                    border: Border { color: color(pal.accent), width: 1.0, radius: 2.0.into() },
+                    ..Default::default()
+                })
+                .into()
         } else {
             body
         };
-        let tip = if online { format!("{name} · drop files here to send them") } else { format!("{name} · open KDE Connect on the phone to connect") };
+        let tip = if online {
+            format!("{name} · drop files here to send them")
+        } else {
+            format!("{name} · open KDE Connect on the phone to connect")
+        };
         let item = self.tip(body, &tip, None);
-        mouse_area(item).on_enter(Message::Ui(crate::overlay::UiMsg::DropHover(Some(drop_target())))).on_exit(Message::Ui(crate::overlay::UiMsg::DropLeave(drop_target()))).into()
+        mouse_area(item)
+            .on_enter(Message::Ui(crate::overlay::UiMsg::DropHover(Some(drop_target()))))
+            .on_exit(Message::Ui(crate::overlay::UiMsg::DropLeave(drop_target())))
+            .into()
     }
 
     // ------------------------------------------------------------------ toolbar / status
@@ -289,7 +387,11 @@ impl App {
         let name = self.phone_name(&id);
         match page {
             PhonePage::Photos => match &self.phone.photos {
-                Some(Ok(v)) => format!("{} photos and videos{}", v.len(), if self.phone.photo_sel.is_empty() { String::new() } else { format!("  ·  {} selected", self.phone.photo_sel.len()) }),
+                Some(Ok(v)) => format!(
+                    "{} photos and videos{}",
+                    v.len(),
+                    if self.phone.photo_sel.is_empty() { String::new() } else { format!("  ·  {} selected", self.phone.photo_sel.len()) }
+                ),
                 _ => name,
             },
             PhonePage::Messages => format!("{} conversations", self.phone.threads.len()),
@@ -360,7 +462,12 @@ impl App {
         if width < 100.0 {
             // A thumbnail: the drawing alone.
         } else if state == DeviceState::Away {
-            layers.push(container(text("Not nearby").size(sz(15.0)).font(SANS).color(Color::from_rgb8(0x5b, 0x60, 0x70))).center_x(width).padding(Padding { top: 290.0 * k, ..Padding::ZERO }).into());
+            layers.push(
+                container(text("Not nearby").size(sz(15.0)).font(SANS).color(Color::from_rgb8(0x5b, 0x60, 0x70)))
+                    .center_x(width)
+                    .padding(Padding { top: 290.0 * k, ..Padding::ZERO })
+                    .into(),
+            );
         } else {
             let tm = local(now_secs());
             let (hh, mm) = (format!("{:02}", tm.tm_hour), format!("{:02}", tm.tm_min));
@@ -383,7 +490,17 @@ impl App {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn gauge<'a>(&'a self, icon: &str, label: &str, value: String, unit: &str, pct: f32, fill: Rgb, sub: String, msg: Option<Message>) -> Element<'a, Message> {
+    fn gauge<'a>(
+        &'a self,
+        icon: &str,
+        label: &str,
+        value: String,
+        unit: &str,
+        pct: f32,
+        fill: Rgb,
+        sub: String,
+        msg: Option<Message>,
+    ) -> Element<'a, Message> {
         let p = &self.palette;
         let ring: Element<'a, Message> = if icon == "photos" {
             let mut thumbs = row![].spacing(2);
@@ -403,11 +520,20 @@ impl App {
         };
         let mut value_row = row![self.ptb(value, 22.0, p.ink_strong)].spacing(3).align_y(Alignment::End);
         if !unit.is_empty() {
-            value_row = value_row.push(container(self.pt(unit.to_string(), style::META, p.ink_muted)).padding(Padding { bottom: 3.0, ..Padding::ZERO }));
+            value_row = value_row
+                .push(container(self.pt(unit.to_string(), style::META, p.ink_muted)).padding(Padding { bottom: 3.0, ..Padding::ZERO }));
         }
         let sub_ink = if msg.is_some() { p.accent_ink } else { p.ink_muted };
-        let text_col = column![self.ptb(label.to_uppercase(), style::LABEL, p.ink_muted), value_row, self.pt(sub, style::LABEL, sub_ink).wrapping(text::Wrapping::None)].spacing(2);
-        let body = container(row![ring, text_col].spacing(style::SPACE_4).align_y(Alignment::Center)).padding(style::SPACE_4).width(Length::Fill).clip(true);
+        let text_col = column![
+            self.ptb(label.to_uppercase(), style::LABEL, p.ink_muted),
+            value_row,
+            self.pt(sub, style::LABEL, sub_ink).wrapping(text::Wrapping::None)
+        ]
+        .spacing(2);
+        let body = container(row![ring, text_col].spacing(style::SPACE_4).align_y(Alignment::Center))
+            .padding(style::SPACE_4)
+            .width(Length::Fill)
+            .clip(true);
         let pal = p.clone();
         match msg {
             Some(m) => button(body)
@@ -415,8 +541,16 @@ impl App {
                 .width(Length::Fill)
                 .on_press(m)
                 .style(move |_, st| button::Style {
-                    background: Some(Background::Color(if matches!(st, button::Status::Hovered) { color(pal.state_hover) } else { color(pal.bg) })),
-                    border: Border { color: if matches!(st, button::Status::Hovered) { color(pal.line_strong) } else { color(pal.line) }, width: 1.0, radius: 4.0.into() },
+                    background: Some(Background::Color(if matches!(st, button::Status::Hovered) {
+                        color(pal.state_hover)
+                    } else {
+                        color(pal.bg)
+                    })),
+                    border: Border {
+                        color: if matches!(st, button::Status::Hovered) { color(pal.line_strong) } else { color(pal.line) },
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
                     text_color: color(pal.ink),
                     ..Default::default()
                 })
@@ -425,26 +559,58 @@ impl App {
         }
     }
 
-    fn feature_tile<'a>(&'a self, icon: &str, label: &str, sub: String, badge: Option<String>, off: bool, msg: Message) -> Element<'a, Message> {
+    fn feature_tile<'a>(
+        &'a self,
+        icon: &str,
+        label: &str,
+        sub: String,
+        badge: Option<String>,
+        off: bool,
+        msg: Message,
+    ) -> Element<'a, Message> {
         let p = &self.palette;
         let tint = if off { p.ink_muted } else { p.world_phone };
         let (wp, bgd) = (color(tint), color(p.bg_deep));
-        let chip = container(w::glyph(&self.icons, icon, 18.0, wp)).center(36).style(move |_| container::Style { background: Some(Background::Color(bgd)), border: Border { radius: 4.0.into(), ..Border::default() }, ..Default::default() });
-        let mut head = row![self.ptb(label.to_string(), style::BODY, if off { p.ink_muted } else { p.ink_strong }).width(Length::Fill)].align_y(Alignment::Center);
+        let chip = container(w::glyph(&self.icons, icon, 18.0, wp)).center(36).style(move |_| container::Style {
+            background: Some(Background::Color(bgd)),
+            border: Border { radius: 4.0.into(), ..Border::default() },
+            ..Default::default()
+        });
+        let mut head = row![self.ptb(label.to_string(), style::BODY, if off { p.ink_muted } else { p.ink_strong }).width(Length::Fill)]
+            .align_y(Alignment::Center);
         if let Some(b) = badge.filter(|_| !off) {
             let (a, on) = (color(p.accent), color(p.on_accent));
-            head = head.push(container(text(b).size(style::LABEL).font(style::FONT_BOLD).color(on)).padding([0, 6]).style(move |_| container::Style { background: Some(Background::Color(a)), border: Border { radius: 9.0.into(), ..Border::default() }, ..Default::default() }));
+            head = head.push(container(text(b).size(style::LABEL).font(style::FONT_BOLD).color(on)).padding([0, 6]).style(move |_| {
+                container::Style {
+                    background: Some(Background::Color(a)),
+                    border: Border { radius: 9.0.into(), ..Border::default() },
+                    ..Default::default()
+                }
+            }));
         }
         let sub = if off { "Off · turn on in Settings → Phone".to_string() } else { sub };
-        let body = row![chip, column![head, self.pt(sub, style::LABEL, p.ink_muted).wrapping(text::Wrapping::None)].spacing(3).width(Length::Fill)].spacing(style::SPACE_4).align_y(Alignment::Center);
+        let body = row![
+            chip,
+            column![head, self.pt(sub, style::LABEL, p.ink_muted).wrapping(text::Wrapping::None)].spacing(3).width(Length::Fill)
+        ]
+        .spacing(style::SPACE_4)
+        .align_y(Alignment::Center);
         let pal = p.clone();
         button(container(body).padding(style::SPACE_4).width(Length::Fill).clip(true))
             .padding(0)
             .width(Length::Fill)
             .on_press(msg)
             .style(move |_, st| button::Style {
-                background: Some(Background::Color(if matches!(st, button::Status::Hovered) { color(pal.state_hover) } else { color(pal.bg_raised) })),
-                border: Border { color: if matches!(st, button::Status::Hovered) { color(pal.world_phone) } else { color(pal.line) }, width: 1.0, radius: 4.0.into() },
+                background: Some(Background::Color(if matches!(st, button::Status::Hovered) {
+                    color(pal.state_hover)
+                } else {
+                    color(pal.bg_raised)
+                })),
+                border: Border {
+                    color: if matches!(st, button::Status::Hovered) { color(pal.world_phone) } else { color(pal.line) },
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
                 text_color: color(pal.ink),
                 ..Default::default()
             })
@@ -458,11 +624,43 @@ impl App {
         let narrow = self.window_size.width - if self.settings.sidebar.hidden { 0.0 } else { self.settings.sidebar.width as f32 } < 980.0;
 
         // ---- hero
-        let pill = if online { w::pill(p, "Connected", Some(p.success)) } else { w::pill(p, &self.phone.seen.get(id).map(|s| format!("Not nearby · last seen {}", phone::ago(*s))).unwrap_or_else(|| "Not nearby".into()), None) };
-        let top = row![pill, Space::new().width(Length::Fill), self.tip(w::icon_button(p, &self.icons, "settings", Some(Message::Settings(crate::settings::SettingsMsg::OpenPage(crate::settings::Page::Phone))), false), "Phone settings", None)].align_y(Alignment::Center);
+        let pill = if online {
+            w::pill(p, "Connected", Some(p.success))
+        } else {
+            w::pill(
+                p,
+                &self
+                    .phone
+                    .seen
+                    .get(id)
+                    .map(|s| format!("Not nearby · last seen {}", phone::ago(*s)))
+                    .unwrap_or_else(|| "Not nearby".into()),
+                None,
+            )
+        };
+        let top = row![
+            pill,
+            Space::new().width(Length::Fill),
+            self.tip(
+                w::icon_button(
+                    p,
+                    &self.icons,
+                    "settings",
+                    Some(Message::Settings(crate::settings::SettingsMsg::OpenPage(crate::settings::Page::Phone))),
+                    false
+                ),
+                "Phone settings",
+                None
+            )
+        ]
+        .align_y(Alignment::Center);
         let ip = self.phone.devices.get(id).map(|d| d.ip.to_string());
         let mut meta = row![].spacing(style::SPACE_5).align_y(Alignment::Center);
-        let fact = |icon: &str, s: String| row![w::glyph(&self.icons, icon, 13.0, color(p.ink_muted)), self.pt(s, style::META, p.ink_muted)].spacing(6).align_y(Alignment::Center);
+        let fact = |icon: &str, s: String| {
+            row![w::glyph(&self.icons, icon, 13.0, color(p.ink_muted)), self.pt(s, style::META, p.ink_muted)]
+                .spacing(6)
+                .align_y(Alignment::Center)
+        };
         if let Some(ip) = ip {
             meta = meta.push(fact("wifi", ip));
         }
@@ -478,7 +676,13 @@ impl App {
             if has_battery { "%" } else { "" },
             lv as f32 / 100.0,
             if lv <= 20 { p.warning.base } else { p.success.base },
-            if !online { "Last known".into() } else if ch { "Charging".into() } else { "On battery".into() },
+            if !online {
+                "Last known".into()
+            } else if ch {
+                "Charging".into()
+            } else {
+                "On battery".into()
+            },
             None,
         );
         let storage = self.phone.space;
@@ -489,7 +693,16 @@ impl App {
             let mut t = String::new();
             ef_core::fmt::size(total, &mut t);
             let (num, unit) = f.split_once(' ').map(|(a, b)| (a.to_string(), format!("{b} free"))).unwrap_or((f.clone(), String::new()));
-            gauges = gauges.push(self.gauge("sd-card", "Storage", num, &unit, 1.0 - free as f32 / total.max(1) as f32, p.accent, format!("of {t}"), None));
+            gauges = gauges.push(self.gauge(
+                "sd-card",
+                "Storage",
+                num,
+                &unit,
+                1.0 - free as f32 / total.max(1) as f32,
+                p.accent,
+                format!("of {t}"),
+                None,
+            ));
         }
         if self.settings.phone.files {
             let new = self.photos_new_count();
@@ -506,19 +719,60 @@ impl App {
 
         let ringing = self.phone.ringing.is_some();
         let mut actions = row![
-            w::text_button(p, &self.icons, if ringing { "Stop ringing" } else { "Ring phone" }, Some("phone-ring"), None, if ringing { Variant::Primary } else { Variant::Secondary }, online.then(|| pm(PhoneMsg::Ring))),
+            w::text_button(
+                p,
+                &self.icons,
+                if ringing { "Stop ringing" } else { "Ring phone" },
+                Some("phone-ring"),
+                None,
+                if ringing { Variant::Primary } else { Variant::Secondary },
+                online.then(|| pm(PhoneMsg::Ring))
+            ),
             w::text_button(p, &self.icons, "Send files", Some("upload"), None, Variant::Secondary, online.then(|| pm(PhoneMsg::SendFiles))),
         ]
         .spacing(style::SPACE_3);
         if self.settings.phone.files {
-            actions = actions.push(w::text_button(p, &self.icons, "Get files", Some("download"), None, Variant::Secondary, online.then(|| pm(PhoneMsg::Files(Want::FilesInTab)))));
+            actions = actions.push(w::text_button(
+                p,
+                &self.icons,
+                "Get files",
+                Some("download"),
+                None,
+                Variant::Secondary,
+                online.then(|| pm(PhoneMsg::Files(Want::FilesInTab))),
+            ));
         }
-        let mut facts = column![top, self.ptb(name, 28.0, p.ink_strong), meta, Space::new().height(style::SPACE_3), gauges, Space::new().height(style::SPACE_1), actions].spacing(style::SPACE_3).width(Length::Fill);
+        let mut facts = column![
+            top,
+            self.ptb(name, 28.0, p.ink_strong),
+            meta,
+            Space::new().height(style::SPACE_3),
+            gauges,
+            Space::new().height(style::SPACE_1),
+            actions
+        ]
+        .spacing(style::SPACE_3)
+        .width(Length::Fill);
         if ringing {
-            facts = facts.push(self.pt("Ringing at full volume, even on silent. It stops when you tap the phone or press Stop ringing.", style::LABEL, p.ink_muted));
+            facts = facts.push(self.pt(
+                "Ringing at full volume, even on silent. It stops when you tap the phone or press Stop ringing.",
+                style::LABEL,
+                p.ink_muted,
+            ));
         }
         if let Some(e) = self.phone.sftp_error.as_ref().filter(|_| online && self.settings.phone.files) {
-            facts = facts.push(row![w::glyph(&self.icons, "alert", 14.0, color(p.warning.ink)), self.pt(format!("Files aren't shared: {e} Turn on Filesystem expose in KDE Connect and allow All files access."), style::META, p.warning.ink)].spacing(6).align_y(Alignment::Center));
+            facts = facts.push(
+                row![
+                    w::glyph(&self.icons, "alert", 14.0, color(p.warning.ink)),
+                    self.pt(
+                        format!("Files aren't shared: {e} Turn on Filesystem expose in KDE Connect and allow All files access."),
+                        style::META,
+                        p.warning.ink
+                    )
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            );
         }
         let device = self.phone_device(id, 188.0);
         let hero_inner: Element<'a, Message> = if narrow {
@@ -531,7 +785,13 @@ impl App {
         // ---- features
         let s = &self.settings.phone;
         let unread: usize = self.phone.threads.values().filter(|m| !m.read && !m.outgoing).count();
-        let latest = self.phone.threads.values().max_by_key(|m| m.date).map(|m| format!("{}: {}", m.address, m.body.lines().next().unwrap_or_default())).unwrap_or_else(|| "Your texts, from the laptop".into());
+        let latest = self
+            .phone
+            .threads
+            .values()
+            .max_by_key(|m| m.date)
+            .map(|m| format!("{}: {}", m.address, m.body.lines().next().unwrap_or_default()))
+            .unwrap_or_else(|| "Your texts, from the laptop".into());
         let apps: Vec<String> = {
             let mut a: Vec<String> = Vec::new();
             for n in &self.phone.notifications {
@@ -541,7 +801,8 @@ impl App {
             }
             a
         };
-        let notif_sub = if apps.is_empty() { "Nothing new".to_string() } else { apps.iter().take(3).cloned().collect::<Vec<_>>().join(", ") };
+        let notif_sub =
+            if apps.is_empty() { "Nothing new".to_string() } else { apps.iter().take(3).cloned().collect::<Vec<_>>().join(", ") };
         let photo_count = match &self.phone.photos {
             Some(Ok(v)) => format!("{} photos and videos", v.len()),
             _ => "Your phone's photos, by day".into(),
@@ -549,52 +810,140 @@ impl App {
         let new = self.photos_new_count();
         let tiles = column![
             row![
-                self.feature_tile("folder", "Files", "Internal storage".into(), None, !s.files, if s.files { pm(PhoneMsg::Files(Want::Files)) } else { Message::Settings(crate::settings::SettingsMsg::OpenPage(crate::settings::Page::Phone)) }),
-                self.feature_tile("image", "Photos", photo_count, (new > 0).then(|| format!("{new} new")), !s.files, if s.files { pm(PhoneMsg::Open(PhonePage::Photos)) } else { Message::Settings(crate::settings::SettingsMsg::OpenPage(crate::settings::Page::Phone)) }),
+                self.feature_tile(
+                    "folder",
+                    "Files",
+                    "Internal storage".into(),
+                    None,
+                    !s.files,
+                    if s.files {
+                        pm(PhoneMsg::Files(Want::Files))
+                    } else {
+                        Message::Settings(crate::settings::SettingsMsg::OpenPage(crate::settings::Page::Phone))
+                    }
+                ),
+                self.feature_tile(
+                    "image",
+                    "Photos",
+                    photo_count,
+                    (new > 0).then(|| format!("{new} new")),
+                    !s.files,
+                    if s.files {
+                        pm(PhoneMsg::Open(PhonePage::Photos))
+                    } else {
+                        Message::Settings(crate::settings::SettingsMsg::OpenPage(crate::settings::Page::Phone))
+                    }
+                ),
             ]
             .spacing(style::SPACE_3),
             row![
-                self.feature_tile("message", "Messages", latest, (unread > 0).then(|| unread.to_string()), !s.messages, if s.messages { pm(PhoneMsg::Open(PhonePage::Messages)) } else { Message::Settings(crate::settings::SettingsMsg::OpenPage(crate::settings::Page::Phone)) }),
-                self.feature_tile("bell", "Notifications", notif_sub, (!self.phone.notifications.is_empty()).then(|| self.phone.notifications.len().to_string()), s.notifications == ef_config::PhoneNotifications::Off, if s.notifications == ef_config::PhoneNotifications::Off { Message::Settings(crate::settings::SettingsMsg::OpenPage(crate::settings::Page::Phone)) } else { pm(PhoneMsg::Open(PhonePage::Notifications)) }),
+                self.feature_tile(
+                    "message",
+                    "Messages",
+                    latest,
+                    (unread > 0).then(|| unread.to_string()),
+                    !s.messages,
+                    if s.messages {
+                        pm(PhoneMsg::Open(PhonePage::Messages))
+                    } else {
+                        Message::Settings(crate::settings::SettingsMsg::OpenPage(crate::settings::Page::Phone))
+                    }
+                ),
+                self.feature_tile(
+                    "bell",
+                    "Notifications",
+                    notif_sub,
+                    (!self.phone.notifications.is_empty()).then(|| self.phone.notifications.len().to_string()),
+                    s.notifications == ef_config::PhoneNotifications::Off,
+                    if s.notifications == ef_config::PhoneNotifications::Off {
+                        Message::Settings(crate::settings::SettingsMsg::OpenPage(crate::settings::Page::Phone))
+                    } else {
+                        pm(PhoneMsg::Open(PhonePage::Notifications))
+                    }
+                ),
             ]
             .spacing(style::SPACE_3),
         ]
         .spacing(style::SPACE_3);
         let left = column![tiles, self.received_list()].spacing(style::SPACE_5).width(Length::FillPortion(3));
         let right = column![self.clipboard_card(), self.connect_controls()].width(Length::FillPortion(2));
-        let lower: Element<'a, Message> = if narrow { column![left, right].spacing(style::SPACE_5).into() } else { row![left, right].spacing(style::SPACE_5).into() };
+        let lower: Element<'a, Message> =
+            if narrow { column![left, right].spacing(style::SPACE_5).into() } else { row![left, right].spacing(style::SPACE_5).into() };
 
-        scrollable(container(column![hero, lower, Space::new().height(24)].spacing(style::SPACE_5).max_width(1080)).padding([24, 28])).height(Length::Fill).into()
+        scrollable(container(column![hero, lower, Space::new().height(24)].spacing(style::SPACE_5).max_width(1080)).padding([24, 28]))
+            .height(Length::Fill)
+            .into()
     }
 
     fn connect_controls(&self) -> Element<'_, Message> {
         let p = &self.palette;
-        let action = |label: &str, name: &str| w::text_button(p, &self.icons, label, None, None, Variant::Secondary, Some(pm(PhoneMsg::Extra(name.into()))));
+        let action = |label: &str, name: &str| {
+            w::text_button(p, &self.icons, label, None, None, Variant::Secondary, Some(pm(PhoneMsg::Extra(name.into()))))
+        };
         let mut c = column![self.ptb("ECHOCONNECT", style::LABEL, p.ink_muted)].spacing(style::SPACE_3);
-        if !self.phone.signal.is_empty() { c = c.push(self.pt(self.phone.signal.clone(), style::META, p.ink_muted)); }
+        if !self.phone.signal.is_empty() {
+            c = c.push(self.pt(self.phone.signal.clone(), style::META, p.ink_muted));
+        }
         c = c.push(action("Refresh media players", "media-refresh"));
         for (player, state) in &self.phone.players {
-            c = c.push(self.pt(format!("{} · {}", state["title"].as_str().unwrap_or(player), state["artist"].as_str().unwrap_or("")), style::META, p.ink));
-            c = c.push(row![action("Previous", &format!("media:Previous:{player}")), action("Play / pause", &format!("media:PlayPause:{player}")), action("Next", &format!("media:Next:{player}"))].spacing(8));
+            c = c.push(self.pt(
+                format!("{} · {}", state["title"].as_str().unwrap_or(player), state["artist"].as_str().unwrap_or("")),
+                style::META,
+                p.ink,
+            ));
+            c = c.push(
+                row![
+                    action("Previous", &format!("media:Previous:{player}")),
+                    action("Play / pause", &format!("media:PlayPause:{player}")),
+                    action("Next", &format!("media:Next:{player}"))
+                ]
+                .spacing(8),
+            );
         }
         if let Some(call) = &self.phone.call {
-            c = c.push(self.ptb(format!("{} · {}", call["contactName"].as_str().unwrap_or("Call"), call["event"].as_str().unwrap_or("")), style::BODY, p.ink_strong))
+            c = c
+                .push(self.ptb(
+                    format!("{} · {}", call["contactName"].as_str().unwrap_or("Call"), call["event"].as_str().unwrap_or("")),
+                    style::BODY,
+                    p.ink_strong,
+                ))
                 .push(row![action("Answer on laptop", "answer"), action("Hang up", "hangup"), action("Use phone", "phone")].spacing(8));
         }
         c = c.push(row![action("Take photo", "photo"), action("Scan document", "scan")].spacing(8));
-        for (label, key, on) in [("Sync Do Not Disturb", "dnd-sync", self.settings.phone.dnd_sync), ("Copy one-time codes", "otp", self.settings.phone.otp), ("Lock laptop when away", "autolock", self.settings.phone.autolock), ("Index phone files", "index", self.settings.phone.phone_index), ("Receive camera backup", "backup", self.settings.phone.backup)] {
+        for (label, key, on) in [
+            ("Sync Do Not Disturb", "dnd-sync", self.settings.phone.dnd_sync),
+            ("Copy one-time codes", "otp", self.settings.phone.otp),
+            ("Lock laptop when away", "autolock", self.settings.phone.autolock),
+            ("Index phone files", "index", self.settings.phone.phone_index),
+            ("Receive camera backup", "backup", self.settings.phone.backup),
+        ] {
             c = c.push(action(&format!("{} · {}", label, if on { "On" } else { "Off" }), key));
         }
         c = c.push(row![action("Do Not Disturb on", "dnd"), action("Off", "dnd-off")].spacing(8));
         c = c.push(self.ptb("AUTOMATIC CLIPBOARD", style::LABEL, p.ink_muted))
             .push(self.pt("On the phone: Developer options → Wireless debugging → Pair device with pairing code. Enter its pairing address, code and connection address below.", style::META, p.ink_muted));
-        for (i, label, value) in [(0, "Pairing IP:port", &self.phone.extra_address), (1, "Six-digit pairing code", &self.phone.extra_code), (2, "Connection IP:port", &self.phone.extra_connect)] {
-            c = c.push(text_input(label, value).on_input(move |v| pm(PhoneMsg::ExtraField(i, v))).size(style::BODY).font(style::FONT).padding(8).style(w::field_style(p, false)));
+        for (i, label, value) in [
+            (0, "Pairing IP:port", &self.phone.extra_address),
+            (1, "Six-digit pairing code", &self.phone.extra_code),
+            (2, "Connection IP:port", &self.phone.extra_connect),
+        ] {
+            c = c.push(
+                text_input(label, value)
+                    .on_input(move |v| pm(PhoneMsg::ExtraField(i, v)))
+                    .size(style::BODY)
+                    .font(style::FONT)
+                    .padding(8)
+                    .style(w::field_style(p, false)),
+            );
         }
         c = c.push(action("Grant clipboard permission", "clipboard-setup"));
         c = c.push(action("Set up with a QR code", "clipboard-qr"));
-        if let Some(qr) = &self.phone.clipboard_qr { c = c.push(svg(qr.clone()).width(240).height(240)); }
-        if !self.phone.extra_status.is_empty() { c = c.push(self.pt(self.phone.extra_status.clone(), style::META, p.ink_muted)); }
+        if let Some(qr) = &self.phone.clipboard_qr {
+            c = c.push(svg(qr.clone()).width(240).height(240));
+        }
+        if !self.phone.extra_status.is_empty() {
+            c = c.push(self.pt(self.phone.extra_status.clone(), style::META, p.ink_muted));
+        }
         container(c).padding(16).width(Length::Fill).style(bordered(p, p.bg_raised, p.line)).into()
     }
 
@@ -607,7 +956,14 @@ impl App {
         .align_y(Alignment::Center);
         let mut col = column![head].spacing(0);
         if self.phone.moved.is_empty() {
-            col = col.push(container(self.pt(format!("Share a file to this laptop from any app on the phone. It lands in {}.", self.settings.phone.save_to), style::META, p.ink_muted)).padding([6, 0]));
+            col = col.push(
+                container(self.pt(
+                    format!("Share a file to this laptop from any app on the phone. It lands in {}.", self.settings.phone.save_to),
+                    style::META,
+                    p.ink_muted,
+                ))
+                .padding([6, 0]),
+            );
             return col.into();
         }
         for m in self.phone.moved.iter().take(6) {
@@ -620,12 +976,19 @@ impl App {
                     let done = m.done.load(Ordering::Relaxed);
                     let mut d = String::new();
                     ef_core::fmt::size(done, &mut d);
-                    (w::progress(p, done as f32 / m.size.max(1) as f32, p.accent, false), self.pt(format!("{d} of {size}"), style::LABEL, p.ink_muted).into())
+                    (
+                        w::progress(p, done as f32 / m.size.max(1) as f32, p.accent, false),
+                        self.pt(format!("{d} of {size}"), style::LABEL, p.ink_muted).into(),
+                    )
                 }
                 Some(Ok(path)) => {
                     let verb = if m.upload { "Sent" } else { "Received" };
                     let when = m.at.duration_since(SystemTime::UNIX_EPOCH).map(|d| phone::ago(d.as_secs() as i64)).unwrap_or_default();
-                    let action: Element<'_, Message> = if m.upload { Space::new().into() } else { w::text_button(p, &self.icons, "Open", None, None, Variant::Ghost, Some(pm(PhoneMsg::OpenFile(path.clone())))) };
+                    let action: Element<'_, Message> = if m.upload {
+                        Space::new().into()
+                    } else {
+                        w::text_button(p, &self.icons, "Open", None, None, Variant::Ghost, Some(pm(PhoneMsg::OpenFile(path.clone()))))
+                    };
                     (self.pt(format!("{verb} · {size} · {when}"), style::LABEL, p.ink_muted).into(), action)
                 }
                 Some(Err(e)) => (self.pt(e.clone(), style::LABEL, p.danger.ink).into(), Space::new().into()),
@@ -633,7 +996,18 @@ impl App {
             let arrow = if m.upload { "arrow-up" } else { "arrow-down" };
             let r = row![
                 iced::widget::svg(self.icons.color(icon)).width(24).height(24),
-                column![row![w::glyph(&self.icons, arrow, 12.0, color(p.ink_muted)), self.pt(m.name.clone(), style::BODY, p.ink).wrapping(text::Wrapping::None)].spacing(4).align_y(Alignment::Center), line2].spacing(4).width(Length::Fill).clip(true),
+                column![
+                    row![
+                        w::glyph(&self.icons, arrow, 12.0, color(p.ink_muted)),
+                        self.pt(m.name.clone(), style::BODY, p.ink).wrapping(text::Wrapping::None)
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+                    line2
+                ]
+                .spacing(4)
+                .width(Length::Fill)
+                .clip(true),
                 trailing,
             ]
             .spacing(style::SPACE_4)
@@ -668,7 +1042,11 @@ impl App {
                             w::glyph(&self.icons, if *from_phone { "arrow-down" } else { "arrow-up" }, 14.0, color(p.ink_muted)),
                             self.pt(one_line, style::META, p.ink).wrapping(text::Wrapping::None).width(Length::Fill),
                             self.pt(when, style::LABEL, p.ink_muted),
-                            self.tip(w::icon_button(p, &self.icons, "copy", Some(pm(PhoneMsg::ClipCopy(t.clone()))), false), "Copy again", None),
+                            self.tip(
+                                w::icon_button(p, &self.icons, "copy", Some(pm(PhoneMsg::ClipCopy(t.clone()))), false),
+                                "Copy again",
+                                None
+                            ),
                         ]
                         .spacing(style::SPACE_3)
                         .align_y(Alignment::Center),
@@ -678,13 +1056,24 @@ impl App {
                 );
             }
         }
-        col = col.push(container(self.pt(if on { "Copy on one, paste on the other. Works while EchoFiles is open." } else { "Off: nothing you copy crosses over." }, style::LABEL, p.ink_muted)).padding(Padding { top: 8.0, ..Padding::ZERO }));
+        col = col.push(
+            container(self.pt(
+                if on { "Copy on one, paste on the other. Works while EchoFiles is open." } else { "Off: nothing you copy crosses over." },
+                style::LABEL,
+                p.ink_muted,
+            ))
+            .padding(Padding { top: 8.0, ..Padding::ZERO }),
+        );
         container(col).padding(style::SPACE_4).width(Length::Fill).style(bordered(p, p.bg_raised, p.line)).into()
     }
 
     fn page_header<'a>(&'a self, title: &str, sub: String, trailing: Vec<Element<'a, Message>>) -> Element<'a, Message> {
         let p = &self.palette;
-        let mut r = row![column![self.ptb(title.to_string(), 22.0, p.ink_strong), self.pt(sub, style::META, p.ink_muted)].spacing(4).width(Length::Fill)].spacing(style::SPACE_3).align_y(Alignment::Center);
+        let mut r = row![
+            column![self.ptb(title.to_string(), 22.0, p.ink_strong), self.pt(sub, style::META, p.ink_muted)].spacing(4).width(Length::Fill)
+        ]
+        .spacing(style::SPACE_3)
+        .align_y(Alignment::Center);
         for t in trailing {
             r = r.push(t);
         }
@@ -709,28 +1098,74 @@ impl App {
     fn photos_page<'a>(&'a self, id: &str) -> Element<'a, Message> {
         let p = &self.palette;
         if !self.settings.phone.files {
-            return self.feature_off("Photos are off", "Turn on Files and photos to see the phone's photos here.", pm(PhoneMsg::SetFiles(true)));
+            return self.feature_off(
+                "Photos are off",
+                "Turn on Files and photos to see the phone's photos here.",
+                pm(PhoneMsg::SetFiles(true)),
+            );
         }
         let list = match &self.phone.photos {
             Some(Ok(v)) => v,
             Some(Err(e)) => {
-                return container(column![w::glyph(&self.icons, "alert", 32.0, color(p.warning.ink)), self.pt(e.clone(), style::BODY, p.ink), w::text_button(p, &self.icons, "Try again", Some("refresh"), None, Variant::Secondary, Some(pm(PhoneMsg::Files(Want::Photos))))].spacing(style::SPACE_4).align_x(Alignment::Center)).center(Length::Fill).into();
+                return container(
+                    column![
+                        w::glyph(&self.icons, "alert", 32.0, color(p.warning.ink)),
+                        self.pt(e.clone(), style::BODY, p.ink),
+                        w::text_button(
+                            p,
+                            &self.icons,
+                            "Try again",
+                            Some("refresh"),
+                            None,
+                            Variant::Secondary,
+                            Some(pm(PhoneMsg::Files(Want::Photos)))
+                        )
+                    ]
+                    .spacing(style::SPACE_4)
+                    .align_x(Alignment::Center),
+                )
+                .center(Length::Fill)
+                .into();
             }
             None if !self.phone_online(id) && self.phone.mount.is_none() => return self.not_nearby(id, "photos"),
             None => {
-                let msg = if let Some(e) = &self.phone.sftp_error { format!("The phone didn't share its files: {e}") } else { "Opening the phone's photos…".to_string() };
-                return container(column![w::glyph(&self.icons, "sync", 24.0, color(p.info.ink)), self.pt(msg, style::BODY, p.ink_muted)].spacing(style::SPACE_4).align_x(Alignment::Center)).center(Length::Fill).into();
+                let msg = if let Some(e) = &self.phone.sftp_error {
+                    format!("The phone didn't share its files: {e}")
+                } else {
+                    "Opening the phone's photos…".to_string()
+                };
+                return container(
+                    column![w::glyph(&self.icons, "sync", 24.0, color(p.info.ink)), self.pt(msg, style::BODY, p.ink_muted)]
+                        .spacing(style::SPACE_4)
+                        .align_x(Alignment::Center),
+                )
+                .center(Length::Fill)
+                .into();
             }
         };
         let new = self.photos_new_count();
         let f = self.phone.photo_filter;
-        let filters = [("All", None), ("Camera", Some(Source::Camera)), ("Screenshots", Some(Source::Screenshots)), ("Chats", Some(Source::Chats))];
+        let filters =
+            [("All", None), ("Camera", Some(Source::Camera)), ("Screenshots", Some(Source::Screenshots)), ("Chats", Some(Source::Chats))];
         let opts: Vec<(&str, Message)> = filters.iter().map(|(l, s)| (*l, pm(PhoneMsg::PhotosFilter(*s)))).collect();
         let sel = filters.iter().position(|(_, s)| *s == f).unwrap_or(0);
         let mut trailing = vec![w::segmented(p, &opts, sel)];
-        trailing.push(w::text_button(p, &self.icons, &if new > 0 { format!("Import {new} new") } else { "All imported".into() }, Some("download"), None, Variant::Primary, (new > 0).then(|| pm(PhoneMsg::Import))));
+        trailing.push(w::text_button(
+            p,
+            &self.icons,
+            &if new > 0 { format!("Import {new} new") } else { "All imported".into() },
+            Some("download"),
+            None,
+            Variant::Primary,
+            (new > 0).then(|| pm(PhoneMsg::Import)),
+        ));
         let shown: Vec<&phone::Photo> = list.iter().filter(|x| f.is_none_or(|s| x.source == s)).collect();
-        let mut col = column![self.page_header("Photos", format!("{} photos and videos from {} · imports go to ~/Pictures/Phone", shown.len(), self.phone_name(id)), trailing)].spacing(style::SPACE_5);
+        let mut col = column![self.page_header(
+            "Photos",
+            format!("{} photos and videos from {} · imports go to ~/Pictures/Phone", shown.len(), self.phone_name(id)),
+            trailing
+        )]
+        .spacing(style::SPACE_5);
         if !self.phone.photo_sel.is_empty() {
             let n = self.phone.photo_sel.len();
             let bytes: u64 = list.iter().filter(|x| self.phone.photo_sel.contains(&x.path)).map(|x| x.size).sum();
@@ -740,7 +1175,15 @@ impl App {
                 self.ptb(format!("{n} selected"), style::BODY, p.ink_strong),
                 self.pt(format!("· {sz}"), style::META, p.ink_muted).width(Length::Fill),
                 w::text_button(p, &self.icons, "Save to…", Some("download"), None, Variant::Secondary, Some(pm(PhoneMsg::PhotosSaveTo))),
-                w::text_button(p, &self.icons, "Copy", Some("copy"), Some("Ctrl+V to paste"), Variant::Secondary, Some(pm(PhoneMsg::PhotosCopy))),
+                w::text_button(
+                    p,
+                    &self.icons,
+                    "Copy",
+                    Some("copy"),
+                    Some("Ctrl+V to paste"),
+                    Variant::Secondary,
+                    Some(pm(PhoneMsg::PhotosCopy))
+                ),
                 w::text_button(p, &self.icons, "Clear", None, None, Variant::Ghost, Some(pm(PhoneMsg::PhotosClear))),
             ]
             .spacing(style::SPACE_3)
@@ -765,7 +1208,15 @@ impl App {
                 }
                 grid = grid.push(r);
             }
-            col.push(column![row![self.ptb(day.to_string(), 15.0, p.ink_strong), self.pt(group.len().to_string(), style::LABEL, p.ink_muted)].spacing(style::SPACE_3).align_y(Alignment::End), grid].spacing(style::SPACE_3))
+            col.push(
+                column![
+                    row![self.ptb(day.to_string(), 15.0, p.ink_strong), self.pt(group.len().to_string(), style::LABEL, p.ink_muted)]
+                        .spacing(style::SPACE_3)
+                        .align_y(Alignment::End),
+                    grid
+                ]
+                .spacing(style::SPACE_3),
+            )
         };
         for ph in shown.iter().take(limit) {
             let d = day_label(ph.mtime);
@@ -778,7 +1229,18 @@ impl App {
         }
         col = flush(col, &day, &group);
         if shown.len() > limit {
-            col = col.push(container(w::text_button(p, &self.icons, &format!("Show more ({} left)", shown.len() - limit), Some("arrow-down"), None, Variant::Secondary, Some(pm(PhoneMsg::PhotosMore)))).center_x(Length::Fill));
+            col = col.push(
+                container(w::text_button(
+                    p,
+                    &self.icons,
+                    &format!("Show more ({} left)", shown.len() - limit),
+                    Some("arrow-down"),
+                    None,
+                    Variant::Secondary,
+                    Some(pm(PhoneMsg::PhotosMore)),
+                ))
+                .center_x(Length::Fill),
+            );
         }
         if shown.is_empty() {
             col = col.push(self.pt("No photos here.", style::BODY, p.ink_muted));
@@ -791,22 +1253,54 @@ impl App {
         let sel = self.phone.photo_sel.contains(&ph.path);
         let inner: Element<'a, Message> = match self.phone.photo_thumbs.get(&ph.path).cloned().flatten() {
             Some(h) => image(h).width(Length::Fill).height(Length::Fill).content_fit(ContentFit::Cover).into(),
-            None => container(w::glyph(&self.icons, if ph.video { "play" } else { "image" }, 20.0, color(p.ink_faint))).center(Length::Fill).into(),
+            None => container(w::glyph(&self.icons, if ph.video { "play" } else { "image" }, 20.0, color(p.ink_faint)))
+                .center(Length::Fill)
+                .into(),
         };
         let mut layers: Vec<Element<'a, Message>> = vec![container(inner).padding(if sel { 8 } else { 0 }).width(118).height(118).into()];
         if ph.video {
-            layers.push(pin(container(w::glyph(&self.icons, "play", 10.0, Color::WHITE)).padding([1, 5]).style(|_| container::Style { background: Some(Background::Color(Color { a: 0.55, ..Color::BLACK })), border: Border { radius: 2.0.into(), ..Border::default() }, ..Default::default() })).x(90.0).y(96.0).into());
+            layers.push(
+                pin(container(w::glyph(&self.icons, "play", 10.0, Color::WHITE)).padding([1, 5]).style(|_| container::Style {
+                    background: Some(Background::Color(Color { a: 0.55, ..Color::BLACK })),
+                    border: Border { radius: 2.0.into(), ..Border::default() },
+                    ..Default::default()
+                }))
+                .x(90.0)
+                .y(96.0)
+                .into(),
+            );
         }
         if sel {
             let (a, on) = (color(p.accent), color(p.on_accent));
-            layers.push(pin(container(w::glyph(&self.icons, "check", 12.0, on)).center(20).style(move |_| container::Style { background: Some(Background::Color(a)), border: Border { radius: 10.0.into(), ..Border::default() }, ..Default::default() })).x(6.0).y(6.0).into());
+            layers.push(
+                pin(container(w::glyph(&self.icons, "check", 12.0, on)).center(20).style(move |_| container::Style {
+                    background: Some(Background::Color(a)),
+                    border: Border { radius: 10.0.into(), ..Border::default() },
+                    ..Default::default()
+                }))
+                .x(6.0)
+                .y(6.0)
+                .into(),
+            );
         }
         let pal = p.clone();
-        let tile = button(stack(layers).width(118).height(118)).padding(0).on_press(pm(PhoneMsg::PhotoToggle(ph.path.clone()))).style(move |_, st| button::Style {
-            background: Some(Background::Color(color(pal.bg_deep))),
-            border: Border { color: if sel { color(pal.accent) } else if matches!(st, button::Status::Hovered) { color(pal.line_strong) } else { Color::TRANSPARENT }, width: if sel { 3.0 } else { 1.0 }, radius: 2.0.into() },
-            ..Default::default()
-        });
+        let tile = button(stack(layers).width(118).height(118)).padding(0).on_press(pm(PhoneMsg::PhotoToggle(ph.path.clone()))).style(
+            move |_, st| button::Style {
+                background: Some(Background::Color(color(pal.bg_deep))),
+                border: Border {
+                    color: if sel {
+                        color(pal.accent)
+                    } else if matches!(st, button::Status::Hovered) {
+                        color(pal.line_strong)
+                    } else {
+                        Color::TRANSPARENT
+                    },
+                    width: if sel { 3.0 } else { 1.0 },
+                    radius: 2.0.into(),
+                },
+                ..Default::default()
+            },
+        );
         let name = ph.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
         self.tip(mouse_area(tile).on_double_click(pm(PhoneMsg::PhotoOpen(ph.path.clone()))), &name, None)
     }
@@ -829,7 +1323,11 @@ impl App {
     fn messages_page<'a>(&'a self, id: &str) -> Element<'a, Message> {
         let p = &self.palette;
         if !self.settings.phone.messages {
-            return self.feature_off("Messages are off", "Turn them on to read and send texts from the laptop. The phone asks for SMS permission the first time.", pm(PhoneMsg::SetMessages(true)));
+            return self.feature_off(
+                "Messages are off",
+                "Turn them on to read and send texts from the laptop. The phone asks for SMS permission the first time.",
+                pm(PhoneMsg::SetMessages(true)),
+            );
         }
         if !self.phone_online(id) && self.phone.threads.is_empty() {
             return self.not_nearby(id, "messages");
@@ -842,9 +1340,24 @@ impl App {
             let slot = palette_slots[who.bytes().map(usize::from).sum::<usize>() % palette_slots.len()];
             let c = p.icon_slots.iter().find(|(n, _)| *n == slot).map_or(p.accent, |(_, c)| *c);
             let (bg, fg) = (color(c), Color::WHITE);
-            container(text(initial).size(style::BODY).font(style::FONT_BOLD).color(fg)).center(32).style(move |_| container::Style { background: Some(Background::Color(bg)), border: Border { radius: 16.0.into(), ..Border::default() }, ..Default::default() }).into()
+            container(text(initial).size(style::BODY).font(style::FONT_BOLD).color(fg))
+                .center(32)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(bg)),
+                    border: Border { radius: 16.0.into(), ..Border::default() },
+                    ..Default::default()
+                })
+                .into()
         };
-        let mut list = column![row![self.ptb("Conversations", style::BODY, p.ink_strong).width(Length::Fill), self.tip(w::icon_button(p, &self.icons, "refresh", Some(pm(PhoneMsg::RefreshMessages)), false), "Refresh", None)].align_y(Alignment::Center).padding([0, 4])].spacing(1);
+        let mut list = column![
+            row![
+                self.ptb("Conversations", style::BODY, p.ink_strong).width(Length::Fill),
+                self.tip(w::icon_button(p, &self.icons, "refresh", Some(pm(PhoneMsg::RefreshMessages)), false), "Refresh", None)
+            ]
+            .align_y(Alignment::Center)
+            .padding([0, 4])
+        ]
+        .spacing(1);
         if threads.is_empty() {
             list = list.push(container(self.pt("Loading conversations…", style::META, p.ink_muted)).padding(12));
         }
@@ -854,8 +1367,19 @@ impl App {
             let r = row![
                 avatar(&m.address),
                 column![
-                    self.pt(self.phone.contacts.get(&m.address).cloned().unwrap_or_else(|| m.address.clone()), style::BODY, if unread || active { p.ink_strong } else { p.ink }).font(if unread { style::FONT_BOLD } else { style::FONT }).wrapping(text::Wrapping::None),
-                    self.pt(format!("{}{}", if m.outgoing { "You: " } else { "" }, m.body.lines().next().unwrap_or_default()), style::META, p.ink_muted).wrapping(text::Wrapping::None),
+                    self.pt(
+                        self.phone.contacts.get(&m.address).cloned().unwrap_or_else(|| m.address.clone()),
+                        style::BODY,
+                        if unread || active { p.ink_strong } else { p.ink }
+                    )
+                    .font(if unread { style::FONT_BOLD } else { style::FONT })
+                    .wrapping(text::Wrapping::None),
+                    self.pt(
+                        format!("{}{}", if m.outgoing { "You: " } else { "" }, m.body.lines().next().unwrap_or_default()),
+                        style::META,
+                        p.ink_muted
+                    )
+                    .wrapping(text::Wrapping::None),
                 ]
                 .spacing(2)
                 .width(Length::Fill)
@@ -872,7 +1396,10 @@ impl App {
             None => container(self.pt("Pick a conversation.", style::BODY, p.ink_muted)).center(Length::Fill).into(),
             Some(t) => {
                 let who = self.phone.threads.get(&t).map(|m| m.address.clone()).unwrap_or_default();
-                let head = container(row![avatar(&who), self.ptb(who.clone(), style::BODY, p.ink_strong)].spacing(style::SPACE_3).align_y(Alignment::Center)).padding([10, 20]);
+                let head = container(
+                    row![avatar(&who), self.ptb(who.clone(), style::BODY, p.ink_strong)].spacing(style::SPACE_3).align_y(Alignment::Center),
+                )
+                .padding([10, 20]);
                 let mut msgs = column![].spacing(style::SPACE_3);
                 let mut last_day = String::new();
                 for m in self.phone.thread_msgs.get(&t).map(Vec::as_slice).unwrap_or(&[]) {
@@ -883,21 +1410,79 @@ impl App {
                     }
                     let (bg, fg, edge) = if m.outgoing { (p.accent, p.on_accent, p.accent) } else { (p.bg_raised, p.ink_strong, p.line) };
                     let tm = local(m.date / 1000);
-                    let bubble = container(column![text(m.body.clone()).size(style::BODY).font(style::FONT).color(color(fg)), text(format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)).size(10).font(style::FONT).color(Color { a: 0.7, ..color(fg) })].spacing(2))
-                        .padding([8, 12])
-                        .max_width(460)
-                        .style(move |_| container::Style { background: Some(Background::Color(color(bg))), border: Border { color: color(edge), width: 1.0, radius: 12.0.into() }, ..Default::default() });
-                    msgs = msgs.push(if m.outgoing { container(bubble).align_right(Length::Fill) } else { container(bubble).align_left(Length::Fill) });
-                    for attachment in &m.attachments { msgs = msgs.push(w::text_button(p, &self.icons, attachment["filename"].as_str().unwrap_or("Download attachment"), Some("download"), None, Variant::Secondary, Some(pm(PhoneMsg::Attachment(attachment.clone()))))); }
+                    let bubble = container(
+                        column![
+                            text(m.body.clone()).size(style::BODY).font(style::FONT).color(color(fg)),
+                            text(format!("{:02}:{:02}", tm.tm_hour, tm.tm_min))
+                                .size(10)
+                                .font(style::FONT)
+                                .color(Color { a: 0.7, ..color(fg) })
+                        ]
+                        .spacing(2),
+                    )
+                    .padding([8, 12])
+                    .max_width(460)
+                    .style(move |_| container::Style {
+                        background: Some(Background::Color(color(bg))),
+                        border: Border { color: color(edge), width: 1.0, radius: 12.0.into() },
+                        ..Default::default()
+                    });
+                    msgs = msgs.push(if m.outgoing {
+                        container(bubble).align_right(Length::Fill)
+                    } else {
+                        container(bubble).align_left(Length::Fill)
+                    });
+                    for attachment in &m.attachments {
+                        msgs = msgs.push(w::text_button(
+                            p,
+                            &self.icons,
+                            attachment["filename"].as_str().unwrap_or("Download attachment"),
+                            Some("download"),
+                            None,
+                            Variant::Secondary,
+                            Some(pm(PhoneMsg::Attachment(attachment.clone()))),
+                        ));
+                    }
                 }
-                let input = text_input("Text message", &self.phone.compose).id(crate::phone::SMS_ID).on_input(|t| pm(PhoneMsg::Compose(t))).on_submit(pm(PhoneMsg::SendSms)).size(style::BODY).font(style::FONT).padding([6, 10]).style(w::field_style(p, false));
+                let input = text_input("Text message", &self.phone.compose)
+                    .id(crate::phone::SMS_ID)
+                    .on_input(|t| pm(PhoneMsg::Compose(t)))
+                    .on_submit(pm(PhoneMsg::SendSms))
+                    .size(style::BODY)
+                    .font(style::FONT)
+                    .padding([6, 10])
+                    .style(w::field_style(p, false));
                 let can = self.phone_online(id) && !self.phone.compose.trim().is_empty();
-                let compose = row![input, w::text_button(p, &self.icons, "Send", Some("send"), Some("Enter"), Variant::Primary, can.then(|| pm(PhoneMsg::SendSms)))].spacing(style::SPACE_3).align_y(Alignment::Center);
+                let compose = row![
+                    input,
+                    w::text_button(
+                        p,
+                        &self.icons,
+                        "Send",
+                        Some("send"),
+                        Some("Enter"),
+                        Variant::Primary,
+                        can.then(|| pm(PhoneMsg::SendSms))
+                    )
+                ]
+                .spacing(style::SPACE_3)
+                .align_y(Alignment::Center);
                 column![
                     head,
                     w::hline(p.line),
                     scrollable(container(msgs).padding([16, 20])).height(Length::Fill).anchor_bottom(),
-                    container(column![compose, self.pt(format!("Sends from {} as a normal text. Carrier rates apply.", self.phone_name(id)), style::LABEL, p.ink_muted)].spacing(6)).padding([10, 20]),
+                    container(
+                        column![
+                            compose,
+                            self.pt(
+                                format!("Sends from {} as a normal text. Carrier rates apply.", self.phone_name(id)),
+                                style::LABEL,
+                                p.ink_muted
+                            )
+                        ]
+                        .spacing(6)
+                    )
+                    .padding([10, 20]),
                 ]
                 .width(Length::Fill)
                 .into()
@@ -910,14 +1495,27 @@ impl App {
         let p = &self.palette;
         let mode = self.settings.phone.notifications;
         if mode == ef_config::PhoneNotifications::Off {
-            return self.feature_off("Notifications are off", "Turn them on to see the phone's notifications here.", pm(PhoneMsg::SetNotifications(ef_config::PhoneNotifications::App)));
+            return self.feature_off(
+                "Notifications are off",
+                "Turn them on to see the phone's notifications here.",
+                pm(PhoneMsg::SetNotifications(ef_config::PhoneNotifications::App)),
+            );
         }
         if !self.phone_online(id) && self.phone.notifications.is_empty() {
             return self.not_nearby(id, "notifications");
         }
-        let sub = if mode == ef_config::PhoneNotifications::Desktop { "Shown here and as desktop notifications." } else { "Shown here only — no desktop pop-ups. Change it in Settings → Phone." };
+        let sub = if mode == ef_config::PhoneNotifications::Desktop {
+            "Shown here and as desktop notifications."
+        } else {
+            "Shown here only — no desktop pop-ups. Change it in Settings → Phone."
+        };
         let any = self.phone.notifications.iter().any(|n| n.dismissable);
-        let mut col = column![self.page_header("Notifications", sub.into(), vec![w::text_button(p, &self.icons, "Dismiss all", Some("close"), None, Variant::Ghost, any.then(|| pm(PhoneMsg::DismissAll)))])].spacing(style::SPACE_4);
+        let mut col = column![self.page_header(
+            "Notifications",
+            sub.into(),
+            vec![w::text_button(p, &self.icons, "Dismiss all", Some("close"), None, Variant::Ghost, any.then(|| pm(PhoneMsg::DismissAll)))]
+        )]
+        .spacing(style::SPACE_4);
         if self.phone.notifications.is_empty() {
             col = col.push(self.pt("Nothing new on the phone.", style::BODY, p.ink_muted));
         }
@@ -929,26 +1527,79 @@ impl App {
         }
         for app in apps {
             let items: Vec<&ef_phone::Notification> = self.phone.notifications.iter().filter(|n| n.app == app).collect();
-            let mut g = column![container(row![iced::widget::svg(self.icons.color("phone")).width(18).height(18), self.ptb(app.clone(), style::BODY, p.ink_strong), self.pt(format!("· {}", items.len()), style::META, p.ink_muted)].spacing(style::SPACE_3).align_y(Alignment::Center)).padding([10, 16])];
+            let mut g = column![
+                container(
+                    row![
+                        iced::widget::svg(self.icons.color("phone")).width(18).height(18),
+                        self.ptb(app.clone(), style::BODY, p.ink_strong),
+                        self.pt(format!("· {}", items.len()), style::META, p.ink_muted)
+                    ]
+                    .spacing(style::SPACE_3)
+                    .align_y(Alignment::Center)
+                )
+                .padding([10, 16])
+            ];
             for n in items {
                 g = g.push(w::hline(p.line));
                 let mut line = row![
-                    column![self.ptb(if n.title.is_empty() { n.app.clone() } else { n.title.clone() }, style::BODY, p.ink_strong).wrapping(text::Wrapping::None), self.pt(n.text.clone(), style::META, p.ink_muted)].spacing(2).width(Length::Fill).clip(true),
+                    column![
+                        self.ptb(if n.title.is_empty() { n.app.clone() } else { n.title.clone() }, style::BODY, p.ink_strong)
+                            .wrapping(text::Wrapping::None),
+                        self.pt(n.text.clone(), style::META, p.ink_muted)
+                    ]
+                    .spacing(2)
+                    .width(Length::Fill)
+                    .clip(true),
                     self.pt(short_time(n.time), style::LABEL, p.ink_muted),
                 ]
                 .spacing(style::SPACE_4)
                 .align_y(Alignment::Center);
                 if n.dismissable {
-                    line = line.push(self.tip(w::icon_button(p, &self.icons, "close", Some(pm(PhoneMsg::Dismiss(n.key.clone()))), false), "Dismiss on the phone too", None));
+                    line = line.push(self.tip(
+                        w::icon_button(p, &self.icons, "close", Some(pm(PhoneMsg::Dismiss(n.key.clone()))), false),
+                        "Dismiss on the phone too",
+                        None,
+                    ));
                 }
                 let mut body = column![line].spacing(style::SPACE_3);
-                for action in &n.actions { body = body.push(w::text_button(p, &self.icons, action, None, None, Variant::Secondary, Some(pm(PhoneMsg::NotificationAction(n.key.clone(), action.clone()))))); }
+                for action in &n.actions {
+                    body = body.push(w::text_button(
+                        p,
+                        &self.icons,
+                        action,
+                        None,
+                        None,
+                        Variant::Secondary,
+                        Some(pm(PhoneMsg::NotificationAction(n.key.clone(), action.clone()))),
+                    ));
+                }
                 if n.reply_id.is_some() {
                     let draft = self.phone.reply.get(&n.key).cloned().unwrap_or_default();
                     let key = n.key.clone();
                     let k2 = n.key.clone();
-                    let input = text_input("Reply", &draft).on_input(move |t| pm(PhoneMsg::ReplyDraft(key.clone(), t))).on_submit(pm(PhoneMsg::Reply(k2.clone()))).size(style::BODY).font(style::FONT).padding([5, 10]).style(w::field_style(p, false));
-                    body = body.push(row![input, w::text_button(p, &self.icons, "Reply", Some("send"), None, Variant::Secondary, (!draft.trim().is_empty()).then(|| pm(PhoneMsg::Reply(n.key.clone()))))].spacing(style::SPACE_3).align_y(Alignment::Center));
+                    let input = text_input("Reply", &draft)
+                        .on_input(move |t| pm(PhoneMsg::ReplyDraft(key.clone(), t)))
+                        .on_submit(pm(PhoneMsg::Reply(k2.clone())))
+                        .size(style::BODY)
+                        .font(style::FONT)
+                        .padding([5, 10])
+                        .style(w::field_style(p, false));
+                    body = body.push(
+                        row![
+                            input,
+                            w::text_button(
+                                p,
+                                &self.icons,
+                                "Reply",
+                                Some("send"),
+                                None,
+                                Variant::Secondary,
+                                (!draft.trim().is_empty()).then(|| pm(PhoneMsg::Reply(n.key.clone())))
+                            )
+                        ]
+                        .spacing(style::SPACE_3)
+                        .align_y(Alignment::Center),
+                    );
                 }
                 g = g.push(container(body).padding([10, 16]));
             }
@@ -977,46 +1628,108 @@ impl App {
         let steps = ["Get the app", "Choose your phone", "Check the code", "Allow files"];
         let mut stepper = row![].spacing(4);
         for (i, s) in steps.iter().enumerate() {
-            let (edge, ink) = if i < step { (p.success.base, p.ink_muted) } else if i == step { (p.accent, p.ink_strong) } else { (p.line, p.ink_faint) };
+            let (edge, ink) = if i < step {
+                (p.success.base, p.ink_muted)
+            } else if i == step {
+                (p.accent, p.ink_strong)
+            } else {
+                (p.line, p.ink_faint)
+            };
             let e = color(edge);
-            stepper = stepper.push(column![container(Space::new()).width(Length::Fill).height(2).style(move |_| container::Style { background: Some(Background::Color(e)), ..Default::default() }), text(format!("{}  {s}", i + 1)).size(style::LABEL).font(if i == step { style::FONT_BOLD } else { style::FONT }).color(color(ink))].spacing(6).width(Length::Fill));
+            stepper = stepper.push(
+                column![
+                    container(Space::new())
+                        .width(Length::Fill)
+                        .height(2)
+                        .style(move |_| container::Style { background: Some(Background::Color(e)), ..Default::default() }),
+                    text(format!("{}  {s}", i + 1))
+                        .size(style::LABEL)
+                        .font(if i == step { style::FONT_BOLD } else { style::FONT })
+                        .color(color(ink))
+                ]
+                .spacing(6)
+                .width(Length::Fill),
+            );
         }
         let mut body = column![stepper].spacing(style::SPACE_4);
         if let Some(e) = &self.phone.error {
-            body = body.push(row![w::glyph(&self.icons, "alert", 14.0, color(p.warning.ink)), self.pt(e.clone(), style::META, p.warning.ink)].spacing(6).align_y(Alignment::Center));
+            body = body.push(
+                row![w::glyph(&self.icons, "alert", 14.0, color(p.warning.ink)), self.pt(e.clone(), style::META, p.warning.ink)]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+            );
         }
-        let mut foot: Vec<Element<'_, Message>> = vec![w::text_button(p, &self.icons, "Close", None, Some("Esc"), Variant::Ghost, Some(pm(PhoneMsg::Dialog(false))))];
+        let mut foot: Vec<Element<'_, Message>> =
+            vec![w::text_button(p, &self.icons, "Close", None, Some("Esc"), Variant::Ghost, Some(pm(PhoneMsg::Dialog(false))))];
         match (&self.phone.code, paired_now) {
             (Some((id, code, asked)), _) => {
                 let name = self.phone_name(id);
-                body = body.push(self.pt(if *asked { format!("{name} wants to pair. Check both screens show this code, then accept here.") } else { format!("Check {name} shows this code, then tap Accept on the phone.") }, style::BODY, p.ink));
+                body = body.push(self.pt(
+                    if *asked {
+                        format!("{name} wants to pair. Check both screens show this code, then accept here.")
+                    } else {
+                        format!("Check {name} shows this code, then tap Accept on the phone.")
+                    },
+                    style::BODY,
+                    p.ink,
+                ));
                 let mut tiles = row![].spacing(style::SPACE_3);
                 for pair in code.as_bytes().chunks(2) {
                     let (bg, edge, ac) = (color(p.bg_deep), color(p.line_strong), color(p.accent));
-                    tiles = tiles.push(container(text(String::from_utf8_lossy(pair).into_owned()).size(26).font(style::FONT_BOLD).color(color(p.ink_strong))).padding([8, 14]).style(move |_| container::Style {
-                        background: Some(Background::Color(bg)),
-                        border: Border { color: edge, width: 1.0, radius: 4.0.into() },
-                        shadow: iced::Shadow { color: ac, offset: iced::Vector::new(0.0, 2.0), blur_radius: 0.0 },
-                        ..Default::default()
-                    }));
+                    tiles = tiles.push(
+                        container(
+                            text(String::from_utf8_lossy(pair).into_owned()).size(26).font(style::FONT_BOLD).color(color(p.ink_strong)),
+                        )
+                        .padding([8, 14])
+                        .style(move |_| container::Style {
+                            background: Some(Background::Color(bg)),
+                            border: Border { color: edge, width: 1.0, radius: 4.0.into() },
+                            shadow: iced::Shadow { color: ac, offset: iced::Vector::new(0.0, 2.0), blur_radius: 0.0 },
+                            ..Default::default()
+                        }),
+                    );
                 }
                 body = body.push(container(tiles).center_x(Length::Fill));
                 if *asked {
                     foot = vec![
                         w::text_button(p, &self.icons, "Codes don't match", None, None, Variant::Ghost, Some(pm(PhoneMsg::RejectPair))),
-                        w::text_button(p, &self.icons, "Pair", Some("check"), Some("Enter"), Variant::Primary, Some(pm(PhoneMsg::AcceptPair))),
+                        w::text_button(
+                            p,
+                            &self.icons,
+                            "Pair",
+                            Some("check"),
+                            Some("Enter"),
+                            Variant::Primary,
+                            Some(pm(PhoneMsg::AcceptPair)),
+                        ),
                     ];
                 } else {
-                    body = body.push(row![w::glyph(&self.icons, "sync", 14.0, color(p.info.ink)), self.pt(format!("Waiting for {name}…"), style::META, p.ink_muted)].spacing(6).align_y(Alignment::Center));
-                    foot = vec![w::text_button(p, &self.icons, "Cancel", None, Some("Esc"), Variant::Ghost, Some(pm(PhoneMsg::RejectPair)))];
+                    body = body.push(
+                        row![
+                            w::glyph(&self.icons, "sync", 14.0, color(p.info.ink)),
+                            self.pt(format!("Waiting for {name}…"), style::META, p.ink_muted)
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
+                    );
+                    foot =
+                        vec![w::text_button(p, &self.icons, "Cancel", None, Some("Esc"), Variant::Ghost, Some(pm(PhoneMsg::RejectPair)))];
                 }
             }
             (None, Some(id)) => {
                 let name = self.phone_name(&id);
                 if self.phone.mount.is_some() {
-                    body = body.push(self.pt(format!("Paired with {name}. Everything's ready: files, photos, battery and notifications."), style::BODY, p.ink));
+                    body = body.push(self.pt(
+                        format!("Paired with {name}. Everything's ready: files, photos, battery and notifications."),
+                        style::BODY,
+                        p.ink,
+                    ));
                 } else {
-                    body = body.push(self.pt(format!("Paired with {name}. One switch left so EchoFiles can see the phone's files:"), style::BODY, p.ink));
+                    body = body.push(self.pt(
+                        format!("Paired with {name}. One switch left so EchoFiles can see the phone's files:"),
+                        style::BODY,
+                        p.ink,
+                    ));
                     body = body.push(self.pt("1. In KDE Connect, open the device's Plugin settings.\n2. Turn on Filesystem expose, and allow All files access when Android asks.", style::META, p.ink_muted));
                 }
                 let status: Element<'_, Message> = if self.phone.mount.is_some() {
@@ -1024,40 +1737,100 @@ impl App {
                 } else if self.phone.mounting {
                     w::pill(p, "Checking…", Some(p.info))
                 } else {
-                    row![w::pill(p, "Files not shared yet", Some(p.warning)), w::text_button(p, &self.icons, "Check again", Some("refresh"), None, Variant::Secondary, Some(pm(PhoneMsg::Files(Want::Nothing))))].spacing(style::SPACE_3).align_y(Alignment::Center).into()
+                    row![
+                        w::pill(p, "Files not shared yet", Some(p.warning)),
+                        w::text_button(
+                            p,
+                            &self.icons,
+                            "Check again",
+                            Some("refresh"),
+                            None,
+                            Variant::Secondary,
+                            Some(pm(PhoneMsg::Files(Want::Nothing)))
+                        )
+                    ]
+                    .spacing(style::SPACE_3)
+                    .align_y(Alignment::Center)
+                    .into()
                 };
                 body = body.push(status);
-                foot.push(w::text_button(p, &self.icons, &format!("Open {name}"), Some("phone"), None, Variant::Primary, Some(pm(PhoneMsg::Select(id.clone())))));
+                foot.push(w::text_button(
+                    p,
+                    &self.icons,
+                    &format!("Open {name}"),
+                    Some("phone"),
+                    None,
+                    Variant::Primary,
+                    Some(pm(PhoneMsg::Select(id.clone()))),
+                ));
             }
             (None, None) => {
                 body = body.push(self.pt("Open EchoConnect on your phone and scan this code. Keep both on the same Wi-Fi. KDE Connect also works with manual pairing.", style::META, p.ink_muted));
-                if let Some(qr) = &self.phone.qr { body = body.push(svg(qr.clone()).width(200).height(200)); }
+                if let Some(qr) = &self.phone.qr {
+                    body = body.push(svg(qr.clone()).width(200).height(200));
+                }
                 let unpaired_none = unpaired.is_empty();
                 let mut list = column![self.ptb("PHONES ON THIS NETWORK", style::LABEL, p.ink_muted)].spacing(style::SPACE_1 + 2.0);
                 if unpaired.is_empty() {
-                    list = list.push(row![w::glyph(&self.icons, "sync", 14.0, color(p.info.ink)), self.pt("Looking for EchoConnect or KDE Connect…", style::META, p.ink_muted)].spacing(6).align_y(Alignment::Center));
+                    list = list.push(
+                        row![
+                            w::glyph(&self.icons, "sync", 14.0, color(p.info.ink)),
+                            self.pt("Looking for EchoConnect or KDE Connect…", style::META, p.ink_muted)
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
+                    );
                 }
                 for dev in unpaired {
                     let r = row![
                         w::glyph(&self.icons, "phone", 18.0, color(p.world_phone)),
-                        column![self.pt(dev.name.clone(), style::BODY, p.ink), self.pt(format!("{} · {}", if dev.kind == "tablet" { "Tablet" } else { "Phone" }, dev.ip), style::LABEL, p.ink_muted)].spacing(2).width(Length::Fill),
+                        column![
+                            self.pt(dev.name.clone(), style::BODY, p.ink),
+                            self.pt(
+                                format!("{} · {}", if dev.kind == "tablet" { "Tablet" } else { "Phone" }, dev.ip),
+                                style::LABEL,
+                                p.ink_muted
+                            )
+                        ]
+                        .spacing(2)
+                        .width(Length::Fill),
                         self.ptb("Pair", style::BODY, p.accent_ink),
                         w::glyph(&self.icons, "chevron-right", 12.0, color(p.accent_ink)),
                     ]
                     .spacing(style::SPACE_4)
                     .align_y(Alignment::Center);
-                    list = list.push(container(w::row_button(p, container(r).padding([8, 0]).into(), false, Some(pm(PhoneMsg::Pair(dev.id.clone()))))).style(bordered(p, p.bg_deep, p.line)));
+                    list = list.push(
+                        container(w::row_button(p, container(r).padding([8, 0]).into(), false, Some(pm(PhoneMsg::Pair(dev.id.clone())))))
+                            .style(bordered(p, p.bg_deep, p.line)),
+                    );
                 }
                 body = body.push(list);
                 if d.since.elapsed().as_secs() >= 10 && unpaired_none {
-                    let mut help = column![self.ptb("Can't see your phone?", style::BODY, p.ink_strong), self.pt("Check both are on the same Wi-Fi and the KDE Connect app is open on the phone.", style::META, p.ink_muted)].spacing(style::SPACE_3);
+                    let mut help = column![
+                        self.ptb("Can't see your phone?", style::BODY, p.ink_strong),
+                        self.pt("Check both are on the same Wi-Fi and the KDE Connect app is open on the phone.", style::META, p.ink_muted)
+                    ]
+                    .spacing(style::SPACE_3);
                     if self.phone.ufw == Some(true) {
                         let fw: Element<'_, Message> = match &d.firewall {
                             Some(Ok(())) => w::pill(p, "Firewall allows KDE Connect", Some(p.success)),
                             Some(Err(e)) => self.pt(format!("Couldn't change the firewall: {e}"), style::META, p.danger.ink).into(),
                             None => row![
-                                w::text_button(p, &self.icons, if d.firewall_busy { "Asking…" } else { "Allow KDE Connect…" }, Some("shield"), None, Variant::Secondary, (!d.firewall_busy).then(|| pm(PhoneMsg::AllowFirewall))),
-                                self.pt("The firewall may be blocking it. This asks for your password once and opens ports 1714–1764.", style::LABEL, p.ink_muted).width(Length::Fill),
+                                w::text_button(
+                                    p,
+                                    &self.icons,
+                                    if d.firewall_busy { "Asking…" } else { "Allow KDE Connect…" },
+                                    Some("shield"),
+                                    None,
+                                    Variant::Secondary,
+                                    (!d.firewall_busy).then(|| pm(PhoneMsg::AllowFirewall))
+                                ),
+                                self.pt(
+                                    "The firewall may be blocking it. This asks for your password once and opens ports 1714–1764.",
+                                    style::LABEL,
+                                    p.ink_muted
+                                )
+                                .width(Length::Fill),
                             ]
                             .spacing(style::SPACE_3)
                             .align_y(Alignment::Center)
@@ -1065,8 +1838,32 @@ impl App {
                         };
                         help = help.push(fw);
                     }
-                    let ip = text_input("192.168.1.20", &d.ip).id(crate::phone::IP_ID).on_input(|t| pm(PhoneMsg::IpDraft(t))).on_submit(pm(PhoneMsg::IpSubmit)).size(style::BODY).font(style::FONT).padding([5, 10]).width(200).style(w::field_style(p, false));
-                    help = help.push(row![self.pt("Or type the phone's IP:", style::META, p.ink_muted), ip, w::text_button(p, &self.icons, "Connect", None, None, Variant::Secondary, (!d.ip.trim().is_empty()).then(|| pm(PhoneMsg::IpSubmit)))].spacing(style::SPACE_3).align_y(Alignment::Center));
+                    let ip = text_input("192.168.1.20", &d.ip)
+                        .id(crate::phone::IP_ID)
+                        .on_input(|t| pm(PhoneMsg::IpDraft(t)))
+                        .on_submit(pm(PhoneMsg::IpSubmit))
+                        .size(style::BODY)
+                        .font(style::FONT)
+                        .padding([5, 10])
+                        .width(200)
+                        .style(w::field_style(p, false));
+                    help = help.push(
+                        row![
+                            self.pt("Or type the phone's IP:", style::META, p.ink_muted),
+                            ip,
+                            w::text_button(
+                                p,
+                                &self.icons,
+                                "Connect",
+                                None,
+                                None,
+                                Variant::Secondary,
+                                (!d.ip.trim().is_empty()).then(|| pm(PhoneMsg::IpSubmit))
+                            )
+                        ]
+                        .spacing(style::SPACE_3)
+                        .align_y(Alignment::Center),
+                    );
                     body = body.push(container(help).padding(style::SPACE_4).width(Length::Fill).style(bordered(p, p.bg_deep, p.line)));
                 }
             }

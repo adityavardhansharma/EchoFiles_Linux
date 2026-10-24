@@ -271,7 +271,7 @@ mod tests {
                 x ^= x << 13;
                 x ^= x >> 7;
                 x ^= x << 17;
-                s.push(if x % 3 == 0 { bases[(x >> 8) as usize % bases.len()] } else { marks[(x >> 8) as usize % marks.len()] });
+                s.push(if x.is_multiple_of(3) { bases[(x >> 8) as usize % bases.len()] } else { marks[(x >> 8) as usize % marks.len()] });
             }
             assert_eq!(fold(&s), reference(&s), "{s:?}");
         }

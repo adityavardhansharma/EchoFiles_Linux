@@ -94,6 +94,15 @@ android {
     }
   }
 
+  // "full": every feature, for the GitHub release and sideloading. "store": no
+  // Play-restricted permissions (texts, call log, all-files access, automatic clipboard);
+  // those features report themselves unavailable at run time.
+  flavorDimensions += "distribution"
+  productFlavors {
+    create("full") { dimension = "distribution"; isDefault = true }
+    create("store") { dimension = "distribution"; applicationIdSuffix = ".store" }
+  }
+
   buildTypes {
     release {
       isMinifyEnabled = false

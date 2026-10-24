@@ -156,10 +156,13 @@ impl<'a> View<'a> {
                     matcher::keep_best(&mut v, q.limit);
                     (total, v)
                 })
-                .reduce(|| (0, Vec::new()), |mut a, mut b| {
-                    a.1.append(&mut b.1);
-                    (a.0 + b.0, a.1)
-                })
+                .reduce(
+                    || (0, Vec::new()),
+                    |mut a, mut b| {
+                        a.1.append(&mut b.1);
+                        (a.0 + b.0, a.1)
+                    },
+                )
         };
         matcher::keep_best(&mut keys, q.limit);
         keys.sort_unstable();
@@ -174,7 +177,9 @@ impl<'a> View<'a> {
         let mut cur = first;
         let mut prev = usize::MAX;
         for pos in m.scan_finder().find_iter(hay) {
-            if pos >= hay.len() { break; }
+            if pos >= hay.len() {
+                break;
+            }
             let abs = (lo + pos) as u32;
             if abs >= self.foff[cur + 1] {
                 cur += self.foff[cur + 1..=last].partition_point(|&o| o <= abs);

@@ -9,7 +9,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use ef_phone::{json, Event, Service};
+use ef_phone::{Event, Service, json};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -103,7 +103,8 @@ fn notifications(svc: &Service, id: &str) {
         ("0|com.google.android.gm|3", "Gmail", "Your boarding pass", "IndiGo · 6E 2134 · BLR → DEL", false),
         ("0|in.swiggy|4", "Swiggy", "Order on the way", "Arriving in 12 minutes", false),
     ] {
-        let mut body = json!({ "id": k, "appName": app, "title": title, "text": text, "isClearable": true, "time": now - 60_000, "silent": false });
+        let mut body =
+            json!({ "id": k, "appName": app, "title": title, "text": text, "isClearable": true, "time": now - 60_000, "silent": false });
         if reply {
             body["requestReplyId"] = json!(format!("reply-{k}"));
         }

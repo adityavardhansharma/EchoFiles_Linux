@@ -70,7 +70,14 @@ impl<'a> Walk<'a> {
         out
     }
 
-    pub fn new(s: &'a Search, root: u16, root_dev: u64, found: &'a AtomicUsize, stop: &'a AtomicBool, errors: &'a Mutex<Vec<String>>) -> Walk<'a> {
+    pub fn new(
+        s: &'a Search,
+        root: u16,
+        root_dev: u64,
+        found: &'a AtomicUsize,
+        stop: &'a AtomicBool,
+        errors: &'a Mutex<Vec<String>>,
+    ) -> Walk<'a> {
         Walk { s, root, root_dev, hits: Mutex::new(Vec::new()), fold: s.filters.needs_fold(s.rank), skip: None, found, stop, errors }
     }
 
@@ -86,7 +93,15 @@ impl<'a> Walk<'a> {
 
     /// Walk the contents of folder `path` (whose own depth is `depth`). `stack` holds the
     /// rule files of the folders above it; its own are read here.
-    pub fn dir<'s>(&'s self, path: Vec<u8>, depth: u32, stack: Arc<Stack>, anc: Option<Arc<Ancestors>>, is_root: bool, scope: &rayon::Scope<'s>) {
+    pub fn dir<'s>(
+        &'s self,
+        path: Vec<u8>,
+        depth: u32,
+        stack: Arc<Stack>,
+        anc: Option<Arc<Ancestors>>,
+        is_root: bool,
+        scope: &rayon::Scope<'s>,
+    ) {
         if self.halted() {
             return;
         }
@@ -160,7 +175,15 @@ impl<'a> Walk<'a> {
         self.flush(hits, children, d, &stack, &anc, scope);
     }
 
-    fn flush<'s>(&'s self, mut hits: Vec<Hit>, children: Vec<Vec<u8>>, d: u32, stack: &Arc<Stack>, anc: &Option<Arc<Ancestors>>, scope: &rayon::Scope<'s>) {
+    fn flush<'s>(
+        &'s self,
+        mut hits: Vec<Hit>,
+        children: Vec<Vec<u8>>,
+        d: u32,
+        stack: &Arc<Stack>,
+        anc: &Option<Arc<Ancestors>>,
+        scope: &rayon::Scope<'s>,
+    ) {
         if !hits.is_empty() {
             match &self.s.sink {
                 Some(sink) => sink.take(std::mem::take(&mut hits)),
@@ -190,7 +213,19 @@ impl<'a> Walk<'a> {
 
     /// Judge one listed entry at depth `d`: keep it as a hit, and/or queue it to descend.
     #[allow(clippy::too_many_arguments)]
-    fn visit(&self, fd: Option<BorrowedFd>, path: &[u8], name: &[u8], listed: FType, d: u32, stack: &Arc<Stack>, anc: &Option<Arc<Ancestors>>, hits: &mut Vec<Hit>, children: &mut Vec<Vec<u8>>, folded: &mut Vec<u8>) {
+    fn visit(
+        &self,
+        fd: Option<BorrowedFd>,
+        path: &[u8],
+        name: &[u8],
+        listed: FType,
+        d: u32,
+        stack: &Arc<Stack>,
+        anc: &Option<Arc<Ancestors>>,
+        hits: &mut Vec<Hit>,
+        children: &mut Vec<Vec<u8>>,
+        folded: &mut Vec<u8>,
+    ) {
         let f = &self.s.filters;
         let g = stack.globals();
         let ignoring = g.opts.any() || g.overrides.is_some() || !g.explicit.is_empty();
@@ -214,7 +249,8 @@ impl<'a> Walk<'a> {
             t = stat(false).map(|s| FType::from_mode(s.st_mode)).unwrap_or(FType::Unknown);
         }
         let mut is_dir = t == FType::Dir;
-        if f.follow && t == FType::Symlink
+        if f.follow
+            && t == FType::Symlink
             && let Ok(target) = stat(true)
             && FileType::from_raw_mode(target.st_mode) == FileType::Directory
         {
@@ -233,7 +269,10 @@ impl<'a> Walk<'a> {
             }
         }
         if is_dir && !f.ignore_contain.is_empty() {
-            let marked = f.ignore_contain.iter().any(|m| rustix::fs::statat(rustix::fs::CWD, OsStr::from_bytes(&join(&abs, m)), AtFlags::SYMLINK_NOFOLLOW).is_ok());
+            let marked = f
+                .ignore_contain
+                .iter()
+                .any(|m| rustix::fs::statat(rustix::fs::CWD, OsStr::from_bytes(&join(&abs, m)), AtFlags::SYMLINK_NOFOLLOW).is_ok());
             if marked {
                 return;
             }
@@ -262,7 +301,10 @@ impl<'a> Walk<'a> {
             }
         }
         let skipped = |o: &crate::Options| {
-            o.excludes(name) || (o.skip_cache_tagged && rustix::fs::statat(rustix::fs::CWD, OsStr::from_bytes(&join(&abs, b"CACHEDIR.TAG")), AtFlags::SYMLINK_NOFOLLOW).is_ok())
+            o.excludes(name)
+                || (o.skip_cache_tagged
+                    && rustix::fs::statat(rustix::fs::CWD, OsStr::from_bytes(&join(&abs, b"CACHEDIR.TAG")), AtFlags::SYMLINK_NOFOLLOW)
+                        .is_ok())
         };
         let descend = is_dir
             && !self.skip.is_some_and(skipped)
@@ -274,7 +316,9 @@ impl<'a> Walk<'a> {
                 children.push(abs.clone());
                 hits.push(Hit { path: abs, root: self.root, depth: d, ftype: ft, meta: meta.map(Box::new), rank });
             }
-            (Some((ft, meta, rank)), false) => hits.push(Hit { path: abs, root: self.root, depth: d, ftype: ft, meta: meta.map(Box::new), rank }),
+            (Some((ft, meta, rank)), false) => {
+                hits.push(Hit { path: abs, root: self.root, depth: d, ftype: ft, meta: meta.map(Box::new), rank })
+            }
             (None, true) => children.push(abs),
             (None, false) => {}
         }

@@ -21,7 +21,15 @@ fn templates(cmd: &[String]) -> Vec<Template> {
 
 /// `print0`: like fd, end each command's output with a NUL. `sep` replaces `/` in the
 /// paths given to the command (fd's `--path-separator`).
-pub fn run(x: &Exec, paths: &[Vec<u8>], sep: Option<&str>, threads: Option<usize>, batch_size: Option<usize>, print0: bool, ctx: &super::Ctx) -> u8 {
+pub fn run(
+    x: &Exec,
+    paths: &[Vec<u8>],
+    sep: Option<&str>,
+    threads: Option<usize>,
+    batch_size: Option<usize>,
+    print0: bool,
+    ctx: &super::Ctx,
+) -> u8 {
     let t = templates(&x.cmd);
     if x.batch {
         if t[0].has_tokens() {
