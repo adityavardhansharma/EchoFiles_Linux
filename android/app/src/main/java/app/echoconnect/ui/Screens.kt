@@ -445,7 +445,7 @@ fun dayLabel(at: Long): String = when {
                     trailing = { if (unrestricted) StatePill("Set", "success") else Button("Allow", Variant.Primary, BtnSize.Sm) { requestUnrestricted(host) } })
                 ListRow("Automatic clipboard", "One-time setup with EchoFiles", icon = "bolt", chevron = true) { host.go("clip-setup") }
             }
-            ListGroup("About", foot = "EchoConnect and EchoFiles are open source (GPL-3.0-or-later). Read every line at $SOURCE.") {
+            ListGroup("About", foot = "EchoConnect and EchoFiles are open source (MIT). Read every line at $SOURCE.") {
                 ListRow("EchoConnect ${BuildConfig.VERSION_NAME}", "Android ${Build.VERSION.RELEASE} · ${Build.MODEL}", icon = "info")
                 ListRow("Source code", SOURCE, icon = "code", trailing = { Glyph("external", size = 18) }) { host.open("https://$SOURCE") }
             }
