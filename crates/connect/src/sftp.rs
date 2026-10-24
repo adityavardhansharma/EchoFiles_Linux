@@ -151,8 +151,40 @@ impl russh::server::Handler for Conn {
 }
 
 enum Open {
-    Dir(std::collections::VecDeque<File>, bool),
+    /// A folder being listed: its names, read at opendir; each readdir stats the next batch.
+    Dir {
+        dir: PathBuf,
+        names: std::collections::VecDeque<std::ffi::OsString>,
+        sent: usize,
+    },
     File(std::fs::File),
+}
+
+/// The first reply is small so the laptop can show something at once; later ones are big
+/// so a camera folder takes a handful of round trips, not dozens.
+const FIRST_BATCH: usize = 250;
+const BATCH: usize = 1000;
+/// Threads statting one batch. Shared storage is itself a FUSE filesystem run by
+/// MediaProvider, so each stat is a trip into another process; several overlap well.
+const STAT_THREADS: usize = 8;
+
+/// Stat `names` in `dir` across a few threads, keeping their order; entries that vanished
+/// or can't be read are left out.
+fn stat_batch(dir: &Path, names: Vec<std::ffi::OsString>) -> Vec<File> {
+    let per = names.len().div_ceil(STAT_THREADS).max(1);
+    std::thread::scope(|s| {
+        let parts: Vec<_> = names
+            .chunks(per)
+            .map(|part| {
+                s.spawn(move || {
+                    part.iter()
+                        .filter_map(|n| std::fs::symlink_metadata(dir.join(n)).ok().map(|m| File::new(n.to_string_lossy(), attrs(&m))))
+                        .collect::<Vec<File>>()
+                })
+            })
+            .collect();
+        parts.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+    })
 }
 
 struct Sftp {
@@ -269,34 +301,28 @@ impl russh_sftp::server::Handler for Sftp {
 
     async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, StatusReply> {
         let p = self.inside(&path)?;
-        let files = blocking(|| -> Result<Vec<File>, StatusReply> {
-            let mut files = Vec::new();
-            for e in std::fs::read_dir(&p).map_err(code)?.flatten() {
-                if let Ok(m) = e.metadata() {
-                    files.push(File::new(e.file_name().to_string_lossy(), attrs(&m)));
-                }
-            }
-            Ok(files)
+        // Names only here (one directory read); the stats wait for readdir, a batch at a time.
+        let names = blocking(|| -> Result<std::collections::VecDeque<std::ffi::OsString>, StatusReply> {
+            Ok(std::fs::read_dir(&p).map_err(code)?.flatten().map(|e| e.file_name()).collect())
         })?;
-        Ok(Handle { id, handle: self.handle(Open::Dir(files.into(), false)) })
+        Ok(Handle { id, handle: self.handle(Open::Dir { dir: p, names, sent: 0 }) })
     }
 
     async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, StatusReply> {
-        match self.open.get_mut(&handle) {
-            Some(Open::Dir(files, done)) if !*done => {
-                // Up to 256 per reply; Eof once all went out.
-                let n = files.len().min(256);
-                let chunk: Vec<File> = files.drain(..n).collect();
-                if files.is_empty() {
-                    *done = true;
-                }
-                if chunk.is_empty() {
-                    return Err(StatusCode::Eof.into());
-                }
-                Ok(Name { id, files: chunk })
+        let Some(Open::Dir { dir, names, sent }) = self.open.get_mut(&handle) else { return Err(StatusCode::Failure.into()) };
+        loop {
+            if names.is_empty() {
+                return Err(StatusCode::Eof.into());
             }
-            Some(Open::Dir(..)) => Err(StatusCode::Eof.into()),
-            _ => Err(StatusCode::Failure.into()),
+            let n = names.len().min(if *sent == 0 { FIRST_BATCH } else { BATCH });
+            let batch: Vec<std::ffi::OsString> = names.drain(..n).collect();
+            let files = blocking(|| stat_batch(dir, batch));
+            *sent += n;
+            // A batch whose entries all vanished says nothing; an empty reply would read as
+            // the end, so go on to the next.
+            if !files.is_empty() {
+                return Ok(Name { id, files });
+            }
         }
     }
 

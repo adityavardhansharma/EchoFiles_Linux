@@ -192,7 +192,28 @@ impl Pane {
                 Ok(fd) => fd,
                 Err(e) => return send(Message::LoadFailed { generation, error: describe(&dir, &e) }),
             };
-            let mut names = match listing::read_names(&dir, &fd) {
+            // A slow folder (the phone, over Wi-Fi) paints what's been read so far every
+            // quarter second instead of waiting for its last entry.
+            let partial = |names: &Listing| {
+                let names = names.clone();
+                let keys = Arc::new(NameKeys::build(&names));
+                let order = Arc::new(sort::order(&names, &keys, spec, show_hidden));
+                let hidden = (0..names.len()).filter(|&i| names.is_hidden(i)).count();
+                send(Message::Loaded {
+                    generation,
+                    loaded: Arc::new(Loaded {
+                        listing: names,
+                        keys,
+                        metadata_ready: false,
+                        hidden,
+                        names_ms: ms(t0),
+                        meta_ms: 0.0,
+                        sort_ms: 0.0,
+                    }),
+                    order,
+                });
+            };
+            let mut names = match listing::read_names_with(&dir, &fd, Duration::from_millis(250), partial) {
                 Ok(l) => l,
                 Err(e) => return send(Message::LoadFailed { generation, error: describe(&dir, &e) }),
             };
@@ -253,7 +274,7 @@ impl Pane {
             })
             .flatten();
         let keep_sel: HashSet<OsString> = if same_dir { self.selected_names().into_iter().collect() } else { HashSet::new() };
-        if first {
+        if first && self.pending {
             self.pending = false;
             self.skeleton = false;
             self.first_paint_ms = ms(self.nav_started);
