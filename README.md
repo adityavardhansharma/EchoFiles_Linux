@@ -14,23 +14,13 @@ A native Linux file manager built for fast folders, quick search and hands-on fi
 
 ## Get EchoFiles
 
-### Download the package
+EchoFiles is in **alpha**. There is no desktop package yet, so build it from a clone with the steps below.
 
-Open [GitHub Releases](https://github.com/adityavardhansharma/EchoFiles_Linux/releases/latest), download the `.pkg.tar.zst` package and `SHA256SUMS`, then install it on Arch Linux or Omarchy:
+The Android companion, **EchoConnect**, is available now: download `EchoConnect.apk` from [GitHub Releases](https://github.com/adityavardhansharma/EchoFiles_Linux/releases), check `SHA256SUMS`, and install it on Android 10 or newer.
 
-```bash
-cd ~/Downloads
-sha256sum --check --ignore-missing SHA256SUMS
-sudo pacman -U ./echofiles-*-x86_64.pkg.tar.zst
-```
+### Build from a clone
 
-Open **EchoFiles** from your applications menu, or run `echofiles`. The package also installs the optional `ef` command line tool. Remove it with `sudo pacman -Rns echofiles`.
-
-The package is for Arch Linux and compatible distributions. It installs the app for everyone on the machine. It does not need AUR access. Vulkan drivers are supplied by your graphics driver package; install the driver for your GPU.
-
-### Or build it from a clone
-
-This option builds and installs EchoFiles for your user, without `sudo`:
+This builds and installs EchoFiles for your user, without `sudo`:
 
 ```bash
 git clone https://github.com/adityavardhansharma/EchoFiles_Linux.git
@@ -134,4 +124,4 @@ Maintainers can publish versioned Arch packages from **GitHub → Actions → Bu
 
 ## License
 
-EchoFiles workspace crates are GPL-3.0-or-later. Vendored components retain their respective licenses.
+EchoFiles is released under the MIT licence. Vendored components retain their respective licenses.
