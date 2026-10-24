@@ -530,7 +530,7 @@ impl App {
     pub(crate) fn open_path(&mut self, path: PathBuf) -> Task<Message> {
         let original = path.clone();
         background(move || {
-            if path.is_dir() { (true, Ok(())) } else { (false, std::process::Command::new("xdg-open").arg(&path).spawn().map(drop).map_err(|e| e.to_string())) }
+            if path.is_dir() { (true, Ok(())) } else { (false, crate::system::spawn_detached(std::process::Command::new("xdg-open").arg(&path)).map_err(|e| e.to_string())) }
         }, move |(dir, result)| Message::OpenChecked(original.clone(), dir, result))
     }
 

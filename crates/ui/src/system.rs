@@ -13,6 +13,21 @@ use ef_config as config;
 use iced::futures::channel::mpsc;
 
 // ---------------------------------------------------------------------------------------
+// Helper programs
+// ---------------------------------------------------------------------------------------
+
+/// Start a helper program (`xdg-open`, a terminal, `notify-send`…) without waiting for it.
+/// The child is reaped on a thread when it exits, so a long-running EchoFiles doesn't
+/// collect a zombie process for every file it opens.
+pub fn spawn_detached(cmd: &mut std::process::Command) -> std::io::Result<()> {
+    let mut child = cmd.spawn()?;
+    std::thread::Builder::new().name("ef-reap".into()).spawn(move || {
+        let _ = child.wait();
+    })?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------
 // Single instance
 // ---------------------------------------------------------------------------------------
 

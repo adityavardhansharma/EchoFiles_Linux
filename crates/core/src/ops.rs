@@ -307,6 +307,8 @@ pub struct Item {
     pub dst: PathBuf,
     source_identity: Identity,
     destination_identity: Option<Identity>,
+    /// Files below `src`, counted while planning.
+    files: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -419,7 +421,7 @@ pub fn plan(kind: Kind, sources: &[PathBuf], dest: &Path, progress: &Progress) -
                     dirs: sm.is_dir() && dm.is_dir(),
                 });
             }
-        items.push(Item { src: src.clone(), source_identity: Identity::of(&sm), destination_identity: fs::symlink_metadata(&dst).ok().map(|m| Identity::of(&m)), dst });
+        items.push(Item { src: src.clone(), files: t.files, source_identity: Identity::of(&sm), destination_identity: fs::symlink_metadata(&dst).ok().map(|m| Identity::of(&m)), dst });
         if progress.cancelled() {
             return Err("Cancelled.".into());
         }
@@ -462,7 +464,7 @@ pub fn execute(plan: &Plan, choices: &HashMap<PathBuf, Resolution>, default: Res
     // A few plain files are made durable one by one; anything bigger syncs the filesystem
     // once (cheaper than thousands of fsyncs, but it also flushes unrelated dirty data).
     let small = plan.items.len() <= SMALL_BATCH && plan.items.iter().all(|i| fs::symlink_metadata(&i.src).is_ok_and(|m| m.is_file()));
-    let mut cx = Transfer { kind: plan.kind, fixes: &fixes, progress, links: HashMap::new(), recovery_parent: PathBuf::new(), removals: Vec::new(), stages: HashMap::new(), stage_dirs: Vec::new(), fsync: small };
+    let mut cx = Transfer { kind: plan.kind, fixes: &fixes, progress, links: HashMap::new(), recovery_parent: PathBuf::new(), removals: Vec::new(), stages: HashMap::new(), stage_dirs: Vec::new(), counted: plan.items.iter().map(|i| (i.src.clone(), i.files)).collect(), copy: CopyOpts { fsync: small, strict: plan.kind == Kind::Move } };
     for item in &plan.items {
         if fs::symlink_metadata(&item.src).ok().map(|m| Identity::of(&m)) != Some(item.source_identity.clone()) {
             out.errors.push(format!("{} changed since planning; please retry", item.src.display())); continue;
@@ -545,14 +547,36 @@ struct Transfer<'a> {
     stages: HashMap<PathBuf, (PathBuf, u32)>,
     /// Every staging folder made, removed at the end if nothing was retained in it.
     stage_dirs: Vec<PathBuf>,
-    /// fsync each copied file (small batches; see [`execute`]).
+    /// File counts the plan already walked for, by top-level source.
+    counted: HashMap<PathBuf, u64>,
+    /// fsync each copied file (small batches; see [`execute`]) and how strictly metadata
+    /// is kept.
+    copy: CopyOpts,
+}
+
+/// How a tree is copied.
+#[derive(Clone, Copy)]
+struct CopyOpts {
+    /// fsync each copied file.
     fsync: bool,
+    /// Metadata the destination can't store is an error (moves, so the original is kept)
+    /// rather than skipped (copies onto FAT, exFAT, NTFS or a network place).
+    strict: bool,
 }
 
 /// Up to this many plain files are made durable with targeted fsyncs instead of `syncfs`.
 const SMALL_BATCH: usize = 64;
 
 impl Transfer<'_> {
+    /// Files below `src` for progress: from the plan for a top-level item (a same-device
+    /// move would otherwise walk its whole tree a second time), counted otherwise.
+    fn files_in(&mut self, src: &Path) -> io::Result<u64> {
+        match self.counted.remove(src) {
+            Some(n) => Ok(n),
+            None => Ok(tally(src, false, &Progress::default())?.files),
+        }
+    }
+
     /// A fresh slot in `parent`'s staging folder: (folder, slot number).
     fn stage(&mut self, parent: &Path) -> io::Result<(PathBuf, u32)> {
         if let Some((dir, n)) = self.stages.get_mut(parent) {
@@ -646,7 +670,7 @@ fn transfer_entry(cx: &mut Transfer, src: &Path, dst: &Path, choice: Resolution,
     // A same-device move commits with one rename and keeps its original until then.
     let direct_move = kind == Kind::Move && sm.dev() == fs::metadata(parent)?.dev();
     if direct_move && !replaced {
-        let files = tally(src, false, &Progress::default())?.files;
+        let files = cx.files_in(src)?;
         rename_noreplace(src, &dst)?;
         out.journal.push(Undo::Checked { path: dst.clone(), identity: Identity::of(&fs::symlink_metadata(&dst)?), action: Box::new(Undo::Move(vec![(src.to_path_buf(), dst.clone())])) });
         out.done.push((src.to_path_buf(), dst));
@@ -658,11 +682,11 @@ fn transfer_entry(cx: &mut Transfer, src: &Path, dst: &Path, choice: Resolution,
     let (stage, slot) = cx.stage(parent)?;
     let staged = stage.join(format!("new-{slot}"));
     let backup = stage.join(format!("previous-{slot}"));
-    let renamed_files = if direct_move { tally(src, false, &Progress::default())?.files } else { 0 };
+    let renamed_files = if direct_move { cx.files_in(src)? } else { 0 };
     let source_tree = if kind == Kind::Move && !direct_move { Some(snapshot(src)?) } else { None };
     let mut new_links = HashMap::new();
     if !direct_move
-        && let Err(e) = copy_tree_inner(src, &staged, cx.fixes, progress, (&cx.links, &mut new_links), cx.fsync) {
+        && let Err(e) = copy_tree_inner(src, &staged, cx.fixes, progress, (&cx.links, &mut new_links), cx.copy) {
             let _ = remove_any(&staged);
             return Err(e);
         }
@@ -706,13 +730,13 @@ fn transfer_entry(cx: &mut Transfer, src: &Path, dst: &Path, choice: Resolution,
 }
 
 fn copy_tree(src: &Path, dst: &Path, progress: &Progress) -> io::Result<()> {
-    copy_tree_inner(src, dst, &HashMap::new(), progress, (&HashMap::new(), &mut HashMap::new()), false)
+    copy_tree_inner(src, dst, &HashMap::new(), progress, (&HashMap::new(), &mut HashMap::new()), CopyOpts { fsync: false, strict: true })
 }
 
 /// Hard links already copied: (earlier entries' copies, this entry's copies so far).
 type Links<'a> = (&'a HashMap<(u64, u64), PathBuf>, &'a mut HashMap<(u64, u64), PathBuf>);
 
-fn copy_tree_inner(src: &Path, dst: &Path, fixes: &HashMap<&Path, &str>, progress: &Progress, links: Links, fsync: bool) -> io::Result<()> {
+fn copy_tree_inner(src: &Path, dst: &Path, fixes: &HashMap<&Path, &str>, progress: &Progress, links: Links, opts: CopyOpts) -> io::Result<()> {
     if !progress.proceed() {
         return Err(cancelled_err());
     }
@@ -721,7 +745,7 @@ fn copy_tree_inner(src: &Path, dst: &Path, fixes: &HashMap<&Path, &str>, progres
     if ft.is_symlink() {
         std::os::unix::fs::symlink(fs::read_link(src)?, dst)?;
         set_times(dst, &m)?;
-        copy_xattrs(src, dst)?;
+        copy_xattrs(src, dst, opts.strict)?;
         progress.files_done.fetch_add(1, Ordering::Relaxed);
     } else if ft.is_dir() {
         fs::create_dir(dst)?;
@@ -729,16 +753,16 @@ fn copy_tree_inner(src: &Path, dst: &Path, fixes: &HashMap<&Path, &str>, progres
             let e = e?;
             let from = e.path();
             let name = fixes.get(from.as_path()).map(OsString::from).unwrap_or_else(|| e.file_name());
-            copy_tree_inner(&from, &dst.join(name), fixes, progress, (links.0, &mut *links.1), fsync)?;
+            copy_tree_inner(&from, &dst.join(name), fixes, progress, (links.0, &mut *links.1), opts)?;
         }
-        fs::set_permissions(dst, fs::Permissions::from_mode(m.mode() & 0o7777))?;
+        best_effort(fs::set_permissions(dst, fs::Permissions::from_mode(copied_mode(&m))), opts.strict)?;
         set_times(dst, &m)?;
-        copy_xattrs(src, dst)?;
+        copy_xattrs(src, dst, opts.strict)?;
     } else if ft.is_file() {
         progress.set_current(src);
         let key = (m.dev(), m.ino());
         if let Some(existing) = links.1.get(&key).or_else(|| links.0.get(&key)) { fs::hard_link(existing, dst)?; }
-        else { copy_file(src, dst, &m, progress, fsync)?; if m.nlink() > 1 { links.1.insert(key, dst.to_path_buf()); } }
+        else { copy_file(src, dst, &m, progress, opts)?; if m.nlink() > 1 { links.1.insert(key, dst.to_path_buf()); } }
         progress.files_done.fetch_add(1, Ordering::Relaxed);
     }
     else { return Err(io::Error::new(io::ErrorKind::Unsupported, "cannot copy a socket, FIFO or device")); }
@@ -753,9 +777,32 @@ fn set_times(p: &Path, m: &fs::Metadata) -> io::Result<()> {
     rustix::fs::utimensat(rustix::fs::CWD, p, &ts, rustix::fs::AtFlags::SYMLINK_NOFOLLOW).map_err(Into::into)
 }
 
-// Includes user attributes and POSIX ACLs. Failure is an error, so a move retains its
-// original when the destination cannot preserve the source's metadata.
-fn copy_xattrs(src: &Path, dst: &Path) -> io::Result<()> {
+/// Errors a destination gives for metadata it can't store: FAT, exFAT, NTFS and GVfs' FUSE
+/// bridge have no extended attributes and refuse most mode changes.
+fn unsupported_metadata(e: &io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(libc::ENOTSUP | libc::EPERM | libc::EACCES | libc::ENOSYS))
+}
+
+/// A metadata step that only a strict (move) copy treats as fatal.
+fn best_effort(r: io::Result<()>, strict: bool) -> io::Result<()> {
+    match r {
+        Err(e) if !strict && unsupported_metadata(&e) => Ok(()),
+        r => r,
+    }
+}
+
+/// The mode a copy gets. Like `cp`, setuid and setgid survive only on our own files: the
+/// copy belongs to us, so keeping another user's privilege bits would grant them as us.
+fn copied_mode(m: &fs::Metadata) -> u32 {
+    // SAFETY: getuid has no preconditions.
+    let mine = m.uid() == unsafe { libc::getuid() };
+    if mine { m.mode() & 0o7777 } else { m.mode() & 0o1777 }
+}
+
+// Includes user attributes and POSIX ACLs. For a move (`strict`), failure is an error, so
+// the original is retained when the destination cannot preserve its metadata; a copy skips
+// attributes the destination can't store (a browser's `user.xdg.origin.url` on a USB stick).
+fn copy_xattrs(src: &Path, dst: &Path, strict: bool) -> io::Result<()> {
     let src = std::ffi::CString::new(src.as_os_str().as_bytes())?;
     let dst = std::ffi::CString::new(dst.as_os_str().as_bytes())?;
     // SAFETY: all pointers reference live C strings or correctly sized byte buffers.
@@ -775,13 +822,16 @@ fn copy_xattrs(src: &Path, dst: &Path) -> io::Result<()> {
             let mut value = vec![0u8; n as usize];
             let n = libc::lgetxattr(src.as_ptr(), name.as_ptr(), value.as_mut_ptr().cast(), value.len());
             if n < 0 { return Err(io::Error::last_os_error()); }
-            if libc::lsetxattr(dst.as_ptr(), name.as_ptr(), value.as_ptr().cast(), n as usize, 0) < 0 { return Err(io::Error::last_os_error()); }
+            if libc::lsetxattr(dst.as_ptr(), name.as_ptr(), value.as_ptr().cast(), n as usize, 0) < 0 {
+                let e = io::Error::last_os_error();
+                if strict || !unsupported_metadata(&e) { return Err(e); }
+            }
         }
     }
     Ok(())
 }
 
-fn copy_file(src: &Path, dst: &Path, m: &fs::Metadata, progress: &Progress, fsync: bool) -> io::Result<()> {
+fn copy_file(src: &Path, dst: &Path, m: &fs::Metadata, progress: &Progress, opts: CopyOpts) -> io::Result<()> {
     let mut from = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(src)?;
     if from.metadata()?.ino() != m.ino() || from.metadata()?.dev() != m.dev() { return Err(io::Error::other("source changed while copying")); }
     let mut to = OpenOptions::new().write(true).create_new(true).mode(0o600).open(dst)?;
@@ -829,14 +879,14 @@ fn copy_file(src: &Path, dst: &Path, m: &fs::Metadata, progress: &Progress, fsyn
         let _ = fs::remove_file(dst);
         return Err(e);
     }
-    rustix::fs::fchmod(&to, rustix::fs::Mode::from_raw_mode(m.mode() & 0o7777))?;
+    best_effort(rustix::fs::fchmod(&to, rustix::fs::Mode::from_raw_mode(copied_mode(m))).map_err(Into::into), opts.strict)?;
     let ts = rustix::fs::Timestamps {
         last_access: rustix::fs::Timespec { tv_sec: m.atime(), tv_nsec: m.atime_nsec() as _ },
         last_modification: rustix::fs::Timespec { tv_sec: m.mtime(), tv_nsec: m.mtime_nsec() as _ },
     };
-    rustix::fs::futimens(&to, &ts)?;
-    copy_xattrs(src, dst)?;
-    if fsync { to.sync_all()?; }
+    best_effort(rustix::fs::futimens(&to, &ts).map_err(Into::into), opts.strict)?;
+    copy_xattrs(src, dst, opts.strict)?;
+    if opts.fsync { to.sync_all()?; }
     Ok(())
 }
 

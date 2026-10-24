@@ -66,13 +66,13 @@ impl Ctx {
     }
 
     pub fn write_out(&self, b: &[u8]) -> std::io::Result<()> {
-        let mut o = self.out.lock().unwrap();
+        let mut o = self.out.lock().unwrap_or_else(|e| e.into_inner());
         o.write_all(b)?;
         o.flush()
     }
 
     pub fn write_err(&self, b: &[u8]) {
-        let mut e = self.err.lock().unwrap();
+        let mut e = self.err.lock().unwrap_or_else(|e| e.into_inner());
         let _ = e.write_all(b);
         let _ = e.flush();
     }

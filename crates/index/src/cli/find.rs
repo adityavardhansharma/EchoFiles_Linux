@@ -91,7 +91,8 @@ impl Indexes {
         if !settings.search.index {
             return Vec::new();
         }
-        let mut slots = self.slots.lock().unwrap();
+        // A query that panicked while holding the lock leaves valid slots behind.
+        let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
         let mut out = Vec::new();
         for root in settings.search.roots() {
             let file = config::index_file_for(&root);

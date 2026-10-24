@@ -103,7 +103,7 @@ impl Warm {
     /// The settings, re-read only when the file changed.
     fn settings(&self) -> Arc<Settings> {
         let mtime = std::fs::metadata(Settings::path()).and_then(|m| m.modified()).ok();
-        let mut s = self.settings.lock().unwrap();
+        let mut s = self.settings.lock().unwrap_or_else(|e| e.into_inner());
         if s.0 != mtime {
             if let Ok(fresh) = Settings::load() {
                 *s = (mtime, Arc::new(fresh));
@@ -208,7 +208,12 @@ fn serve(stream: UnixStream, warm: &Warm) {
         served: true,
         app_running: true,
     };
-    let code = warm.pool.install(|| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| super::run(&argv, &ctx))).unwrap_or(1));
+    // The release profile unwinds (see Cargo.toml), so a panic here ends this request with
+    // an error instead of the whole app.
+    let code = warm.pool.install(|| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| super::run(&argv, &ctx)))).unwrap_or_else(|_| {
+        ctx.write_err(b"ef: internal error while answering; please report it\n");
+        1
+    });
     let _ = ctx.out.lock().map(|mut o| o.flush());
     // Close our copies of the caller's output before telling it we're done, so a pipe
     // reader sees end-of-file when the caller exits.
