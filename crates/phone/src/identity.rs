@@ -14,8 +14,15 @@ use std::path::{Path, PathBuf};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use sha2::{Digest, Sha256};
 
+/// `$XDG_CONFIG_HOME/echofiles/phone`. A relative `XDG_CONFIG_HOME` is ignored, as the
+/// spec requires and as `ef_config::config_dir` does, so the identity and pairings never
+/// land relative to whatever folder EchoFiles was started from.
 pub fn dir() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")).join("echofiles/phone")
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"))
+        .join("echofiles/phone")
 }
 
 /// Who we are on the network.

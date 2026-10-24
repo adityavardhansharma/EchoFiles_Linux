@@ -92,10 +92,23 @@ fn authenticate(user: &str, cookie: &str, password: &str) -> Result<(), String> 
     }
 }
 
+/// Whether a call came from polkitd itself. The agent's object is reachable by anyone on
+/// the system bus; without this check any process could pop up a convincing password
+/// prompt in EchoFiles' own dialog.
+async fn from_polkit(conn: &zbus::Connection, header: &zbus::message::Header<'_>) -> bool {
+    let Some(sender) = header.sender() else { return false };
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(conn).await else { return false };
+    let Ok(name) = zbus::names::BusName::try_from("org.freedesktop.PolicyKit1") else { return false };
+    dbus.get_name_owner(name).await.is_ok_and(|owner| owner.as_str() == sender.as_str())
+}
+
 #[zbus::interface(name = "org.freedesktop.PolicyKit1.AuthenticationAgent")]
 impl Agent {
+    #[allow(clippy::too_many_arguments)]
     async fn begin_authentication(
         &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
         _action_id: String,
         message: String,
         _icon_name: String,
@@ -103,6 +116,9 @@ impl Agent {
         cookie: String,
         identities: Vec<(String, HashMap<String, OwnedValue>)>,
     ) -> zbus::fdo::Result<()> {
+        if !from_polkit(conn, &header).await {
+            return Err(zbus::fdo::Error::AccessDenied("only polkit may ask for authentication".into()));
+        }
         // Prefer authenticating as ourselves (wheel members), else the first admin offered.
         let me = unsafe { libc_getuid() };
         let uid = identities.iter().filter_map(identity_uid).find(|&u| u == me).or_else(|| identities.iter().find_map(identity_uid));
@@ -133,7 +149,10 @@ impl Agent {
         Err(zbus::fdo::Error::Failed("too many attempts".into()))
     }
 
-    async fn cancel_authentication(&self, cookie: String) -> zbus::fdo::Result<()> {
+    async fn cancel_authentication(&self, #[zbus(header)] header: zbus::message::Header<'_>, #[zbus(connection)] conn: &zbus::Connection, cookie: String) -> zbus::fdo::Result<()> {
+        if !from_polkit(conn, &header).await {
+            return Err(zbus::fdo::Error::AccessDenied("only polkit may cancel authentication".into()));
+        }
         self.cancelled.lock().unwrap().push(cookie);
         Ok(())
     }
