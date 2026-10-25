@@ -124,6 +124,25 @@ pub fn mount(rc: &Rc, account: &str, o: MountOptions) -> Result<(), Error> {
     Ok(())
 }
 
+/// Mount again with fresh credentials (after a new client ID or a new sign-in): rclone
+/// caches the Drive connection, so drop it first.
+pub fn remount(rc: &Rc, account: &str, o: MountOptions) -> Result<(), Error> {
+    let mp = paths::mount_point(account);
+    if is_mount_point(&mp) {
+        unmount(rc, account)?;
+    }
+    let _ = rc.call("fscache/clear", &json!({}), rc::METADATA);
+    mount(rc, account, o)
+}
+
+/// The remote's client settings as saved, to put back if signing in with new ones fails.
+pub fn client_params(rc: &Rc, account: &str) -> Result<Option<Client>, Error> {
+    let v = rc.call("config/get", &json!({ "name": paths::remote(account) }), rc::METADATA)?;
+    let id = v.get("client_id").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let secret = v.get("client_secret").and_then(Value::as_str).unwrap_or("").to_string();
+    Ok((!id.is_empty()).then_some(Client { id, secret }))
+}
+
 pub fn unmount(rc: &Rc, account: &str) -> Result<(), Error> {
     rc.call("mount/unmount", &json!({ "mountPoint": paths::mount_point(account) }), rc::SLOW)?;
     Ok(())
