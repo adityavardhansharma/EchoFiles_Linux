@@ -184,7 +184,11 @@ impl App {
             (None, " ") => {
                 let pane = self.pane_mut();
                 if let Some(i) = pane.cursor.and_then(|c| pane.entry_at(c)) {
-                    let on = !crate::file_list::is_selected(&pane.selected, i);
+                    // The first mark replaces the ordinary cursor selection rather than toggling it off.
+                    if !pane.marking {
+                        pane.clear_selection();
+                    }
+                    let on = !pane.marking || !crate::file_list::is_selected(&pane.selected, i);
                     pane.set_bit(i, on);
                 }
                 pane.marking = true;
@@ -206,7 +210,13 @@ impl App {
                 if self.everywhere() {
                     return self.pane().result_cursor.map(|i| self.update(Message::ResultOpen(i)));
                 }
-                f(FileMsg::Open)
+                // The item under the cursor, not the marks: moving keeps them, opening shouldn't use them.
+                let pane = self.pane();
+                let here = pane.cursor.and_then(|c| pane.entry_at(c)).zip(pane.loaded.as_ref()).map(|(i, l)| l.listing.path(i));
+                return Some(match here {
+                    Some(p) => self.open_path(p),
+                    None => self.update(f(FileMsg::Open)),
+                });
             }
             (None, "H") => Message::Back,
             (None, "L") => Message::Forward,

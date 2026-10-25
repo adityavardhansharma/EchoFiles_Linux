@@ -1,9 +1,13 @@
 //! What EchoFiles remembers per folder: sort order, icon size, a colour and an icon.
 //! Kept in `~/.local/state/echofiles/folders`, one folder per line:
-//! `sort=size:desc;zoom=3;color=green;icon=folder-music<TAB>/home/me/Music`.
+//! `sort=size:desc;zoom=3;color=green;icon=folder-music<TAB>/home/me/Music`. In the path,
+//! `%`, control characters (a newline would split the record) and bytes that aren't UTF-8
+//! are written as `%XX`, so every Linux path survives.
 //! The layout (list, grid, columns) stays in `view-modes`, as before.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
 use ef_config as config;
@@ -112,6 +116,42 @@ pub struct Folders {
     map: HashMap<PathBuf, Prefs>,
 }
 
+fn escape(path: &Path) -> String {
+    let mut out = String::new();
+    for chunk in path.as_os_str().as_bytes().utf8_chunks() {
+        for c in chunk.valid().chars() {
+            if c == '%' || c.is_control() {
+                let mut buf = [0; 4];
+                for b in c.encode_utf8(&mut buf).bytes() {
+                    out.push_str(&format!("%{b:02X}"));
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        for b in chunk.invalid() {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+fn unescape(s: &str) -> PathBuf {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && let Some(v) = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok()) {
+            out.push(v);
+            i += 3;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    PathBuf::from(OsString::from_vec(out))
+}
+
 fn file() -> PathBuf {
     config::state_dir().join("folders")
 }
@@ -125,14 +165,14 @@ impl Folders {
         let map = text
             .lines()
             .filter_map(|l| l.split_once('\t'))
-            .map(|(prefs, path)| (PathBuf::from(path), Prefs::decode(prefs)))
+            .map(|(prefs, path)| (unescape(path), Prefs::decode(prefs)))
             .filter(|(_, p)| !p.is_empty())
             .collect();
         Folders { map }
     }
 
     fn text(&self) -> String {
-        let mut lines: Vec<String> = self.map.iter().map(|(path, p)| format!("{}\t{}\n", p.encode(), path.display())).collect();
+        let mut lines: Vec<String> = self.map.iter().map(|(path, p)| format!("{}\t{}\n", p.encode(), escape(path))).collect();
         lines.sort();
         lines.concat()
     }
@@ -209,6 +249,10 @@ mod tests {
         let music = PathBuf::from("/home/me/Music");
         f.map.insert(music.clone(), Prefs { sort: Some(SortSpec { by: SortBy::Size, descending: true, ..SortSpec::default() }), zoom: Some(3), color: Some("green".into()), icon: Some("folder-music".into()) });
         f.map.insert(PathBuf::from("/tmp/a b"), Prefs { zoom: Some(0), ..Prefs::default() });
+        // Names no line-per-folder text could hold as they are: a newline, a tab, a literal
+        // `%41`, and bytes that aren't UTF-8.
+        f.map.insert(PathBuf::from("/tmp/two\nlines\tand %41 é"), Prefs { zoom: Some(1), ..Prefs::default() });
+        f.map.insert(PathBuf::from(OsString::from_vec(b"/tmp/\xff\xferaw".to_vec())), Prefs { zoom: Some(4), ..Prefs::default() });
         let back = Folders::parse(&f.text());
         assert_eq!(back.map, f.map);
         assert_eq!(back.decor(&music), Some(("folder-music", Some("green"))));

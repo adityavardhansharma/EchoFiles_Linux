@@ -77,9 +77,17 @@ pub struct Transfer {
     pub error: Option<String>,
     /// Started by Redo: finishing it keeps the rest of the redo history.
     pub redo: bool,
+    /// The app's `history` when it started (a failed redo goes back only if it's unchanged).
+    history: u64,
 }
 
 impl Transfer {
+    /// For a transfer started by Redo: the redo entry, to put back if it does nothing, and
+    /// the history it belongs to.
+    fn again(&self) -> Option<(u64, Again)> {
+        self.redo.then(|| (self.history, Again::Transfer { kind: self.kind, sources: self.sources.clone(), dest: self.dest.clone() }))
+    }
+
     pub fn running(&self) -> bool {
         self.outcome.is_none() && self.error.is_none()
     }
@@ -346,6 +354,7 @@ impl App {
             finished: None,
             error: None,
             redo,
+            history: self.history,
         });
         background(move || ops::plan(kind, &sources, &dest, &progress).map(Arc::new), move |r| Message::File(FileMsg::Planned(id, r)))
     }
@@ -605,6 +614,7 @@ impl App {
                 match self.undo.pop() {
                     Some(Done { undo, transfer }) => {
                         self.undo_busy = true;
+                        self.undo_history = self.history;
                         background(move || {
                             // What redo needs is read before the step is undone.
                             let again = match &transfer {
@@ -622,7 +632,11 @@ impl App {
             FileMsg::Undone(d, again, r) => {
                 self.undo_busy = false;
                 match r {
-                    Ok(_) => self.redo.extend(again),
+                    Ok(_) => {
+                        if let Undo::Rename { from, to } = &d.undo { self.folders.moved(to, from); }
+                        // A new action finished meanwhile: the old redo history is gone.
+                        if self.history == self.undo_history { self.redo.extend(again); }
+                    }
                     Err(e) => {
                         self.undo.push(d);
                         self.toast_error("Couldn't undo".into(), e);
@@ -637,6 +651,7 @@ impl App {
                     Some(Again::Transfer { kind, sources, dest }) => self.start_transfer_as(kind, sources, dest, true),
                     Some(again @ Again::Step(_)) => {
                         self.undo_busy = true;
+                        self.undo_history = self.history;
                         background(move || {
                             let Again::Step(step) = &again else { unreachable!() };
                             let (undo, problem) = step.apply();
@@ -655,7 +670,7 @@ impl App {
                 }
                 if let Some(e) = problem {
                     // Nothing happened: it can be tried again.
-                    if !did { self.redo.push(again); }
+                    if !did && self.history == self.undo_history { self.redo.push(again); }
                     self.toast_error("Couldn't redo".into(), e);
                 }
                 let dirs: Vec<PathBuf> = self.tabs[self.tab].panes.iter().map(|p| p.location.clone()).collect();
@@ -669,10 +684,12 @@ impl App {
             }
             FileMsg::Planned(id, r) => {
                 let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) else { return Task::none() };
+                let back = t.again();
                 match r {
                     Ok(plan) => {
                         if plan.items.is_empty() {
                             self.transfers.retain(|t| t.id != id);
+                            self.redo_back(back);
                             return Task::none();
                         }
                         t.plan = Some(plan);
@@ -681,6 +698,7 @@ impl App {
                     Err(e) => {
                         let verb = if t.kind == Kind::Copy { "copy" } else { "move" };
                         self.transfers.retain(|t| t.id != id);
+                        self.redo_back(back);
                         self.toast_error(format!("Couldn't {verb} those files"), e);
                         Task::none()
                     }
@@ -704,7 +722,9 @@ impl App {
             FileMsg::FixNames(fix) => {
                 let Some(Dialog::BadNames { id, .. }) = self.dialog.take() else { return Task::none() };
                 if !fix {
+                    let back = self.transfers.iter().find(|t| t.id == id).and_then(Transfer::again);
                     self.transfers.retain(|t| t.id != id);
+                    self.redo_back(back);
                     return Task::none();
                 }
                 if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
@@ -717,6 +737,7 @@ impl App {
                 t.finished = Some(Instant::now());
                 t.outcome = Some(outcome.clone());
                 let (kind, dest, sources, redo) = (t.kind, t.dest.clone(), t.sources.clone(), t.redo);
+                let back = t.again();
                 let keys = if outcome.synced { outcome.done.iter().filter_map(|(src, _)| t.import_keys.get(src).cloned()).collect() } else { Vec::new() };
                 self.imported_copies(keys);
                 let ok = outcome.errors.is_empty() && !outcome.cancelled;
@@ -724,6 +745,9 @@ impl App {
                     let undo = Undo::Journal(Arc::new(std::sync::Mutex::new(outcome.journal.clone())));
                     let transfer = Some((kind, sources, dest.clone()));
                     if redo { self.undo.push(Done { undo, transfer }); self.trim_undo(); } else { self.push_done(Done { undo, transfer }); }
+                } else {
+                    // A redo that changed nothing (cancelled, or every item failed) can be tried again.
+                    self.redo_back(back);
                 }
                 if outcome.cancelled && outcome.errors.is_empty() {
                     self.push_toast(Tone::Accent, if kind == Kind::Move { if outcome.errors.is_empty() { "Move cancelled — completed entries restored".into() } else { "Move cancelled — recovery needs attention".into() } } else { "Copy cancelled".into() }, None, None);
@@ -885,8 +909,16 @@ impl App {
         self.push_done(Done { undo: u, transfer: None });
     }
 
+    /// Put back a redo that did nothing, unless a new action has ended that history since.
+    fn redo_back(&mut self, back: Option<(u64, Again)>) {
+        if let Some((history, again)) = back && history == self.history {
+            self.redo.push(again);
+        }
+    }
+
     fn push_done(&mut self, d: Done) {
         self.redo.clear();
+        self.history += 1;
         self.undo.push(d);
         self.trim_undo();
     }

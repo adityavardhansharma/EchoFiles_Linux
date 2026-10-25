@@ -62,6 +62,11 @@ pub struct ColCache {
     stale: HashSet<PathBuf>,
     /// Bumped whenever a listing arrives, so columns rebuild.
     pub rev: u64,
+    /// The newest read asked for each folder: an older one finishing later is ignored.
+    asked: HashMap<PathBuf, u64>,
+    seq: u64,
+    /// The folders columns and the peek show, which are watched for changes.
+    pub shown: Vec<PathBuf>,
 }
 
 impl ColCache {
@@ -88,6 +93,7 @@ impl ColCache {
     pub fn clear(&mut self) {
         self.map.clear();
         self.stale.clear();
+        self.asked.clear();
         self.rev += 1;
     }
 }
@@ -233,25 +239,36 @@ impl App {
             if !self.cols.map.contains_key(dir) {
                 self.cols.map.insert(dir.clone(), Slot::Loading);
             }
+            self.cols.seq += 1;
+            let seq = self.cols.seq;
+            self.cols.asked.insert(dir.clone(), seq);
             let d = dir.clone();
             tasks.push(background(move || read(&d, hidden), {
                 let dir = dir.clone();
-                move |r| Message::ColLoaded(dir.clone(), hidden, r)
+                move |r| Message::ColLoaded(dir.clone(), hidden, seq, r)
             }));
+        }
+        wants.sort();
+        wants.dedup();
+        if wants != self.cols.shown {
+            self.cols.shown = wants.clone();
+            self.watch_visible();
         }
         if self.cols.map.len() > KEEP {
             let keep: HashSet<&PathBuf> = wants.iter().collect();
             self.cols.map.retain(|k, v| matches!(v, Slot::Loading) || keep.contains(k));
             let map = &self.cols.map;
             self.cols.stale.retain(|k| map.contains_key(k));
+            self.cols.asked.retain(|k, _| map.contains_key(k));
         }
         Task::batch(tasks)
     }
 
-    pub(crate) fn col_loaded(&mut self, dir: PathBuf, hidden: bool, r: Result<Arc<ColData>, String>) {
-        if hidden != self.show_hidden {
+    pub(crate) fn col_loaded(&mut self, dir: PathBuf, hidden: bool, seq: u64, r: Result<Arc<ColData>, String>) {
+        if hidden != self.show_hidden || self.cols.asked.get(&dir) != Some(&seq) {
             return;
         }
+        self.cols.asked.remove(&dir);
         self.cols.map.insert(dir, match r {
             Ok(d) => Slot::Ready(d),
             Err(e) => Slot::Failed(e),

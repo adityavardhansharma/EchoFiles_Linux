@@ -76,7 +76,8 @@ pub enum Message {
     SetDeep(bool),
     CloseFilter,
     // column view and folder peeks
-    ColLoaded(PathBuf, bool, Result<Arc<ColData>, String>),
+    /// A column or peek listing: folder, hidden-files setting, request number, result.
+    ColLoaded(PathBuf, bool, u64, Result<Arc<ColData>, String>),
     Column(u64, PathBuf, Action),
     /// Give folders a colour or an icon (`None` puts the usual one back).
     FolderColor(Vec<PathBuf>, Option<&'static str>),
@@ -190,6 +191,11 @@ pub struct App {
     pub(crate) undo: Vec<Done>,
     /// Undone steps Redo (Ctrl+Shift+Z) can do again, newest last.
     pub(crate) redo: Vec<Again>,
+    /// Bumped whenever a new action ends the redo history, so a reply from an undo or redo
+    /// that started before it can't bring the old history back.
+    pub(crate) history: u64,
+    /// `history` when the running undo started.
+    pub(crate) undo_history: u64,
     pub(crate) undo_busy: bool,
     pub(crate) pending_dialogs: std::collections::VecDeque<crate::overlay::Dialog>,
     index_generation: u64,
@@ -356,6 +362,8 @@ impl App {
             clip: None,
             undo: Vec::new(),
             redo: Vec::new(),
+            history: 0,
+            undo_history: 0,
             undo_busy: false,
             pending_dialogs: Default::default(),
             index_generation: 0,
@@ -470,10 +478,11 @@ impl App {
         self.tabs.iter().flat_map(|t| t.panes.iter())
     }
 
-    /// Watch every folder on screen in this tab.
-    fn watch_visible(&self) {
+    /// Watch every folder on screen in this tab, columns and peeks included.
+    pub(crate) fn watch_visible(&self) {
         if let Some(w) = &self.watcher {
-            let open: Vec<PathBuf> = self.tabs[self.tab].panes.iter().map(|p| p.location.clone()).collect();
+            let mut open: Vec<PathBuf> = self.tabs[self.tab].panes.iter().map(|p| p.location.clone()).collect();
+            open.extend(self.cols.shown.iter().filter(|d| !open.contains(d)).cloned().collect::<Vec<_>>());
             w.watch_open(&open);
         }
     }
@@ -810,8 +819,7 @@ impl App {
             Message::Reordered { generation, revision, order } => {
                 if let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.generation == generation) {
                     if pane.order_revision.load(Ordering::Relaxed) != revision { return Task::none(); }
-                    pane.order = order;
-                    pane.cursor = None;
+                    pane.set_order(order);
                 }
                 Task::none()
             }
@@ -1044,12 +1052,13 @@ impl App {
                 let rerun = pane.scope != Scope::Folder || pane.deep != deep;
                 pane.scope = Scope::Folder;
                 pane.deep = deep;
-                pane.results = None;
-                pane.result_cursor = None;
                 let focus = Task::batch([iced::widget::operation::focus(crate::view::FILTER_ID), iced::widget::operation::move_cursor_to_end(crate::view::FILTER_ID)]);
+                // Same scope: only focusing the bar, so the finished results stay.
                 if !rerun {
                     return focus;
                 }
+                pane.results = None;
+                pane.result_cursor = None;
                 let t = pane.reorder(hidden);
                 Task::batch([focus, t, self.run_search()])
             }
@@ -1126,8 +1135,8 @@ impl App {
                 t
             }
             Message::FocusSearch => iced::widget::operation::focus(SEARCH_ID),
-            Message::ColLoaded(dir, hidden, r) => {
-                self.col_loaded(dir, hidden, r);
+            Message::ColLoaded(dir, hidden, seq, r) => {
+                self.col_loaded(dir, hidden, seq, r);
                 Task::none()
             }
             Message::Column(pane, dir, action) => self.column_action(pane, dir, action),
@@ -1321,7 +1330,8 @@ impl App {
                 if !(change.visible || self.show_hidden) || self.mode != Mode::Files {
                     return Task::none();
                 }
-                self.cols.forget(Some(&change.folder));
+                // An empty folder: the watch queue overflowed, so anything may have changed.
+                self.cols.forget(Some(change.folder.as_path()).filter(|f| !f.as_os_str().is_empty()));
                 let ids: Vec<u64> = self.tabs[self.tab].panes.iter().filter(|p| p.location == change.folder && !p.special()).map(|p| p.id).collect();
                 Task::batch(ids.into_iter().map(|id| self.reload_pane(id)))
             }

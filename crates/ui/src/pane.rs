@@ -280,6 +280,16 @@ impl Pane {
                 Some(self.loaded.as_ref()?.listing.name(i).to_os_string())
             })
             .flatten();
+        // The `v` anchor is a display position: keep it on the same name too.
+        let keep_visual = same_dir
+            .then(|| {
+                let i = *self.order.get(self.visual?)? as usize;
+                Some(self.loaded.as_ref()?.listing.name(i).to_os_string())
+            })
+            .flatten();
+        if !same_dir {
+            self.marking = false;
+        }
         let keep_sel: HashSet<OsString> = if same_dir { self.selected_names().into_iter().collect() } else { HashSet::new() };
         if first {
             self.pending = false;
@@ -289,6 +299,8 @@ impl Pane {
         self.selected = vec![0; loaded.listing.len().div_ceil(64)];
         self.loaded = Some(loaded);
         self.order = order;
+        let l = &self.loaded.as_ref().unwrap().listing;
+        self.visual = keep_visual.and_then(|name| self.order.iter().position(|&i| l.name(i as usize) == name));
         let reveal = std::mem::take(&mut self.reveal);
         if self.select_first && reveal.is_empty() {
             self.select_first = false;
@@ -318,6 +330,15 @@ impl Pane {
             }
         }
         first
+    }
+
+    /// Show the list in a new order (sort or filter changed), keeping the `v` anchor on the
+    /// same entry, or dropping it when the filter hides that entry.
+    pub fn set_order(&mut self, order: Arc<Vec<u32>>) {
+        let anchor = self.visual.and_then(|v| self.order.get(v).copied());
+        self.visual = anchor.and_then(|a| order.iter().position(|&i| i == a));
+        self.order = order;
+        self.cursor = None;
     }
 
     /// Select the entries with these names; the cursor goes to the first. False if none found.

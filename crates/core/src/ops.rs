@@ -1071,8 +1071,8 @@ impl Undo {
 /// it runs (see [`Undo::redo`]); applying it makes a fresh undo step.
 #[derive(Clone, Debug)]
 pub enum Redo {
-    /// Rename `from` to `to` again.
-    Rename { from: PathBuf, to: PathBuf },
+    /// Rename `from` to `to` again, if `from` is still the (device, inode) that was renamed.
+    Rename { from: PathBuf, to: PathBuf, dev: u64, ino: u64 },
     /// Put items back in the Trash: where they were restored to, and the (device, inode)
     /// they had in the Trash, so nothing that took their place since goes instead.
     Trash(Vec<(PathBuf, u64, u64)>),
@@ -1086,7 +1086,10 @@ impl Undo {
     /// the same thing, so that one has no redo.
     pub fn redo(&self) -> Option<Redo> {
         match self {
-            Undo::Rename { from, to } => Some(Redo::Rename { from: from.clone(), to: to.clone() }),
+            Undo::Rename { from, to } => {
+                let m = fs::symlink_metadata(to).ok()?;
+                Some(Redo::Rename { from: from.clone(), to: to.clone(), dev: m.dev(), ino: m.ino() })
+            }
             Undo::Trash(items) => {
                 let back: Vec<(PathBuf, u64, u64)> = items.iter().filter_map(|t| fs::symlink_metadata(&t.file).ok().map(|m| (t.original.clone(), m.dev(), m.ino()))).collect();
                 (!back.is_empty()).then_some(Redo::Trash(back))
@@ -1116,9 +1119,13 @@ impl Redo {
     pub fn apply(&self) -> (Option<Undo>, Option<String>) {
         let err = |p: &Path, e: io::Error| format!("Couldn't redo for {}: {}.", p.display(), describe_io(&e));
         match self {
-            Redo::Rename { from, to } => match rename_noreplace(from, to) {
-                Ok(()) => (Some(Undo::Rename { from: from.clone(), to: to.clone() }), None),
+            Redo::Rename { from, to, dev, ino } => match fs::symlink_metadata(from) {
+                Ok(m) if m.dev() != *dev || m.ino() != *ino => (None, Some(format!("{} was replaced after the undo; leaving it where it is.", from.display()))),
                 Err(e) => (None, Some(err(from, e))),
+                Ok(_) => match rename_noreplace(from, to) {
+                    Ok(()) => (Some(Undo::Rename { from: from.clone(), to: to.clone() }), None),
+                    Err(e) => (None, Some(err(from, e))),
+                },
             },
             Redo::Trash(items) => {
                 let mut problem = None;
@@ -1324,6 +1331,12 @@ mod tests {
         let (undo, problem) = again.apply();
         assert!(undo.is_none() && problem.is_some());
         assert_eq!(fs::read(&b).unwrap(), b"other");
+        // Nor can it rename a different file that replaced the source.
+        fs::remove_file(&b).unwrap();
+        fs::write(d.join("c.txt"), b"replacement").unwrap();
+        fs::rename(d.join("c.txt"), &a).unwrap();
+        let (undo, problem) = again.apply();
+        assert!(undo.is_none() && problem.is_some() && a.exists() && !b.exists());
 
         let folder = new_folder(&d).unwrap();
         let step = Undo::Create(folder.clone());
