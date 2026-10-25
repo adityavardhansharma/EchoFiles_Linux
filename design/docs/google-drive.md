@@ -154,7 +154,7 @@ This document describes how to build Google Drive support in EchoFiles: what eac
 ### 6.5 Resource cost (be honest about it)
 
 - The rcd costs roughly 50–150 MB of memory while mounted, plus cache disk space. That's acceptable for a feature the user turned on, and it costs nothing when no account is connected (no process at all).
-- Measure it in phase 0 and write the real numbers here.
+- Not measured in the phase 0 spike (rclone was not installed). The estimate stands until a mounted Drive is measured (section 18).
 
 ## 7. Accounts, mounting and the sidebar
 
@@ -277,6 +277,7 @@ All of these go through the existing ops engine on mount paths unless stated:
   - The network-place delete dialog ("Files on network servers can't go to the Trash") doesn't apply.
   - Drive gets its own wording: the Delete key does the normal "Move to Trash" action, with the Toast "Moved to Google Drive's trash". In phase 7, the toast gets **Undo** via rclone's Drive `untrash` backend command. Until then, it offers "Open trash in browser".
   - "Delete permanently" (Shift+Delete) needs rclone's option to skip the trash for that one call. It shows the normal permanent-delete confirmation, and the text says it bypasses Google's trash.
+  - rclone's `untrash` restores a whole directory, not one file (section 18). Undo in phase 7 uses it only for the parent folder of what was just deleted, and the toast says what will come back.
   - The sidebar Trash item does not show Drive's trash in this version. Drive's trash lives in the browser.
 - **New folder, new file**: through FUSE.
 - **Permissions, owner, chmod**: not supported on Drive. Hide those items in the properties view for Drive paths instead of letting them fail.
