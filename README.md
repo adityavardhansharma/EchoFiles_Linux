@@ -115,4 +115,4 @@ Maintainers can publish versioned Arch packages from **GitHub → Actions → Bu
 
 ## License
 
-EchoFiles workspace crates are GPL-3.0-or-later. Vendored components retain their respective licenses.
+EchoFiles Is MIT
