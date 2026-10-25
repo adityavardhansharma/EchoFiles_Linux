@@ -150,6 +150,8 @@ pub struct App {
     pub(crate) volumes: Vec<Volume>,
     /// The `files/` folders of other drives' trashes that hold something (sidebar entries).
     pub(crate) trashes: Vec<PathBuf>,
+    /// The `files/` folders of every other drive's trash, empty or not (watched for changes).
+    drive_trashes: Vec<PathBuf>,
     pub(crate) root_fs: Option<FsInfo>,
     pub(crate) volume_fs: Vec<Option<FsInfo>>,
     pub(crate) drive_state: HashMap<String, DriveState>,
@@ -311,6 +313,7 @@ impl App {
             show_hidden: settings.general.show_hidden,
             volumes: Vec::new(),
             trashes: Vec::new(),
+            drive_trashes: Vec::new(),
             root_fs: None,
             volume_fs: Vec::new(),
             drive_state: HashMap::new(),
@@ -440,7 +443,9 @@ impl App {
     /// Watch every folder on screen in this tab.
     fn watch_visible(&self) {
         if let Some(w) = &self.watcher {
-            let open: Vec<PathBuf> = self.tabs[self.tab].panes.iter().map(|p| p.location.clone()).collect();
+            let mut open: Vec<PathBuf> = self.tabs[self.tab].panes.iter().map(|p| p.location.clone()).collect();
+            // Every drive's trash, so items trashed or emptied by another app update the sidebar.
+            open.extend(self.drive_trashes.iter().cloned());
             w.watch_open(&open);
         }
     }
@@ -448,11 +453,12 @@ impl App {
     /// Find the other drives' trashes that hold items. Files trashed on a drive stay on that
     /// drive (`<drive>/.Trash-<uid>`), so each gets its own sidebar entry.
     pub(crate) fn refresh_trashes(&mut self) {
-        self.trashes = ef_core::trash::drive_trashes()
-            .into_iter()
-            .map(|t| t.join("files"))
-            .filter(|f| std::fs::read_dir(f).is_ok_and(|mut r| r.next().is_some()))
-            .collect();
+        let all: Vec<PathBuf> = ef_core::trash::drive_trashes().into_iter().map(|t| t.join("files")).collect();
+        self.trashes = all.iter().filter(|f| std::fs::read_dir(f).is_ok_and(|mut r| r.next().is_some())).cloned().collect();
+        if all != self.drive_trashes {
+            self.drive_trashes = all;
+            self.watch_visible();
+        }
     }
 
     /// The folder's remembered view, else Settings → Appearance → Folders open as.
@@ -1167,6 +1173,9 @@ impl App {
                 if change.names_changed && self.settings.search.index {
                     // The settings didn't change: don't invalidate the index, just refresh it.
                     self.index_stale.get_or_insert_with(Instant::now);
+                }
+                if self.drive_trashes.contains(&change.folder) && change.names_changed {
+                    self.refresh_trashes();
                 }
                 if !(change.visible || self.show_hidden) || self.mode != Mode::Files {
                     return Task::none();

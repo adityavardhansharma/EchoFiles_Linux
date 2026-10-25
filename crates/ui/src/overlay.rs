@@ -562,7 +562,7 @@ impl App {
             if !p.is_dir() || !seen.insert(p.clone()) {
                 continue;
             }
-            let label = self.volumes.iter().find(|v| v.mount_points.first().is_some_and(|m| *m == p)).map(|v| crate::drives::display_name(v, &self.volumes)).unwrap_or_else(|| config::tilde(&p));
+            let label = self.volumes.iter().find(|v| v.mount_points.first().is_some_and(|m| *m == p)).map(|v| crate::drives::display_name(v, &self.volumes)).or_else(|| trash::label(&p)).unwrap_or_else(|| config::tilde(&p));
             add("Go to", icon, label, (icon == "history").then(|| "recent".to_string()), None, Message::Navigate(p));
         }
         for (page, icon, label) in [(Page::General, "sliders", "Settings: General"), (Page::Search, "search", "Settings: Search & index"), (Page::Agents, "terminal", "Settings: AI agents"), (Page::Phone, "phone", "Settings: Phone"), (Page::Appearance, "image", "Settings: Appearance"), (Page::About, "info", "Settings: About & shortcuts")] {

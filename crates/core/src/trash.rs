@@ -272,8 +272,14 @@ pub fn is_trash_files(dir: &Path) -> bool {
     if dir.file_name().is_none_or(|n| n != "files") { return false; }
     let Some(root) = dir.parent() else { return false };
     let top = topdir(root);
-    let correct = root == home_trash() || root == top.join(format!(".Trash-{}", uid())) || root == top.join(".Trash").join(uid().to_string());
+    let shared = top.join(".Trash");
+    let correct = root == home_trash() || root == top.join(format!(".Trash-{}", uid())) || (root == shared.join(uid().to_string()) && sticky_dir(&shared));
     correct && valid_dir(root) && valid_dir(dir) && valid_dir(&root.join("info"))
+}
+
+/// A shared `$topdir/.Trash` is only trusted as a real (not symlinked) sticky directory (spec).
+fn sticky_dir(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.is_dir() && m.mode() & 0o1000 != 0)
 }
 
 fn valid_dir(path: &Path) -> bool {
@@ -284,6 +290,12 @@ fn secure_dir(path: &Path) -> io::Result<File> {
     match fs::DirBuilder::new().mode(0o700).create(path) {
         Ok(()) => {}, Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}, Err(e) => return Err(e),
     }
+    open_secure(path)
+}
+
+/// Open an existing directory without following a symlink at `path`, and check it is ours
+/// and private.
+fn open_secure(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW).open(path)?;
     let m = file.metadata()?;
     if !m.is_dir() || m.uid() != uid() || m.mode() & 0o077 != 0 { return Err(io::Error::new(io::ErrorKind::PermissionDenied, "unsafe Trash directory ownership or permissions")); }
@@ -299,7 +311,10 @@ const NO_TRASH_FS: &[&str] = &[
 
 /// Mount points of local drives, from `/proc/self/mountinfo`.
 fn local_mounts() -> Vec<PathBuf> {
-    let Ok(text) = fs::read_to_string("/proc/self/mountinfo") else { return Vec::new() };
+    fs::read_to_string("/proc/self/mountinfo").map(|t| parse_mounts(&t)).unwrap_or_default()
+}
+
+fn parse_mounts(text: &str) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     for line in text.lines() {
         // id parent major:minor root MOUNT options… - FSTYPE source super-options
@@ -410,18 +425,43 @@ pub fn empty_home() -> io::Result<()> {
     empty(&home_trash())
 }
 
+/// Open trash `t` for deletion: every directory on the way in is checked and then held open,
+/// so a swap of `.Trash/<uid>`, `files` or `info` after the check can't redirect the deletes.
+fn open_trash(t: &Path) -> io::Result<File> {
+    let shared = t.parent().filter(|p| t != home_trash() && p.file_name().is_some_and(|n| n == ".Trash"));
+    let Some(shared) = shared else { return open_secure(t) };
+    let fd = OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW).open(shared)?;
+    let m = fd.metadata()?;
+    if !m.is_dir() || m.mode() & 0o1000 == 0 {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "shared .Trash is not a sticky directory"));
+    }
+    open_secure(&Bin::pinned(&fd).join(t.file_name().unwrap_or_default()))
+}
+
 fn empty(t: &Path) -> io::Result<()> {
+    let root = match open_trash(t) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let pinned = Bin::pinned(&root);
     for sub in ["files", "info"] {
-        let d = t.join(sub);
+        let dir = match open_secure(&pinned.join(sub)) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        let d = Bin::pinned(&dir);
         if let Ok(rd) = fs::read_dir(&d) {
             for e in rd.flatten() {
-                let p = e.path();
+                let p = d.join(e.file_name());
+                // remove_dir_all never follows symlinks; a symlink entry is removed itself.
                 let r = if e.file_type().is_ok_and(|t| t.is_dir()) { fs::remove_dir_all(&p) } else { fs::remove_file(&p) };
                 r?;
             }
         }
     }
-    let _ = fs::remove_file(t.join("directorysizes"));
+    let _ = fs::remove_file(pinned.join("directorysizes"));
     Ok(())
 }
 
@@ -457,6 +497,12 @@ mod tests {
         let t = trash(&f).unwrap();
         assert!(crate::ops::delete(std::slice::from_ref(&t.file), &crate::ops::Progress::default()).is_empty());
         assert!(!t.file.exists() && !t.info.exists());
+        // Emptying works through the held-open directories.
+        fs::create_dir(&f).unwrap();
+        fs::write(f.join("inner"), b"y").unwrap();
+        let t = trash(&f).unwrap();
+        empty_home().unwrap();
+        assert!(!t.file.exists() && !t.info.exists() && home_trash().join("files").is_dir());
         fs::remove_dir_all(&base).unwrap();
     }
 
@@ -475,6 +521,11 @@ mod tests {
         assert_eq!(unescape_octal(br"/media/My\040Drive"), b"/media/My Drive");
         assert_eq!(unescape_octal(br"/a\134b"), b"/a\\b");
         assert_eq!(unescape_octal(br"/end\04"), br"/end\04");
-        assert!(local_mounts().contains(&PathBuf::from("/")));
+        let info = "22 1 0:21 / / rw,relatime - overlay overlay rw\n\
+            30 22 8:1 / /media/My\\040Drive rw - ext4 /dev/sda1 rw\n\
+            31 22 0:5 / /proc rw - proc proc rw\n\
+            32 22 0:40 / /mnt/net rw - fuse.sshfs host: rw\n\
+            33 22 8:2 / /boot rw - vfat /dev/sda2 rw\n";
+        assert_eq!(parse_mounts(info), [PathBuf::from("/media/My Drive"), PathBuf::from("/boot")]);
     }
 }
