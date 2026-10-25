@@ -86,6 +86,8 @@ pub enum MenuFor {
     View,
     /// A place in the sidebar's Network section, by key.
     Network(String),
+    /// A Google Drive account in the Cloud section, by account ID.
+    Cloud(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,6 +328,14 @@ impl App {
                     if targets.len() == 1 {
                         e.push(item("rename", "Rename", Some("F2"), f(FileMsg::StartRename)));
                     }
+                    // A Google Doc can't be copied as a file: export it instead.
+                    if let [t] = targets.as_slice()
+                        && let Some(g) = t.parent().zip(t.file_name()).and_then(|(d, n)| crate::kinds::google(d, n.as_encoded_bytes()))
+                        && !g.exports().is_empty()
+                    {
+                        let subs = g.exports().iter().map(|(label, ext)| MenuItem { icon: "download", label: (*label).into(), kbd: None, hint: Some(format!(".{ext}")), msg: Some(Message::Cloud(crate::cloud::CloudMsg::DownloadAs(t.clone(), ext))), danger: false, submenu: Vec::new(), checked: false }).collect();
+                        e.push(Entry::Item(MenuItem { icon: "download", label: "Download as".into(), kbd: None, hint: None, msg: None, danger: false, submenu: subs, checked: false }));
+                    }
                     e.push(item("link", "Copy path", Some("Ctrl+Shift+C"), f(FileMsg::CopyPath)));
                     if windows {
                         let hint = targets.first().and_then(|t| self.windows_path(t));
@@ -408,6 +418,7 @@ impl App {
                 e
             }
             MenuFor::Network(key) => self.net_menu(&key),
+            MenuFor::Cloud(id) => self.cloud_menu(&id),
             MenuFor::Crumbs(segs) => segs.into_iter().map(|(label, p)| item("folder", label, None, Message::Navigate(p))).collect(),
             MenuFor::View => {
                 let grid = self.pane().grid;
@@ -508,6 +519,21 @@ impl App {
                     add("Phone", "upload", format!("Send files to {name}…"), None, None, ph(PhoneMsg::SendFiles));
                     add("Phone", "plus", "Connect another phone…".into(), None, None, ph(PhoneMsg::Dialog(true)));
                 }
+            }
+        }
+        {
+            use crate::cloud::CloudMsg;
+            let c = Message::Cloud;
+            add("Google Drive", "cloud", "Connect Google Drive…".into(), None, None, c(CloudMsg::OpenConnect));
+            for a in &self.settings.cloud.accounts {
+                add("Google Drive", "cloud", format!("Open {}", a.name), None, None, c(CloudMsg::Click(a.id.clone())));
+                if self.cloud.status.get(&a.id).is_some_and(|s| s.mounted) {
+                    add("Google Drive", "refresh", format!("Refresh {}", a.name), None, None, c(CloudMsg::Refresh(a.id.clone())));
+                    add("Google Drive", "arrow-up", format!("Disconnect {}", a.name), None, None, c(CloudMsg::Disconnect(a.id.clone())));
+                }
+            }
+            if !self.settings.cloud.accounts.is_empty() {
+                add("Google Drive", "external", "Open Google Drive in browser".into(), None, None, c(CloudMsg::OpenUrl("https://drive.google.com/".into())));
             }
         }
         for (i, v) in self.volumes.iter().enumerate() {

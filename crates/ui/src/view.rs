@@ -30,6 +30,7 @@ pub enum Fold {
     Windows,
     Network,
     Phone,
+    Cloud,
 }
 
 impl App {
@@ -70,6 +71,10 @@ impl App {
             // A network place: its name, never GVfs' `smb-share:server=…` folder.
             let rest = location.strip_prefix(&m.root).unwrap_or(Path::new("")).to_path_buf();
             (rest, vec![(Some("network"), name, m.root.clone())])
+        } else if let Some((a, root)) = self.cloud_place_at(location) {
+            // A Drive account: the name it was given, never the runtime mount folder.
+            let rest = location.strip_prefix(&root).unwrap_or(Path::new("")).to_path_buf();
+            (rest, vec![(Some("cloud"), a.name.clone(), root)])
         } else if let Some((v, mp)) = self.volumes.iter().find_map(|v| v.mount_points.iter().find(|m| location.starts_with(m.as_str())).map(|m| (v, m.clone()))) {
             let rest = location.strip_prefix(&mp).unwrap_or(Path::new("")).to_path_buf();
             (rest, vec![(Some("drive"), display_name(v, &self.volumes), PathBuf::from(mp))])
@@ -128,6 +133,9 @@ impl App {
         if let Some(c) = self.connect_layer() {
             layers.push(c);
         }
+        if let Some(c) = self.cloud_layer() {
+            layers.push(c);
+        }
         if let Some(c) = self.phone_layer() {
             layers.push(c);
         }
@@ -173,6 +181,8 @@ impl App {
                 "phone"
             } else if pane.shares.is_some() || ef_net::gvfs::is_network_path(&pane.location) {
                 "network"
+            } else if config::is_cloud_path(&pane.location) {
+                "cloud"
             } else if pane.location == config::home() {
                 "home"
             } else {
@@ -420,6 +430,10 @@ impl App {
             col = col.push(Space::new().height(style::SPACE_5));
             col = col.push(self.network_section());
         }
+        if self.settings.sidebar.cloud {
+            col = col.push(Space::new().height(style::SPACE_5));
+            col = col.push(self.cloud_section());
+        }
         // A thin scrollbar beside the rows, never over them.
         let bar = scrollable::Scrollbar::new().width(4).scroller_width(4).spacing(4);
         w::fill(scrollable(col).direction(scrollable::Direction::Vertical(bar)).height(Length::Fill), p.bg_sunken).width(self.settings.sidebar.width as f32).height(Length::Fill).padding([12, 8]).into()
@@ -549,6 +563,8 @@ impl App {
             // the accent edge.
             let world = if pane.shares.is_some() || ef_net::gvfs::is_network_path(&pane.location) {
                 p.world_network
+            } else if config::is_cloud_path(&pane.location) {
+                p.world_cloud
             } else if self.volume_at(&pane.location).is_some_and(|(_, v)| v.is_windows()) {
                 p.world_windows
             } else {
@@ -819,12 +835,36 @@ impl App {
         if self.index_state == IndexState::Building {
             right.push_str("Indexing…  ·  ");
         }
+        // Copies into Drive finish in rclone's cache; say so until they're on Google.
+        let uploads = self.cloud_uploads();
+        if uploads > 0 {
+            let offline = self.cloud.status.values().any(|s| s.offline && s.uploads.pending() > 0);
+            if offline {
+                right.push_str("Waiting for connection to upload  ·  ");
+            } else {
+                right.push_str(&format!("Uploading {uploads} {} to Google Drive  ·  ", if uploads == 1 { "file" } else { "files" }));
+            }
+        } else if self.cloud.uploaded_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(4)) {
+            right.push_str("Uploaded to Google Drive  ·  ");
+        }
         // The volume: its name, driver and state repeat here so read-only is never a surprise.
         let mut pill: Option<Element<'_, Message>> = None;
         let net = if pane.special() { None } else { self.net_place_at(&pane.location) };
         if !pane.special() && self.is_phone_path(&pane.location) {
             right.push_str(&self.phone_id().map(|i| self.phone_name(&i)).unwrap_or_default());
             right.push_str(" · phone · SFTP");
+        } else if let Some((a, _)) = (!pane.special()).then(|| self.cloud_place_at(&pane.location)).flatten() {
+            // Drive: its name and Google's quota, not FUSE's made-up free space.
+            right.push_str(&a.name);
+            right.push_str(" · Google Drive");
+            if let Some((used, total)) = self.cloud.status.get(&a.id).and_then(|s| s.quota).filter(|q| q.1 > 0) {
+                right.push_str(" · ");
+                fmt::size(total.saturating_sub(used), &mut right);
+                right.push_str(" free");
+            }
+            if a.access == ef_config::CloudAccess::Read {
+                pill = Some(w::pill(p, "Read-only", Some(p.warning)));
+            }
         } else if let Some((m, name)) = &net {
             // Network: which server and how, instead of FUSE's made-up free space.
             right.push_str(name);
