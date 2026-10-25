@@ -25,6 +25,7 @@ mod phone;
 mod connect;
 mod phone_view;
 mod preview;
+mod remote;
 mod search;
 mod settings;
 mod style;

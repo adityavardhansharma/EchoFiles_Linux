@@ -19,6 +19,7 @@
 //! [agents]
 //! cli = true                  # off: `ef` refuses to run
 //! skill = false               # EchoFiles skill linked into global agent skill folders
+//! gdrive = false              # let `ef` search Google Drive (separate from [cloud] index)
 //!
 //! [appearance]
 //! density = "default"         # "compact", "default" or "comfortable"
@@ -36,6 +37,8 @@
 //!
 //! phone = true                # show the Phone section
 //! phone_open = true
+//! cloud = true                # show the Cloud section (Google Drive)
+//! cloud_open = true
 //!
 //! [phone]                     # pairings live in ~/.config/echofiles/phone/
 //! files = true                # browse the phone's files and photos
@@ -47,6 +50,16 @@
 //! auto_accept = true          # save files the phone sends without asking
 //! save_to = "~/Downloads/Phone"
 //! picture = "photo"           # what the phone on the hub shows: "photo" or "echofiles"
+//!
+//! [cloud]                     # Google Drive through rclone; sign-ins live in ~/.config/echofiles/rclone/
+//! index = false               # save Drive file names on this computer (separate from [search] index)
+//! live_search = true          # after saved results, also ask Google Drive
+//! cache_max_gb = 10           # rclone's cache of opened files
+//!
+//! [[cloud.accounts]]
+//! id = "k3f9q2"               # random; names the rclone remote, catalog and mount
+//! name = "Google Drive"
+//! access = "full"             # "full" or "read"
 //!
 //! [[network.servers]]           # the Network section, in order
 //! uri = "smb://nas.local/Media" # never holds a password (GVfs keeps those in the keyring)
@@ -171,11 +184,14 @@ impl SearchConfig {
 pub struct Agents {
     pub cli: bool,
     pub skill: bool,
+    /// `ef` may search Google Drive. Separate from `[cloud] index`: it never follows it,
+    /// and `ef` searches Drive only when both are on.
+    pub gdrive: bool,
 }
 
 impl Default for Agents {
     fn default() -> Self {
-        Agents { cli: true, skill: false }
+        Agents { cli: true, skill: false, gdrive: false }
     }
 }
 
@@ -216,11 +232,15 @@ pub struct Sidebar {
     pub phone: bool,
     /// The Phone section is expanded (open by default).
     pub phone_open: bool,
+    /// Show the Cloud section.
+    pub cloud: bool,
+    /// The Cloud section is expanded (open by default).
+    pub cloud_open: bool,
 }
 
 impl Default for Sidebar {
     fn default() -> Self {
-        Sidebar { pinned: Vec::new(), width: 236, hidden: false, windows: true, network: true, windows_open: false, network_open: false, phone: true, phone_open: true }
+        Sidebar { pinned: Vec::new(), width: 236, hidden: false, windows: true, network: true, windows_open: false, network_open: false, phone: true, phone_open: true, cloud: true, cloud_open: true }
     }
 }
 
@@ -236,6 +256,45 @@ pub struct Server {
 #[serde(default)]
 pub struct Network {
     pub servers: Vec<Server>,
+}
+
+/// What a Google Drive sign-in may do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CloudAccess {
+    #[default]
+    Full,
+    Read,
+}
+
+/// One connected Google Drive account. Tokens and client secrets are never here: they live
+/// in EchoFiles' own rclone config (`cloud_rclone_dir()`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudAccount {
+    /// Short random ID: the rclone remote name, catalog file and mount folder.
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub access: CloudAccess,
+}
+
+/// Settings → Google Drive.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Cloud {
+    pub accounts: Vec<CloudAccount>,
+    /// Save Drive metadata on this computer. Its own switch: `[search] index` never
+    /// changes it.
+    pub index: bool,
+    /// After saved results, also send the search to Google Drive.
+    pub live_search: bool,
+    pub cache_max_gb: u32,
+}
+
+impl Default for Cloud {
+    fn default() -> Self {
+        Cloud { accounts: Vec::new(), index: false, live_search: true, cache_max_gb: 10 }
+    }
 }
 
 /// Where phone notifications show up.
@@ -310,6 +369,7 @@ pub struct Settings {
     pub sidebar: Sidebar,
     pub network: Network,
     pub phone: Phone,
+    pub cloud: Cloud,
 }
 
 pub fn home() -> PathBuf {
@@ -333,6 +393,36 @@ pub fn index_dir() -> PathBuf {
 /// `$XDG_STATE_HOME/echofiles` — last folder and similar things that aren't settings.
 pub fn state_dir() -> PathBuf {
     xdg("XDG_STATE_HOME", ".local/state").join("echofiles")
+}
+
+/// `$XDG_CONFIG_HOME/echofiles/rclone` — EchoFiles' own rclone config (never the user's).
+pub fn cloud_rclone_dir() -> PathBuf {
+    config_dir().join("rclone")
+}
+
+/// `$XDG_CACHE_HOME/echofiles/rclone` — rclone's cache of opened Drive files.
+pub fn cloud_cache_dir() -> PathBuf {
+    xdg("XDG_CACHE_HOME", ".cache").join("echofiles/rclone")
+}
+
+/// `$XDG_STATE_HOME/echofiles/cloud-index` — Drive catalogs (only with `[cloud] index`).
+pub fn cloud_index_dir() -> PathBuf {
+    state_dir().join("cloud-index")
+}
+
+/// `$XDG_RUNTIME_DIR/echofiles` — the rclone control socket and the Drive mounts.
+pub fn runtime_dir() -> PathBuf {
+    socket_path().parent().map(|p| p.join("echofiles")).unwrap_or_else(|| config_dir().join("runtime/echofiles"))
+}
+
+/// `$XDG_RUNTIME_DIR/echofiles/cloud` — one folder per mounted Drive account.
+pub fn cloud_mount_root() -> PathBuf {
+    runtime_dir().join("cloud")
+}
+
+/// Inside a mounted Google Drive.
+pub fn is_cloud_path(p: &Path) -> bool {
+    p.starts_with(cloud_mount_root())
 }
 
 /// `$XDG_RUNTIME_DIR/echofiles.sock` — the running app listens here.
@@ -502,6 +592,28 @@ mod tests {
         let partial = Settings::load_from(&file).unwrap();
         assert!(!partial.agents.cli);
         assert_eq!(partial.search, SearchConfig::default());
+    }
+
+    #[test]
+    fn cloud_settings_are_separate_switches() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.toml");
+        let d = Settings::default();
+        assert!(!d.cloud.index && !d.agents.gdrive && d.cloud.live_search);
+        // Old files without [cloud] load with defaults.
+        std::fs::write(&file, "[search]\nindex = true\n").unwrap();
+        let old = Settings::load_from(&file).unwrap();
+        assert_eq!(old.cloud, Cloud::default());
+        assert!(!old.agents.gdrive, "the main index never turns ef's Drive access on");
+        let mut s = Settings::default();
+        s.cloud.accounts.push(CloudAccount { id: "k3f9q2".into(), name: "Google Drive".into(), access: CloudAccess::Read });
+        s.cloud.index = true;
+        s.save_to(&file).unwrap();
+        let back = Settings::load_from(&file).unwrap();
+        assert_eq!(back, s);
+        assert!(!back.agents.gdrive, "the Drive index never turns ef's Drive access on");
+        assert!(is_cloud_path(&cloud_mount_root().join("k3f9q2/Docs")));
+        assert!(!is_cloud_path(&home()));
     }
 
     #[test]

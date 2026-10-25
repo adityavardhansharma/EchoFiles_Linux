@@ -135,7 +135,7 @@ This document describes how to build Google Drive support in EchoFiles: what eac
 ### 6.3 The RC client
 
 - Plain HTTP/1.1 over the Unix socket, POST with a JSON body, JSON reply. It's a small hand-written client (a request line, a few headers, `Content-Length`, read the reply). No HTTP library, because there is no TLS and no redirects. That's in line with the project's preference for its own small code over big dependencies.
-- One persistent connection per worker thread, reconnecting on error.
+- One connection per call (as built in phase 2): connecting to a local socket costs microseconds, and it means no call ever waits behind another, so the live search never queues behind a slow mount.
 - Every call has a timeout. Defaults: 5 s for metadata calls, 10 s for live search, no timeout for mount and unmount but with a cancel path.
 - Every call returns a typed result: success with the parsed reply, or an error type that separates: rcd not running, socket error, timeout, rclone error with its message, and Google errors detected from the message (rate limited, signed out / token revoked, storage full, not found, permission denied). The UI maps these to wording (section 10).
 - Calls run on background threads, never on the UI thread. The live search worker gets its own connection so it never waits behind a slow mount call.
@@ -148,7 +148,7 @@ This document describes how to build Google Drive support in EchoFiles: what eac
 - **Health**: a cheap `core/version` ping every 60 s while any account is connected. This catches a hung rcd (the process exists but doesn't answer). After two missed pings, kill and restart it.
 - **Quit**: on app quit, call rc `vfs/stats` to see if uploads are pending. If they are, ask in a Dialog: "2 files are still uploading to Google Drive. Quit anyway?" with the buttons "Wait for uploads" (default) and "Quit and upload later". After the user decides, unmount everything (`mount/unmountall`), then `core/quit`. Wait up to 5 s, then kill.
   - "Quit and upload later" is safe: rclone keeps pending uploads in its cache and uploads them the next time the rcd starts with the same cache directory. Say that in the dialog's description line.
-- **Crash of EchoFiles itself**: the rcd is started with a "parent death" signal, so it dies when EchoFiles dies. That can leave a stale FUSE mount ("transport endpoint is not connected"). At the next start, before mounting, the mount manager checks each expected mount point. If it's a dead FUSE mount, it lazily unmounts it with `fusermount3 -uz`, then mounts fresh.
+- **Crash of EchoFiles itself**: as built in phase 2, there is no "parent death" signal, because Linux ties it to the *thread* that spawned the child and would kill rclone when a short-lived background thread ended. Instead, before starting, the supervisor checks whether an rcd from a crashed EchoFiles still answers on our socket; if so, it tells it to unmount everything and quit. That can leave a stale FUSE mount ("transport endpoint is not connected"). At the next start, before mounting, the mount manager checks each expected mount point. If it's a dead FUSE mount, it lazily unmounts it with `fusermount3 -uz`, then mounts fresh.
 - **Login session**: EchoFiles runs from login (see the startup memory: load once, keep warm). The rcd follows the app and isn't a separate systemd service. One owner, one lifetime, simpler debugging.
 
 ### 6.5 Resource cost (be honest about it)

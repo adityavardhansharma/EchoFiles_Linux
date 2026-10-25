@@ -11,6 +11,8 @@ pub enum VolumeId {
     LinuxRoot,
     /// A partition, by filesystem UUID.
     Uuid(String),
+    /// A Google Drive account, by EchoFiles' account ID (never its mount path or email).
+    Cloud(String),
 }
 
 /// A place the file manager can show.

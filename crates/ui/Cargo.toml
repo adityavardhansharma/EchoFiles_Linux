@@ -15,6 +15,7 @@ ef-index.workspace = true
 ef-config.workspace = true
 ef-net.workspace = true
 ef-phone.workspace = true
+ef-cloud.workspace = true
 zbus.workspace = true
 iced = { workspace = true, features = ["wayland", "x11", "smol", "crisp", "image-without-codecs"] }
 mimalloc.workspace = true
