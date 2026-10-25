@@ -442,6 +442,9 @@ impl Pane {
         if self.location == ef_config::home() {
             return "Home".into();
         }
+        if let Some(t) = ef_core::trash::label(&self.location) {
+            return t;
+        }
         self.location.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Computer".into())
     }
 }

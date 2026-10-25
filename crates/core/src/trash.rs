@@ -290,9 +290,127 @@ fn secure_dir(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// Mount types that never hold a trash, or where looking could hang (network, FUSE).
+const NO_TRASH_FS: &[&str] = &[
+    "proc", "sysfs", "devtmpfs", "devpts", "cgroup", "cgroup2", "mqueue", "debugfs", "tracefs",
+    "securityfs", "pstore", "bpf", "configfs", "fusectl", "hugetlbfs", "autofs", "binfmt_misc", "efivarfs",
+    "rpc_pipefs", "nsfs", "overlay", "squashfs", "nfs", "nfs4",
+];
+
+/// Mount points of local drives, from `/proc/self/mountinfo`.
+fn local_mounts() -> Vec<PathBuf> {
+    let Ok(text) = fs::read_to_string("/proc/self/mountinfo") else { return Vec::new() };
+    let mut out: Vec<PathBuf> = Vec::new();
+    for line in text.lines() {
+        // id parent major:minor root MOUNT options… - FSTYPE source super-options
+        let mut halves = line.splitn(2, " - ");
+        let (Some(left), Some(right)) = (halves.next(), halves.next()) else { continue };
+        let Some(mount) = left.split(' ').nth(4) else { continue };
+        let Some(fstype) = right.split(' ').next() else { continue };
+        if NO_TRASH_FS.contains(&fstype) || fstype.starts_with("fuse") || matches!(fstype, "cifs" | "smb3" | "9p" | "sshfs") {
+            continue;
+        }
+        // mountinfo escapes space, tab, newline and backslash as \ooo.
+        let p = PathBuf::from(OsString::from_vec(unescape_octal(mount.as_bytes())));
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+fn unescape_octal(b: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\' && i + 3 < b.len() && b[i + 1..i + 4].iter().all(|c| (b'0'..=b'7').contains(c)) {
+            out.push((b[i + 1] - b'0') * 64 + (b[i + 2] - b'0') * 8 + (b[i + 3] - b'0'));
+            i += 4;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    out
+}
+
+/// The trashes on other drives (`$topdir/.Trash/$uid`, `$topdir/.Trash-$uid`) that exist —
+/// where files trashed from those drives go, since a trash never crosses a drive.
+pub fn drive_trashes() -> Vec<PathBuf> {
+    let home = home_trash();
+    let mut out = Vec::new();
+    for mount in local_mounts() {
+        for dir in [mount.join(".Trash").join(uid().to_string()), mount.join(format!(".Trash-{}", uid()))] {
+            if dir != home && !out.contains(&dir) && is_trash_files(&dir.join("files")) {
+                out.push(dir);
+            }
+        }
+    }
+    out
+}
+
+/// "Trash" or "Trash on <drive>" when `files` is a trash's `files/` folder, from the path
+/// alone (no disk access, so views can call it).
+pub fn label(files: &Path) -> Option<String> {
+    if files == home_trash().join("files") {
+        return Some("Trash".into());
+    }
+    if files.file_name()? != "files" {
+        return None;
+    }
+    let root = files.parent()?;
+    let name = root.file_name()?.to_string_lossy();
+    let mount = if name == format!(".Trash-{}", uid()) {
+        root.parent()?
+    } else if name == uid().to_string() && root.parent()?.file_name()? == ".Trash" {
+        root.parent()?.parent()?
+    } else {
+        return None;
+    };
+    let drive = mount.file_name().map_or_else(|| "Computer".into(), |n| n.to_string_lossy().into_owned());
+    Some(format!("Trash on {drive}"))
+}
+
+/// Every trash on this computer: the home trash first, then each drive's.
+pub fn all_trashes() -> Vec<PathBuf> {
+    let mut out = vec![home_trash()];
+    out.extend(drive_trashes());
+    out
+}
+
+/// Items waiting in every trash.
+pub fn count_all() -> usize {
+    all_trashes().iter().map(|t| fs::read_dir(t.join("files")).map(|r| r.count()).unwrap_or(0)).sum()
+}
+
+/// After `file` (an item in a trash's `files/`) was deleted for good, drop its
+/// `.trashinfo` too, so no other app lists it or offers to restore it.
+pub fn forget(file: &Path) {
+    let (Some(files), Some(name)) = (file.parent(), file.file_name()) else { return };
+    let Some(root) = files.parent() else { return };
+    let mut info = name.to_os_string();
+    info.push(".trashinfo");
+    let _ = fs::remove_file(root.join("info").join(info));
+}
+
+/// Permanently remove everything in every trash on this computer. Keeps going past a
+/// drive that fails and returns the first error.
+pub fn empty_all() -> io::Result<()> {
+    let mut first = None;
+    for t in all_trashes() {
+        if let Err(e) = empty(&t) {
+            first.get_or_insert(e);
+        }
+    }
+    first.map_or(Ok(()), Err)
+}
+
 /// Permanently remove everything in the home trash.
 pub fn empty_home() -> io::Result<()> {
-    let t = home_trash();
+    empty(&home_trash())
+}
+
+fn empty(t: &Path) -> io::Result<()> {
     for sub in ["files", "info"] {
         let d = t.join(sub);
         if let Ok(rd) = fs::read_dir(&d) {
@@ -335,6 +453,28 @@ mod tests {
         assert_eq!(e.trashed.original, f);
         assert_eq!(restore(&t).unwrap(), f);
         assert!(f.exists() && !t.info.exists());
+        // Deleting an item from the trash removes its record too.
+        let t = trash(&f).unwrap();
+        assert!(crate::ops::delete(std::slice::from_ref(&t.file), &crate::ops::Progress::default()).is_empty());
+        assert!(!t.file.exists() && !t.info.exists());
         fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn names_drive_trashes_from_the_path() {
+        let u = uid();
+        assert_eq!(label(&PathBuf::from(format!("/media/data106/.Trash-{u}/files"))).as_deref(), Some("Trash on data106"));
+        assert_eq!(label(&PathBuf::from(format!("/run/media/a/USB/.Trash/{u}/files"))).as_deref(), Some("Trash on USB"));
+        assert_eq!(label(&PathBuf::from(format!("/.Trash-{u}/files"))).as_deref(), Some("Trash on Computer"));
+        assert_eq!(label(Path::new("/home/a/files")), None);
+        assert_eq!(label(&PathBuf::from(format!("/media/x/.Trash-{}/files", u + 1))), None);
+    }
+
+    #[test]
+    fn reads_escaped_mount_points() {
+        assert_eq!(unescape_octal(br"/media/My\040Drive"), b"/media/My Drive");
+        assert_eq!(unescape_octal(br"/a\134b"), b"/a\\b");
+        assert_eq!(unescape_octal(br"/end\04"), br"/end\04");
+        assert!(local_mounts().contains(&PathBuf::from("/")));
     }
 }

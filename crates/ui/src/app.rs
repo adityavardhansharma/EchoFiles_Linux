@@ -148,6 +148,8 @@ pub struct App {
     pub(crate) tab: usize,
     pub(crate) show_hidden: bool,
     pub(crate) volumes: Vec<Volume>,
+    /// The `files/` folders of other drives' trashes that hold something (sidebar entries).
+    pub(crate) trashes: Vec<PathBuf>,
     pub(crate) root_fs: Option<FsInfo>,
     pub(crate) volume_fs: Vec<Option<FsInfo>>,
     pub(crate) drive_state: HashMap<String, DriveState>,
@@ -308,6 +310,7 @@ impl App {
             tab: 0,
             show_hidden: settings.general.show_hidden,
             volumes: Vec::new(),
+            trashes: Vec::new(),
             root_fs: None,
             volume_fs: Vec::new(),
             drive_state: HashMap::new(),
@@ -440,6 +443,16 @@ impl App {
             let open: Vec<PathBuf> = self.tabs[self.tab].panes.iter().map(|p| p.location.clone()).collect();
             w.watch_open(&open);
         }
+    }
+
+    /// Find the other drives' trashes that hold items. Files trashed on a drive stay on that
+    /// drive (`<drive>/.Trash-<uid>`), so each gets its own sidebar entry.
+    pub(crate) fn refresh_trashes(&mut self) {
+        self.trashes = ef_core::trash::drive_trashes()
+            .into_iter()
+            .map(|t| t.join("files"))
+            .filter(|f| std::fs::read_dir(f).is_ok_and(|mut r| r.next().is_some()))
+            .collect();
     }
 
     /// The folder's remembered view, else Settings → Appearance → Folders open as.

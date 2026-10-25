@@ -391,6 +391,11 @@ impl App {
                 col = col.push(self.side_item(icon, label.to_string(), path, false, 0.0));
             }
         }
+        // Files trashed on another drive stay in that drive's own trash.
+        for t in &self.trashes {
+            let label = trash::label(t).unwrap_or_else(|| "Trash".into());
+            col = col.push(self.side_item("trash", label, t.clone(), false, 0.0));
+        }
         // Your other Linux drives (internal, USB, unlocked LUKS), under their own names.
         let mut linux_drives = self.volumes.iter().enumerate().filter(|(_, v)| !v.is_windows()).peekable();
         if linux_drives.peek().is_some() {
