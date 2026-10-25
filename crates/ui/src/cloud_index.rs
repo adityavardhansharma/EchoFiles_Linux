@@ -157,11 +157,6 @@ impl App {
         });
     }
 
-    /// Catalog for an account, read on demand (for live search's ID lookups).
-    pub(crate) fn cloud_folder_map(&self, account: &str) -> Option<&HashMap<String, String>> {
-        self.cloud.index.folders.get(account)
-    }
-
     /// Hourly: catalogs a day old crawl again.
     pub(crate) fn cloud_index_tick(&mut self) -> Task<Message> {
         if !self.settings.cloud.index {

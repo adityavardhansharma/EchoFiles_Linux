@@ -117,6 +117,8 @@ pub struct Pane {
     pub result_cursor: Option<usize>,
     pub searching: bool,
     pub search_generation: u64,
+    /// Step 2 of search: Google Drive asked live (design §10).
+    pub live: Option<crate::cloud_live::LiveStatus>,
     pub search_cancel: Arc<AtomicBool>,
     /// Tiles instead of rows (design system `FileGrid`).
     pub grid: bool,
@@ -157,6 +159,7 @@ impl Pane {
             result_cursor: None,
             searching: false,
             search_generation: 0,
+            live: None,
             search_cancel: Arc::new(AtomicBool::new(false)),
             grid: false,
             drives: false,
@@ -413,6 +416,7 @@ impl Pane {
 
     pub fn clear_search(&mut self) {
         self.search_generation = next_id();
+        self.live = None;
         self.query.clear();
         self.results = None;
         self.result_cursor = None;

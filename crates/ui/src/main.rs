@@ -13,6 +13,7 @@ mod actions;
 mod app;
 mod cloud;
 mod cloud_index;
+mod cloud_live;
 mod cloud_settings;
 mod codec;
 mod drives;

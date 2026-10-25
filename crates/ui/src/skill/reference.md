@@ -26,7 +26,12 @@
 
 EchoFiles' defaults: results ranked best first (exact name, then prefix, then word start,
 then anywhere; shorter names first), absolute paths, and with no PATH every indexed folder
-(plus phones, if the user turned phone search on).
+(plus phones, if the user turned phone search on, and Google Drive, if the user turned on
+both its index and "Let ef search Google Drive"). Drive results are paths in the mounted
+Drive folder when it's connected, else `gdrive://<account>/<path>`; `--json` marks them
+`"source":"gdrive"` with their `uri`. `--drive-live` also asks Google Drive itself for
+files the Drive index doesn't have yet (plain words only; needs EchoFiles running; up to
+10 s).
 
 **Pattern**
 

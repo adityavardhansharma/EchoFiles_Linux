@@ -993,17 +993,24 @@ impl App {
                 if s == Scope::Everywhere { Task::batch([t, self.run_search()]) } else { t }
             }
             Message::SearchDone { generation, results } => {
+                let mut live = None;
                 if let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.search_generation == generation) {
                     // `None`: the search was cancelled. Errors arrive as results with a note.
                     pane.searching = false;
                     pane.results = None;
                     pane.result_cursor = None;
+                    pane.live = None;
                     if let Some(r) = results {
                         pane.result_cursor = (!r.hits.is_empty()).then_some(0);
                         pane.results = Some(r);
+                        live = Some(pane.id);
                     }
                 }
-                Task::none()
+                // Step 2: the same search, asked of Google Drive once typing pauses.
+                match live {
+                    Some(id) => self.cloud_live_schedule(id, generation),
+                    None => Task::none(),
+                }
             }
             Message::ResultClick(i) => {
                 self.pane_mut().result_cursor = Some(i);
@@ -1015,6 +1022,8 @@ impl App {
                     self.open_phone_result(&p, directory, false)
                 }
                 Some(p) if p.to_string_lossy().starts_with(ef_cloud::uri::SCHEME) => self.open_drive_uri(&p),
+                Some(p) if p.to_string_lossy().starts_with("https://") => self.open_web_result(&p),
+                Some(_) if self.pane().results.as_ref().and_then(|r| r.hits.get(i)).is_some_and(|h| h.gone) => Task::none(),
                 Some(p) => self.open_path(p),
                 None => Task::none(),
             },

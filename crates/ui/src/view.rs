@@ -714,9 +714,9 @@ impl App {
         let mut buf = String::new();
         for (i, h) in res.hits.iter().enumerate() {
             let active = pane.result_cursor == Some(i);
-            let icon = if h.is_dir { "folder" } else { crate::kinds::icon(h.name.as_bytes(), ef_core::listing::Kind::File) };
+            let icon = if h.is_dir { "folder" } else if let Some(g) = h.google { g.icon() } else { crate::kinds::icon(h.name.as_bytes(), ef_core::listing::Kind::File) };
             buf.clear();
-            if !h.is_dir {
+            if !h.is_dir && h.google.is_none() {
                 fmt::size(h.size, &mut buf);
             } else {
                 buf.push('—');
@@ -729,7 +729,7 @@ impl App {
             let content = row![
                 iced::widget::svg(self.icons.color(icon)).width(style::ICON_ROW).height(style::ICON_ROW),
                 container(text(h.name.clone()).size(style::BODY).font(style::FONT).color(color(if active { p.ink_strong } else { p.ink })).wrapping(text::Wrapping::None)).width(Length::FillPortion(3)).clip(true),
-                container(meta(h.location.clone())).width(Length::FillPortion(4)).clip(true),
+                container(meta(if h.gone { "No longer on Google Drive".to_string() } else { h.location.clone() })).width(Length::FillPortion(4)).clip(true),
                 container(meta(size)).width(style::COL_SIZE).align_x(Alignment::End),
                 meta(date).width(style::COL_DATE),
             ]
@@ -781,6 +781,10 @@ impl App {
                         fmt::count(r.hits.len(), &mut left);
                     }
                     left.push_str(if r.from_index { "  ·  from the index" } else { "  ·  live search (index off)" });
+                    if let Some(t) = pane.live.as_ref().and_then(|l| l.text()) {
+                        left.push_str("  ·  ");
+                        left.push_str(&t);
+                    }
                 }
                 None if pane.searching => left.push_str("Searching…"),
                 None => {}
