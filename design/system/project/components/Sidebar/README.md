@@ -1,13 +1,14 @@
 # Sidebar
 
-The place list on `bg-sunken`: Linux, Pinned (when anything is pinned), Windows, **All drives**, Phone, then Network.
+The place list on `bg-sunken`: Linux, Pinned (when anything is pinned), Windows, **All drives**, Phone, Network, then Cloud.
 
-**Provide** `Sidebar` > `SidebarSection` (`title`, optional `world`: `linux`, `windows`, `network`, `phone`, optional `count`, optional `action` at the end of the head, `collapsible` + `defaultOpen`) > `SidebarItem` (`icon`, `label`, `active`, `trail`, `dropTarget`, `indent`), `DriveItem`, `NetworkItem` or `PhoneItem` (`keep` = still shown while collapsed).
+**Provide** `Sidebar` > `SidebarSection` (`title`, optional `world`: `linux`, `windows`, `network`, `phone`, `cloud`, optional `count`, optional `action` at the end of the head, `collapsible` + `defaultOpen`) > `SidebarItem` (`icon`, `label`, `active`, `trail`, `dropTarget`, `indent`), `DriveItem`, `NetworkItem`, `PhoneItem` or `CloudItem` (`keep` = still shown while collapsed).
 
 - **Windows** and **Network** fold. Their head is a 24px row — chevron (`chevron-right` / `chevron-down`, 12px `ink-muted`), world mark, title, count, and Network's `+` — with the standard hover; clicking it opens or closes the section. Both start **collapsed**, and the open/closed state is remembered (`settings.toml` `[sidebar] windows_open`, `network_open`). Collapsed, the section still shows the one place you're in (the drive or share holding the open folder, or All drives while that page is open), so the sidebar always says where you are. Everything the section held (All drives, Connect to server…) folds with it.
 - **Settings → Appearance → Sidebar** hides either section entirely (*Windows drives*, *Network places*; both on by default). Hidden, the section's head goes too; Ctrl+Shift+D and Ctrl+Shift+S still reach drives and servers.
 
-- A world is marked by a 6px square in `world-linux`, `world-windows`, `world-network` or `world-phone` — the only place world colours appear besides drive usage bars and network glyphs.
+- **Cloud** (`world-cloud`) holds one `CloudItem` per connected Google Drive account, in the order they were added. Its head ends with a `+` (**Connect Google Drive**). With no account it shows one **Add Google Drive** row. It folds like Phone and starts open (`[sidebar] cloud_open`); collapsed, the account holding the open folder stays. Settings → Appearance → Sidebar can hide it (`cloud`).
+- A world is marked by a 6px square in `world-linux`, `world-windows`, `world-network`, `world-phone` or `world-cloud` — the only place world colours appear besides drive usage bars and network glyphs.
 - **Network** lists saved servers (in the order saved) and then live connections made elsewhere (Nautilus, `gio mount`, a link). Its head counts live connections and ends with a `+` that opens `ConnectDialog`; a **Connect to server…** row always closes the section. With nothing saved it says "Windows shares, SSH and FTP servers you connect to appear here."
 - Active item: `state-active` ground, `ink-strong` bold label, `accent-ink` glyph. No side rail.
 - **Phone** (`world-phone`) holds the paired phone's `PhoneItem` — or **Connect phone** before pairing — with its **Files** and **Photos** indented under it while connected. It folds like Windows and Network but starts open; collapsed, the phone row stays. Settings → Appearance → Sidebar can hide it.
