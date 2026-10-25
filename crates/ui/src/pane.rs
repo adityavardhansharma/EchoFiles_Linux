@@ -88,6 +88,31 @@ fn filter(l: &Listing, order: Vec<u32>, query: &str) -> Vec<u32> {
         .collect()
 }
 
+/// How a folder is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    List,
+    /// Tiles (design system `FileGrid`).
+    Grid,
+    /// Miller columns: the folders above on the left, what's inside the cursor's folder on
+    /// the right.
+    Columns,
+}
+
+impl Layout {
+    pub fn name(self) -> &'static str {
+        match self {
+            Layout::List => "list",
+            Layout::Grid => "grid",
+            Layout::Columns => "columns",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Layout> {
+        [Layout::List, Layout::Grid, Layout::Columns].into_iter().find(|l| l.name() == s)
+    }
+}
+
 pub struct Pane {
     pub id: u64,
     pub location: PathBuf,
@@ -118,8 +143,20 @@ pub struct Pane {
     pub searching: bool,
     pub search_generation: u64,
     pub search_cancel: Arc<AtomicBool>,
-    /// Tiles instead of rows (design system `FileGrid`).
-    pub grid: bool,
+    pub layout: Layout,
+    /// Icon size step (`folders::ZOOMS`).
+    pub zoom: u8,
+    /// The folder filter takes in subfolders too (results come from the search engine).
+    pub deep: bool,
+    /// The quick-filter bar (Ctrl+F) is open over the list.
+    pub filter_bar: bool,
+    /// Put the cursor on the first item once the next listing arrives (columns: → enters).
+    pub select_first: bool,
+    /// 10xer: Space marked items, so moving keeps the selection; `v` extends it from here.
+    pub marking: bool,
+    pub visual: Option<usize>,
+    /// Miller columns around the listing, filled in by the app (`columns.rs`).
+    pub miller: crate::columns::Trail,
     /// Showing the Drives overview instead of a folder.
     pub drives: bool,
     /// Showing an SMB server's shares instead of a folder.
@@ -158,7 +195,14 @@ impl Pane {
             searching: false,
             search_generation: 0,
             search_cancel: Arc::new(AtomicBool::new(false)),
-            grid: false,
+            layout: Layout::List,
+            zoom: crate::folders::DEFAULT_ZOOM,
+            deep: false,
+            filter_bar: false,
+            select_first: false,
+            marking: false,
+            visual: None,
+            miller: Default::default(),
             drives: false,
             shares: None,
             phone: None,
@@ -246,7 +290,12 @@ impl Pane {
         self.loaded = Some(loaded);
         self.order = order;
         let reveal = std::mem::take(&mut self.reveal);
-        if !reveal.is_empty() {
+        if self.select_first && reveal.is_empty() {
+            self.select_first = false;
+            if !self.order.is_empty() {
+                self.select_only(0);
+            }
+        } else if !reveal.is_empty() {
             self.cursor = None;
             self.anchor = None;
             if !self.select_names(&reveal) {
@@ -320,6 +369,8 @@ impl Pane {
     }
 
     pub fn select_only(&mut self, pos: usize) {
+        self.marking = false;
+        self.visual = None;
         self.clear_selection();
         if let Some(i) = self.entry_at(pos) {
             self.set_bit(i, true);
@@ -407,12 +458,20 @@ impl Pane {
         }
     }
 
+    pub fn grid(&self) -> bool {
+        self.layout == Layout::Grid
+    }
+
+    /// Search results replace the listing: an Everywhere search, or the folder filter
+    /// reaching into subfolders.
     pub fn everywhere(&self) -> bool {
-        self.scope == Scope::Everywhere && !self.query.trim().is_empty()
+        (self.scope == Scope::Everywhere || self.deep) && !self.query.trim().is_empty()
     }
 
     pub fn clear_search(&mut self) {
         self.search_generation = next_id();
+        self.filter_bar = false;
+        self.deep = false;
         self.query.clear();
         self.results = None;
         self.result_cursor = None;

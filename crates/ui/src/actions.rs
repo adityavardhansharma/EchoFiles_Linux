@@ -28,6 +28,21 @@ pub struct Clip {
     pub cut: bool,
 }
 
+/// A step Undo can reverse, and for a copy or move, what to run again to redo it.
+#[derive(Debug, Clone)]
+pub struct Done {
+    pub undo: Undo,
+    pub transfer: Option<(Kind, Vec<PathBuf>, PathBuf)>,
+}
+
+/// A step Redo (Ctrl+Shift+Z) can do again.
+#[derive(Debug, Clone)]
+pub enum Again {
+    Step(ops::Redo),
+    /// Copy or move these again (conflicts ask again, like the first time).
+    Transfer { kind: Kind, sources: Vec<PathBuf>, dest: PathBuf },
+}
+
 /// The inline rename in progress.
 #[derive(Debug, Clone)]
 pub struct Rename {
@@ -60,6 +75,8 @@ pub struct Transfer {
     pub outcome: Option<Arc<Outcome>>,
     pub finished: Option<Instant>,
     pub error: Option<String>,
+    /// Started by Redo: finishing it keeps the rest of the redo history.
+    pub redo: bool,
 }
 
 impl Transfer {
@@ -139,7 +156,9 @@ pub enum FileMsg {
     NewFile,
     Created(Result<PathBuf, String>),
     Undo,
-    Undone(Undo, Result<String, String>),
+    Undone(Done, Option<Again>, Result<String, String>),
+    Redo,
+    Redone(Again, Option<Undo>, Option<String>),
     Start { kind: Kind, sources: Vec<PathBuf>, dest: PathBuf },
     ToOther(Kind),
     Planned(u64, Result<Arc<Plan>, String>),
@@ -299,6 +318,10 @@ impl App {
     }
 
     fn start_transfer(&mut self, kind: Kind, sources: Vec<PathBuf>, dest: PathBuf) -> Task<Message> {
+        self.start_transfer_as(kind, sources, dest, false)
+    }
+
+    fn start_transfer_as(&mut self, kind: Kind, sources: Vec<PathBuf>, dest: PathBuf, redo: bool) -> Task<Message> {
         if sources.is_empty() {
             return Task::none();
         }
@@ -322,6 +345,7 @@ impl App {
             outcome: None,
             finished: None,
             error: None,
+            redo,
         });
         background(move || ops::plan(kind, &sources, &dest, &progress).map(Arc::new), move |r| Message::File(FileMsg::Planned(id, r)))
     }
@@ -491,6 +515,7 @@ impl App {
             }
             FileMsg::Renamed(Ok((from, to))) => {
                 self.push_undo(Undo::Rename { from: from.clone(), to: to.clone() });
+                self.folders.moved(&from, &to);
                 let dir = to.parent().map(Path::to_path_buf).unwrap_or_default();
                 if let Some(name) = to.file_name() {
                     for pane in self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).filter(|p| p.location == dir) {
@@ -578,13 +603,61 @@ impl App {
             FileMsg::Undo => {
                 if self.undo_busy || self.transfers.iter().any(|t| t.running()) { return Task::none(); }
                 match self.undo.pop() {
-                    Some(u) => { let u = u.retryable(); self.undo_busy = true; background(move || { let r = u.apply(); (u, r) }, |(u,r)| Message::File(FileMsg::Undone(u,r))) },
+                    Some(Done { undo, transfer }) => {
+                        self.undo_busy = true;
+                        background(move || {
+                            // What redo needs is read before the step is undone.
+                            let again = match &transfer {
+                                Some((kind, sources, dest)) => Some(Again::Transfer { kind: *kind, sources: sources.clone(), dest: dest.clone() }),
+                                None => undo.redo().map(Again::Step),
+                            };
+                            let undo = undo.retryable();
+                            let r = undo.apply();
+                            (Done { undo, transfer }, again, r)
+                        }, |(d, again, r)| Message::File(FileMsg::Undone(d, again, r)))
+                    }
                     None => Task::none(),
                 }
             },
-            FileMsg::Undone(u, r) => {
+            FileMsg::Undone(d, again, r) => {
                 self.undo_busy = false;
-                if let Err(e) = r { self.push_undo(u); self.toast_error("Couldn't undo".into(), e); }
+                match r {
+                    Ok(_) => self.redo.extend(again),
+                    Err(e) => {
+                        self.undo.push(d);
+                        self.toast_error("Couldn't undo".into(), e);
+                    }
+                }
+                let dirs: Vec<PathBuf> = self.tabs[self.tab].panes.iter().map(|p| p.location.clone()).collect();
+                Task::batch(dirs.iter().map(|d| self.refresh(d)).collect::<Vec<_>>())
+            }
+            FileMsg::Redo => {
+                if self.undo_busy || self.transfers.iter().any(|t| t.running()) { return Task::none(); }
+                match self.redo.pop() {
+                    Some(Again::Transfer { kind, sources, dest }) => self.start_transfer_as(kind, sources, dest, true),
+                    Some(again @ Again::Step(_)) => {
+                        self.undo_busy = true;
+                        background(move || {
+                            let Again::Step(step) = &again else { unreachable!() };
+                            let (undo, problem) = step.apply();
+                            (again, undo, problem)
+                        }, |(again, undo, problem)| Message::File(FileMsg::Redone(again, undo, problem)))
+                    }
+                    None => Task::none(),
+                }
+            }
+            FileMsg::Redone(again, undo, problem) => {
+                self.undo_busy = false;
+                let did = undo.is_some();
+                if let Some(u) = undo {
+                    if let Undo::Rename { from, to } = &u { self.folders.moved(from, to); }
+                    self.undo.push(Done { undo: u, transfer: None });
+                }
+                if let Some(e) = problem {
+                    // Nothing happened: it can be tried again.
+                    if !did { self.redo.push(again); }
+                    self.toast_error("Couldn't redo".into(), e);
+                }
                 let dirs: Vec<PathBuf> = self.tabs[self.tab].panes.iter().map(|p| p.location.clone()).collect();
                 Task::batch(dirs.iter().map(|d| self.refresh(d)).collect::<Vec<_>>())
             }
@@ -643,12 +716,14 @@ impl App {
                 let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) else { return Task::none() };
                 t.finished = Some(Instant::now());
                 t.outcome = Some(outcome.clone());
-                let (kind, dest) = (t.kind, t.dest.clone());
+                let (kind, dest, sources, redo) = (t.kind, t.dest.clone(), t.sources.clone(), t.redo);
                 let keys = if outcome.synced { outcome.done.iter().filter_map(|(src, _)| t.import_keys.get(src).cloned()).collect() } else { Vec::new() };
                 self.imported_copies(keys);
                 let ok = outcome.errors.is_empty() && !outcome.cancelled;
                 if !outcome.journal.is_empty() {
-                    self.push_undo(Undo::Journal(Arc::new(std::sync::Mutex::new(outcome.journal.clone()))));
+                    let undo = Undo::Journal(Arc::new(std::sync::Mutex::new(outcome.journal.clone())));
+                    let transfer = Some((kind, sources, dest.clone()));
+                    if redo { self.undo.push(Done { undo, transfer }); self.trim_undo(); } else { self.push_done(Done { undo, transfer }); }
                 }
                 if outcome.cancelled && outcome.errors.is_empty() {
                     self.push_toast(Tone::Accent, if kind == Kind::Move { if outcome.errors.is_empty() { "Move cancelled — completed entries restored".into() } else { "Move cancelled — recovery needs attention".into() } } else { "Copy cancelled".into() }, None, None);
@@ -805,13 +880,23 @@ impl App {
         }
     }
 
-    /// Remember how to undo something. The history is bounded: the oldest entry is dropped
-    /// and whatever it kept for undo (replaced files) is deleted in the background.
+    /// Remember how to undo something. Something new done by hand ends what Redo could do.
     pub(crate) fn push_undo(&mut self, u: Undo) {
-        self.undo.push(u);
+        self.push_done(Done { undo: u, transfer: None });
+    }
+
+    fn push_done(&mut self, d: Done) {
+        self.redo.clear();
+        self.undo.push(d);
+        self.trim_undo();
+    }
+
+    /// The history is bounded: the oldest entry is dropped and whatever it kept for undo
+    /// (replaced files) is deleted in the background.
+    fn trim_undo(&mut self) {
         if self.undo.len() > UNDO_LIMIT {
             let old = self.undo.remove(0);
-            std::thread::spawn(move || old.discard());
+            std::thread::spawn(move || old.undo.discard());
         }
     }
 

@@ -12,11 +12,14 @@
 mod actions;
 mod app;
 mod codec;
+mod columns;
 mod drives;
 mod file_list;
+mod folders;
 mod gpu;
 mod indexer;
 mod jpeg;
+mod keys;
 mod network;
 mod kinds;
 mod overlay;
