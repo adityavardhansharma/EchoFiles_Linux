@@ -18,6 +18,7 @@ pub mod signin;
 pub mod catalog;
 pub mod crawl;
 pub mod live;
+pub mod changes;
 
 pub use error::{Error, Kind};
 pub use rc::Rc;

@@ -601,6 +601,7 @@ Only Drive-specific parts (query, Google Docs, OAuth, quotas) need a real Google
 **Phase 6 — Live search.** The folder map, query translation, the rc query, path building, the merge and verification, header states, `ef --live`.
 
 **Phase 7 — Polish.** Server-side copies within Drive, Undo via `untrash`, the change feed with an own client ID (or through rclone if phase 0 found it), and thumbnails for own-client users.
+  - As built: server-side copies landed in phase 3; Undo uses `untrash` on the deleted items' folder and says so when it restored more than was deleted; the change feed polls every 60 s for accounts on their own client ID while the index is on (HTTPS via `ureq` + `rustls`, `ef-cloud` only). Drive thumbnails were **not** built: each one needs an authenticated call per file, and the cost/benefit wasn't worth it yet. Drive folders still show icons, not thumbnails.
 
 **Phase 8 — More of Drive.** Shared with me, shared drives, full-text search, multiple accounts polish.
 
