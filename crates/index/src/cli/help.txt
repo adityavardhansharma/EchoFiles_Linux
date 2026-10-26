@@ -28,6 +28,7 @@ FIND
     --prune              don't descend into matched folders
     --here               current folder            --project  current project root
     --live / --indexed   force reading the disk / trust the index
+    --drive-live         also ask Google Drive itself (EchoFiles running, both Drive switches on)
   Output
     -n, --limit N        best N (default: all)     --count     just the number
     --json               JSON with size, date, source and freshness
