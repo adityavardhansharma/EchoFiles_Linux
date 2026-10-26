@@ -9,3 +9,4 @@ A Google Drive account in the sidebar's Cloud section: the name the person gave 
 - The usage bar follows `UsageBar` (grows once, 400ms; `warning` above 90%, `danger` above 97%), coloured `world-cloud`.
 - Click: opens the Drive root in the pane (mounts first if needed). Middle-click: new tab. Right-click: Open · Open in new tab · Open in browser · Refresh · Rename… · Disconnect · Sign out… · Google Drive settings.
 - Tooltip: the name, access (Full / Read-only) and usage.
+- **Shared places** sit indented under their account: **Shared with me** (`share` glyph, always read-only) and each added **shared drive** (`folder` glyph). They reuse the account's sign-in. Their menu has **Remove from sidebar** instead of Sign out; the account's menu adds **Show Shared with me** and **Add a shared drive…** (a dialog listing the account's shared drives; one click adds one).

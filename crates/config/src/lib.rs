@@ -267,8 +267,18 @@ pub enum CloudAccess {
     Read,
 }
 
-/// One connected Google Drive account. Tokens and client secrets are never here: they live
-/// in EchoFiles' own rclone config (`cloud_rclone_dir()`).
+/// A place inside an account other than My Drive.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", tag = "kind")]
+pub enum CloudPlace {
+    /// Files other people shared with you (read-only).
+    Shared,
+    /// A shared drive, by Drive's ID.
+    Team { drive: String },
+}
+
+/// One connected Google Drive account (or a shared place under one). Tokens and client
+/// secrets are never here: they live in EchoFiles' own rclone config (`cloud_rclone_dir()`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CloudAccount {
     /// Short random ID: the rclone remote name, catalog file and mount folder.
@@ -276,6 +286,25 @@ pub struct CloudAccount {
     pub name: String,
     #[serde(default)]
     pub access: CloudAccess,
+    /// The account this shared place belongs to (`None` for My Drive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub under: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<CloudPlace>,
+    /// Shared places are indexed only with their own switch on too (other people's files).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub indexed: bool,
+}
+
+impl CloudAccount {
+    pub fn new(id: String, name: String, access: CloudAccess) -> CloudAccount {
+        CloudAccount { id, name, access, under: None, place: None, indexed: false }
+    }
+
+    /// Whether the Drive index covers it (with `[cloud] index` on).
+    pub fn in_index(&self) -> bool {
+        self.under.is_none() || self.indexed
+    }
 }
 
 /// Settings → Google Drive.
@@ -288,12 +317,14 @@ pub struct Cloud {
     pub index: bool,
     /// After saved results, also send the search to Google Drive.
     pub live_search: bool,
+    /// Live search also looks inside files (Drive's full-text search).
+    pub fulltext: bool,
     pub cache_max_gb: u32,
 }
 
 impl Default for Cloud {
     fn default() -> Self {
-        Cloud { accounts: Vec::new(), index: false, live_search: true, cache_max_gb: 10 }
+        Cloud { accounts: Vec::new(), index: false, live_search: true, fulltext: false, cache_max_gb: 10 }
     }
 }
 
@@ -606,7 +637,8 @@ mod tests {
         assert_eq!(old.cloud, Cloud::default());
         assert!(!old.agents.gdrive, "the main index never turns ef's Drive access on");
         let mut s = Settings::default();
-        s.cloud.accounts.push(CloudAccount { id: "k3f9q2".into(), name: "Google Drive".into(), access: CloudAccess::Read });
+        s.cloud.accounts.push(CloudAccount::new("k3f9q2".into(), "Google Drive".into(), CloudAccess::Read));
+        s.cloud.accounts.push(CloudAccount { place: Some(CloudPlace::Team { drive: "0AB".into() }), under: Some("k3f9q2".into()), ..CloudAccount::new("t1".into(), "Team".into(), CloudAccess::Full) });
         s.cloud.index = true;
         s.save_to(&file).unwrap();
         let back = Settings::load_from(&file).unwrap();

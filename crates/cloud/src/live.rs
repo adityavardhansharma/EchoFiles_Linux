@@ -25,6 +25,8 @@ pub struct Ask {
     pub files_only: bool,
     /// Modified after this (Unix seconds).
     pub modified_after: Option<i64>,
+    /// Also match words inside files (Drive's full-text search).
+    pub fulltext: bool,
 }
 
 /// Why step 2 doesn't run.
@@ -47,7 +49,10 @@ pub fn translate(ask: &Ask) -> Result<String, Skip> {
     if words.is_empty() {
         return Err(Skip::TooShort);
     }
-    let mut parts: Vec<String> = words.iter().map(|w| format!("name contains '{}'", escape(w))).collect();
+    let mut parts: Vec<String> = words
+        .iter()
+        .map(|w| if ask.fulltext { format!("(name contains '{0}' or fullText contains '{0}')", escape(w)) } else { format!("name contains '{}'", escape(w)) })
+        .collect();
     if ask.dirs_only {
         parts.push(format!("mimeType = '{FOLDER_MIME}'"));
     } else if ask.files_only {
@@ -156,6 +161,8 @@ mod tests {
         let f = Ask { words: vec!["über".into(), "日本".into()], files_only: true, ..Default::default() };
         assert!(translate(&f).unwrap().contains("name contains '日本'") && translate(&f).unwrap().contains("mimeType != "));
         assert_eq!(literal_words("^report-\\d+\\.pdf$"), vec!["report-", "pdf"]);
+        let ft = Ask { words: vec!["budget".into()], fulltext: true, ..Default::default() };
+        assert_eq!(translate(&ft).unwrap(), "(name contains 'budget' or fullText contains 'budget') and trashed = false");
         assert!(literal_words("^\\d+$").is_empty() || literal_words("^\\d+$").iter().all(|w| w.len() >= 2));
     }
 

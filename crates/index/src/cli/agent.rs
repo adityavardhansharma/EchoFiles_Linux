@@ -121,7 +121,7 @@ pub fn live_filter(a: &FindArgs) -> Result<(ef_cloud::live::Ask, LiveFilter), ef
     }
     let text = a.pattern.clone().ok_or(Skip::TooShort)?;
     let kind = if a.types.dir && !a.types.file { crate::KindFilter::Dirs } else if a.types.file || a.types.not_dir { crate::KindFilter::Files } else { crate::KindFilter::Any };
-    let ask = Ask { words: text.split_whitespace().map(str::to_string).collect(), dirs_only: kind == crate::KindFilter::Dirs, files_only: kind == crate::KindFilter::Files, modified_after: None };
+    let ask = Ask { words: text.split_whitespace().map(str::to_string).collect(), dirs_only: kind == crate::KindFilter::Dirs, files_only: kind == crate::KindFilter::Files, modified_after: None, fulltext: false };
     ef_cloud::live::translate(&ask)?;
     Ok((ask, LiveFilter { text, kind, ext: a.exts.first().cloned(), hidden: a.hidden }))
 }
