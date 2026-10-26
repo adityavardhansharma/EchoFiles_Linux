@@ -776,6 +776,10 @@ impl App {
                     }
                 }
             }
+            CloudMsg::Click(_) if matches!(self.cloud.avail, Some(Availability::Missing | Availability::TooOld { .. })) => {
+                self.cloud.dialog = Some(CloudDialog { step: Step::Missing, error: None, opened: Instant::now() });
+                Task::none()
+            }
             CloudMsg::Click(id) => {
                 if self.cloud.status.get(&id).is_some_and(|s| s.signed_out) {
                     return self.cloud_signin_again(&id);
@@ -1306,7 +1310,10 @@ impl App {
         if on && let Some((used, total)) = st.quota.filter(|q| q.1 > 0) {
             lines = lines.push(w::usage_bar(p, used as f32 / total as f32, p.world_cloud));
         }
-        let pill: Option<Element<'_, Message>> = if st.mounting {
+        let no_rclone = matches!(self.cloud.avail, Some(Availability::Missing | Availability::TooOld { .. }));
+        let pill: Option<Element<'_, Message>> = if no_rclone {
+            Some(w::pill(p, "Needs rclone", Some(p.warning)))
+        } else if st.mounting {
             Some(w::pill(p, "Connecting…", Some(p.info)))
         } else if st.signed_out {
             Some(w::pill(p, "Sign in again", Some(p.warning)))
