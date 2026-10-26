@@ -75,6 +75,13 @@ pub struct LiveState {
     folders_asked: HashMap<String, Instant>,
 }
 
+impl LiveState {
+    /// My Drive's own ID, once live search has looked it up.
+    pub fn root(&self, account: &str) -> Option<String> {
+        self.roots.get(account).cloned()
+    }
+}
+
 impl App {
     fn mounted_accounts(&self) -> Vec<String> {
         self.settings.cloud.accounts.iter().filter(|a| self.cloud.status.get(&a.id).is_some_and(|s| s.mounted && !s.signed_out)).map(|a| a.id.clone()).collect()

@@ -106,6 +106,8 @@ pub struct CloudState {
     pub index: crate::cloud_index::CloudIndex,
     index_at: Option<Instant>,
     pub live: crate::cloud_live::LiveState,
+    changes_at: Option<Instant>,
+    changes_busy: bool,
 }
 
 impl std::fmt::Debug for CloudState {
@@ -181,6 +183,10 @@ pub enum CloudMsg {
     LiveDue { pane: u64, generation: u64 },
     LiveResults { pane: u64, generation: u64, result: Result<Vec<crate::cloud_live::Answer>, ef_cloud::Error> },
     LiveChecked { pane: u64, generation: u64, gone: Vec<PathBuf> },
+    // phase 7
+    Changes(String, Result<Option<Vec<ef_cloud::changes::Change>>, ef_cloud::Error>),
+    Untrash(Vec<PathBuf>),
+    Untrashed(Vec<PathBuf>, Result<(u64, u64), String>),
 }
 
 /// A sign-in handle that can travel in a message.
@@ -336,15 +342,27 @@ impl App {
         if self.cloud.health_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) && !self.settings.cloud.accounts.is_empty() {
             self.cloud.health_at = Some(Instant::now());
             let ids: Vec<String> = self.settings.cloud.accounts.iter().map(|a| a.id.clone()).collect();
+            let s2 = sup.clone();
             tasks.push(background(
                 move || {
-                    let h = sup.check();
+                    let h = s2.check();
                     // Mounts that should be there but aren't (rclone restarted, unmounted elsewhere).
                     let lost = ids.into_iter().filter(|id| !drive::is_mount_point(&paths::mount_point(id))).collect();
                     (h, lost)
                 },
                 |(h, lost)| cm(CloudMsg::Health(h, lost)),
             ));
+        }
+        // Own client ID + index on: Google's change feed every minute (§12.4).
+        if self.settings.cloud.index && !self.cloud.changes_busy && self.cloud.changes_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
+            self.cloud.changes_at = Some(Instant::now());
+            let own: Vec<String> = self.cloud.form.clients.iter().filter(|(id, c)| c.is_some() && self.cloud.status.get(id).is_some_and(|s| s.mounted)).map(|(id, _)| id.clone()).collect();
+            for id in own {
+                self.cloud.changes_busy = true;
+                let s2 = sup.clone();
+                let i2 = id.clone();
+                tasks.push(background(move || s2.running().ok_or_else(|| ef_cloud::Error::new(ef_cloud::Kind::NotRunning, "")).and_then(|rc| ef_cloud::changes::poll(&rc, &i2)), move |r| cm(CloudMsg::Changes(id.clone(), r))));
+            }
         }
         if self.cloud.index_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(3600)) {
             self.cloud.index_at = Some(Instant::now());
@@ -965,6 +983,45 @@ impl App {
             CloudMsg::LiveDue { pane, generation } => self.cloud_live_due(pane, generation),
             CloudMsg::LiveResults { pane, generation, result } => self.cloud_live_results(pane, generation, result),
             CloudMsg::LiveChecked { pane, generation, gone } => self.cloud_live_checked(pane, generation, gone),
+            CloudMsg::Changes(account, r) => {
+                self.cloud.changes_busy = false;
+                if let Ok(Some(changes)) = r {
+                    self.cloud_apply_changes(&account, changes);
+                }
+                Task::none()
+            }
+            CloudMsg::Untrash(paths) => {
+                let Some(sup) = self.cloud.sup.clone() else { return Task::none() };
+                let p2 = paths.clone();
+                background(
+                    move || {
+                        let rc = sup.running().ok_or("Google Drive isn't running.")?;
+                        let mut dirs: Vec<DriveUri> = p2.iter().filter_map(|p| DriveUri::from_mount_path(p)?.parent()).collect();
+                        dirs.dedup();
+                        let mut total = (0, 0);
+                        for d in dirs {
+                            let (n, e) = drive::untrash(&rc, &d.account, &d.path).map_err(|e| e.explain())?;
+                            total.0 += n;
+                            total.1 += e;
+                        }
+                        Ok(total)
+                    },
+                    move |r| cm(CloudMsg::Untrashed(paths.clone(), r)),
+                )
+            }
+            CloudMsg::Untrashed(paths, r) => {
+                match r {
+                    Ok((n, errs)) => {
+                        let body = (n as usize > paths.len()).then(|| "Google Drive puts back everything trashed in that folder, so earlier deletions came back too.".to_string());
+                        self.push_toast(Tone::Accent, format!("Restored {n} {} from Google Drive's trash", if n == 1 { "item" } else { "items" }), body, None);
+                        if errs > 0 {
+                            self.toast_error("Some items couldn't be restored".into(), format!("{errs} stayed in Google Drive's trash. Restore them from drive.google.com."));
+                        }
+                    }
+                    Err(e) => self.toast_error("Couldn't restore from Google Drive's trash".into(), e),
+                }
+                self.cloud_refresh_parents(&paths)
+            }
             CloudMsg::Folders(account, f) => {
                 self.cloud.index.folders.insert(account, f);
                 Task::none()
@@ -975,7 +1032,9 @@ impl App {
                 }
                 if errs.is_empty() {
                     let n = paths.len();
-                    self.push_toast(Tone::Accent, if n == 1 { "Moved to Google Drive's trash".into() } else { format!("Moved {n} items to Google Drive's trash") }, None, Some(("Open trash in browser".into(), cm(CloudMsg::OpenUrl(TRASH_URL.into())))));
+                    // Undo puts back from Drive's trash (everything trashed in that folder).
+                    self.push_toast(Tone::Accent, if n == 1 { "Moved to Google Drive's trash".into() } else { format!("Moved {n} items to Google Drive's trash") }, Some("It's in Google Drive's trash on drive.google.com.".into()), Some(("Undo".into(), cm(CloudMsg::Untrash(paths.clone())))));
+                    let _ = TRASH_URL;
                 } else {
                     self.toast_error("Couldn't move to Google Drive's trash".into(), errs.join("\n"));
                 }
