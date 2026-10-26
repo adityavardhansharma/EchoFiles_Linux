@@ -188,6 +188,9 @@ impl Pane {
                 let _ = tx.unbounded_send(m);
             };
             let t0 = Instant::now();
+            if dir == ef_core::trash::home_trash().join("files") {
+                let _ = ef_core::trash::ensure_home();
+            }
             let fd = match listing::open_dir(&dir) {
                 Ok(fd) => fd,
                 Err(e) => return send(Message::LoadFailed { generation, error: describe(&dir, &e) }),

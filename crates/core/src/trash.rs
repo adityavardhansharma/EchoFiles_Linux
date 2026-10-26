@@ -33,6 +33,18 @@ pub fn home_trash() -> PathBuf {
     data.join("Trash")
 }
 
+/// Make sure the home trash and its `files`/`info` folders exist (private, ours), so the
+/// Trash view opens even after another tool removed them while emptying the trash.
+pub fn ensure_home() -> io::Result<()> {
+    let home = home_trash();
+    if let Some(parent) = home.parent() { fs::create_dir_all(parent)?; }
+    secure_dir(&home)?;
+    for sub in ["files", "info"] {
+        secure_dir(&home.join(sub))?;
+    }
+    Ok(())
+}
+
 /// Device of `p` or of its nearest existing ancestor.
 fn dev_of(p: &Path) -> Option<u64> {
     let mut cur = Some(p);
@@ -503,6 +515,11 @@ mod tests {
         let t = trash(&f).unwrap();
         empty_home().unwrap();
         assert!(!t.file.exists() && !t.info.exists() && home_trash().join("files").is_dir());
+        // Another tool removed files/ and info/: opening the Trash brings them back.
+        fs::remove_dir(home_trash().join("files")).unwrap();
+        fs::remove_dir(home_trash().join("info")).unwrap();
+        ensure_home().unwrap();
+        assert!(is_trash_files(&home_trash().join("files")));
         fs::remove_dir_all(&base).unwrap();
     }
 
