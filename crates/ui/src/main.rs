@@ -11,6 +11,7 @@
 
 mod actions;
 mod app;
+mod cloud;
 mod codec;
 mod drives;
 mod file_list;

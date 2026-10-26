@@ -82,6 +82,7 @@ pub enum Message {
     Drive(DriveMsg),
     Net(NetMsg),
     Phone(PhoneMsg),
+    Cloud(crate::cloud::CloudMsg),
     /// Fold or unfold a sidebar section.
     Fold(crate::view::Fold, bool),
     Ui(UiMsg),
@@ -153,6 +154,7 @@ pub struct App {
     pub(crate) drive_state: HashMap<String, DriveState>,
     pub(crate) net: NetState,
     pub(crate) phone: PhoneState,
+    pub(crate) cloud: crate::cloud::CloudState,
     pub(crate) notice: Option<String>,
     bench: Option<Bench>,
     first_frame_logged: bool,
@@ -281,7 +283,10 @@ impl App {
         };
         // A network folder from last time may not be connected now (and asking a gone
         // server can stall), so those start at home.
-        let last = (settings.general.open_to == config::OpenTo::Last).then(system::last_folder).flatten().filter(|p| !ef_net::gvfs::is_network_path(p));
+        let last_any = (settings.general.open_to == config::OpenTo::Last).then(system::last_folder).flatten();
+        // A Drive folder opens once its mount is back (if that's quick); until then, home.
+        let reopen = last_any.clone().filter(|p| config::is_cloud_path(p));
+        let last = last_any.filter(|p| !crate::remote::is_remote(p));
         let start = bench_dir.clone().or(path_arg).or(last).unwrap_or_else(config::home);
 
         let (tx, rx) = mpsc::unbounded();
@@ -313,6 +318,7 @@ impl App {
             drive_state: HashMap::new(),
             net: NetState { recent: crate::network::load_recent(), ..Default::default() },
             phone: crate::phone::load_state(),
+            cloud: Default::default(),
             notice: None,
             bench: bench_dir.map(|_| Bench { frames: Vec::with_capacity(700), last: None, started: false }),
             first_frame_logged: false,
@@ -356,6 +362,8 @@ impl App {
         tasks.push(background(crate::drives::read_volumes, |r| Message::Drive(DriveMsg::Volumes(r))));
         tasks.push(background(animations_enabled, |on| Message::Drive(DriveMsg::Animations(on))));
         tasks.push(crate::network::boot_tasks());
+        app.cloud.reopen = reopen.map(|p| (p, std::time::Instant::now()));
+        tasks.push(crate::cloud::boot_tasks(&app.settings));
         crate::phone::start();
         if let Some(Request::Connect(uri)) = launch {
             match ef_net::Address::parse(&uri, ef_net::Protocol::Smb) {
@@ -396,6 +404,12 @@ impl App {
             && pane.location == m.root
         {
             return name;
+        }
+        if !pane.special()
+            && let Some((a, root)) = self.cloud_place_at(&pane.location)
+            && pane.location == root
+        {
+            return a.name.clone();
         }
         pane.title()
     }
@@ -620,7 +634,7 @@ impl App {
 
     /// Something modal is up: lists don't take keys.
     pub(crate) fn modal(&self) -> bool {
-        self.menu.is_some() || self.dialog.is_some() || self.command.is_some() || self.phone.dialog.is_some()
+        self.menu.is_some() || self.dialog.is_some() || self.command.is_some() || self.phone.dialog.is_some() || self.cloud.dialog.is_some()
     }
 
     // ------------------------------------------------------------------ thumbnails
@@ -654,9 +668,13 @@ impl App {
         if self.dialog.is_none() { self.dialog = Some(dialog); } else { self.pending_dialogs.push_back(dialog); }
     }
 
-    fn request_exit(&mut self) -> Task<Message> {
+    pub(crate) fn request_exit(&mut self) -> Task<Message> {
         if crate::actions::busy() || self.undo_busy || self.transfers.iter().any(|t| t.running()) {
             self.notice = Some("File operations are still running. Wait for them to finish, or cancel them before quitting.".into());
+            return Task::none();
+        }
+        // Pending Drive uploads ask first; then mounts and rclone stop.
+        if !self.cloud_before_exit() {
             return Task::none();
         }
         // Replaced files kept for undo are not needed once the session ends.
@@ -741,12 +759,15 @@ impl App {
                         pane.first_paint_ms
                     );
                 }
+                let dir = loaded.listing.dir.clone();
                 pane.apply_loaded(loaded, order);
                 let id = pane.id;
                 let t = pane.reorder(hidden);
                 self.refresh_cut();
                 let r = self.resume_rename(id);
-                Task::batch([t, r])
+                // Drive folders: which entries are Google Docs (their kind and icon).
+                let c = if ready && config::is_cloud_path(&dir) { self.cloud_listed(&dir) } else { Task::none() };
+                Task::batch([t, r, c])
             }
             Message::Reordered { generation, revision, order } => {
                 if let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.generation == generation) {
@@ -1042,11 +1063,13 @@ impl App {
             Message::Drive(m) => self.drive_update(m),
             Message::Net(m) => self.net_update(m),
             Message::Phone(m) => self.phone_update(m),
+            Message::Cloud(m) => self.cloud_update(m),
             Message::Fold(section, open) => {
                 match section {
                     crate::view::Fold::Windows => self.settings.sidebar.windows_open = open,
                     crate::view::Fold::Network => self.settings.sidebar.network_open = open,
                     crate::view::Fold::Phone => self.settings.sidebar.phone_open = open,
+                    crate::view::Fold::Cloud => self.settings.sidebar.cloud_open = open,
                 }
                 self.persist_settings()
             }
@@ -1087,13 +1110,14 @@ impl App {
                 }
                 self.expire_toasts();
                 self.phone_tick();
+                let cloud = self.cloud_tick();
                 if indexer::settled(self.index_dirty, 1500) && self.index_state != IndexState::Building {
-                    return self.build_index();
+                    return Task::batch([cloud, self.build_index()]);
                 }
                 if indexer::settled(self.index_stale, 10_000) && self.index_state != IndexState::Building && self.last_index_build.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
-                    return self.build_index();
+                    return Task::batch([cloud, self.build_index()]);
                 }
-                Task::none()
+                cloud
             }
             Message::MouseMove(p) => {
                 self.mouse = p;
@@ -1356,6 +1380,9 @@ impl App {
         if self.net.form.is_some() {
             return self.net_update(NetMsg::Close);
         }
+        if self.cloud.dialog.is_some() {
+            return self.cloud_update(crate::cloud::CloudMsg::Close);
+        }
         if self.phone.dialog.is_some() {
             return self.phone_update(PhoneMsg::Dialog(false));
         }
@@ -1416,6 +1443,13 @@ impl App {
         if self.net.form.is_some() {
             return match key.as_ref() {
                 Key::Named(Named::Enter) => self.net_update(NetMsg::Submit),
+                Key::Named(Named::Tab) => tab(shift),
+                _ => Task::none(),
+            };
+        }
+        if self.cloud.dialog.is_some() {
+            return match key.as_ref() {
+                Key::Named(Named::Enter) => self.cloud_enter(),
                 Key::Named(Named::Tab) => tab(shift),
                 _ => Task::none(),
             };
@@ -1569,7 +1603,7 @@ impl App {
             || self.sel_size.as_ref().is_some_and(|s| !s.1.done.load(Ordering::Relaxed))
             || self.drag.is_some()
             || self.phone_animating()
-            || (self.animations && (self.menu.as_ref().is_some_and(|m| fresh(m.opened)) || self.dialog.as_ref().is_some_and(|d| fresh(d.opened())) || self.toasts.iter().any(|t| fresh(t.at)) || self.command.as_ref().is_some_and(|c| fresh(c.opened)) || self.net.form.as_ref().is_some_and(|f| fresh(f.opened))))
+            || (self.animations && (self.menu.as_ref().is_some_and(|m| fresh(m.opened)) || self.dialog.as_ref().is_some_and(|d| fresh(d.opened())) || self.toasts.iter().any(|t| fresh(t.at)) || self.command.as_ref().is_some_and(|c| fresh(c.opened)) || self.net.form.as_ref().is_some_and(|f| fresh(f.opened)) || self.cloud.dialog.as_ref().is_some_and(|d| fresh(d.opened))))
     }
 
     pub fn subscription(&self) -> Subscription<Message> {

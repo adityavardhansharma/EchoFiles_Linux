@@ -973,12 +973,15 @@ impl<'a, Message> FileList<'a, Message> {
         let selected = is_selected(self.model.selected, i);
         let name = l.name_bytes(i);
         let alpha = self.alpha(i);
+        // Google Docs in Drive: their own kind and icon, no size, no `.link.html`.
+        let google = kinds::google(&l.dir, name);
         let icon_box = Rectangle { x: cols.icon, y: y + (rh - style::ICON_ROW) / 2.0, width: style::ICON_ROW, height: style::ICON_ROW };
-        renderer.draw_svg(Svg { opacity: alpha, ..Svg::new(self.icons.color(kinds::icon(name, l.kind[i]))) }, icon_box, body);
+        renderer.draw_svg(Svg { opacity: alpha, ..Svg::new(self.icons.color(google.map_or_else(|| kinds::icon(name, l.kind[i]), |g| g.icon()))) }, icon_box, body);
         self.draw_badge(renderer, icon_box, i, body);
         let cy = y + rh / 2.0;
         if self.model.renaming != Some(pos) {
-            let full = String::from_utf8_lossy(name);
+            let shown = if google.is_some() { &name[..name.len() - ef_cloud::drive::LINK_SUFFIX.len()] } else { name };
+            let full = String::from_utf8_lossy(shown);
             let max_cells = (cols.name_w / ADVANCE).floor() as usize;
             let (mut stem, mut ext, _) = fit_name(&full, l.is_dir(i), max_cells);
             if !name.is_ascii() {
@@ -1006,14 +1009,17 @@ impl<'a, Message> FileList<'a, Message> {
             self.text(renderer, s, Point::new(x, cy), style::META, style::FONT, color(p.ink_muted), if right { text::Alignment::Right } else { text::Alignment::Left }, clip.intersection(&body).unwrap_or(clip));
         };
         let stated = l.flags[i] & flags::STATED != 0;
-        if l.is_dir(i) {
+        if l.is_dir(i) || google.is_some() {
             buf.push('—');
         } else if stated {
             fmt::size(l.size[i], &mut buf);
         }
         meta(renderer, buf.clone(), cols.size_right, true, style::COL_SIZE);
         buf.clear();
-        kinds::label(name, l.kind[i], &mut buf);
+        match google {
+            Some(g) => buf.push_str(g.label()),
+            None => kinds::label(name, l.kind[i], &mut buf),
+        }
         if cols.show_kind {
             meta(renderer, buf.clone(), cols.kind, false, style::COL_KIND);
         }

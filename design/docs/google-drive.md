@@ -269,7 +269,7 @@ All of these go through the existing ops engine on mount paths unless stated:
 - **Copy within one Drive**: through FUSE this would download and upload everything. In phase 7, the ops engine notices that source and destination are on the same cloud account and uses rc `operations/copyfile` (server-side copy) instead. Until then it works, just slower.
 - **Copy into Drive from local**: through FUSE. The copy finishes as soon as the data is in rclone's cache, but **it is not on Google yet**. Following the design system's "honest states" principle:
   - The transfer toast finishes with "Copied — uploading to Google Drive".
-  - The status bar shows "Uploading 3 files to Google Drive · 12 MB left", from rc `vfs/stats` and `vfs/queue`, polled every second while uploads are pending and every 30 s otherwise.
+  - The status bar shows "Uploading 3 files to Google Drive", from rc `vfs/stats`, polled every second while an account is mounted. (As built in phase 3: `vfs/stats` gives counts, not bytes left, so the line names the file count only.)
   - The Drive sidebar item shows the "Uploading 3" pill.
   - When the queue empties: "Uploaded to Google Drive", in the status bar for a few seconds.
 - **Copy out of Drive to local**: through FUSE. The download shows as normal transfer progress.

@@ -1,7 +1,38 @@
 //! File-type presentation: colour icon and human label by extension (extension only — no
 //! content sniffing on the listing path, build plan §2.2).
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::RwLock;
+
+use ef_cloud::drive::GoogleKind;
 use ef_core::Kind;
+
+/// Google Docs in Drive folders, by folder then name as the mount shows it (rclone names
+/// them `Name.link.html`; only the Drive API knows Doc from Sheet). Filled after a Drive
+/// folder is listed.
+static GOOGLE: RwLock<Option<HashMap<PathBuf, HashMap<String, GoogleKind>>>> = RwLock::new(None);
+
+pub fn set_google(dir: PathBuf, kinds: HashMap<String, GoogleKind>) {
+    let mut g = GOOGLE.write().unwrap_or_else(|e| e.into_inner());
+    let map = g.get_or_insert_with(HashMap::new);
+    // A handful of folders is plenty; forget the rest.
+    if map.len() > 256 {
+        map.clear();
+    }
+    map.insert(dir, kinds);
+}
+
+/// A Google Doc in a Drive folder: its kind (from the Drive API when known, "Google file"
+/// otherwise). Only names ending `.link.html` inside a Drive mount can be one.
+pub fn google(dir: &Path, name: &[u8]) -> Option<GoogleKind> {
+    if !name.ends_with(ef_cloud::drive::LINK_SUFFIX.as_bytes()) || !ef_config::is_cloud_path(dir) {
+        return None;
+    }
+    let g = GOOGLE.read().unwrap_or_else(|e| e.into_inner());
+    let known = g.as_ref().and_then(|m| m.get(dir)).and_then(|k| k.get(String::from_utf8_lossy(name).as_ref())).copied();
+    Some(known.unwrap_or(GoogleKind::Other))
+}
 
 /// (extension, colour icon, label)
 const TYPES: &[(&str, &str, &str)] = &[

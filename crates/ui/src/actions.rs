@@ -302,6 +302,11 @@ impl App {
         if sources.is_empty() {
             return Task::none();
         }
+        // Copies inside one Google Drive stay on Google's side: nothing is downloaded and
+        // uploaded again.
+        if kind == Kind::Copy && App::same_cloud(&sources, &dest) {
+            return self.cloud_copy_within(sources, dest);
+        }
         let id = crate::pane::next_id();
         let progress = Arc::new(Progress::default());
         let import_keys = sources.iter().filter_map(|p| self.phone.import_pending.remove(p).map(|k| (p.clone(), k))).collect();
@@ -518,6 +523,15 @@ impl App {
                     self.queue_dialog(Dialog::Delete { paths, reason: Some("Files on network servers can't go to the Trash.".into()), opened: Instant::now() });
                     return Task::none();
                 }
+                // Google Drive has its own trash: rclone moves deleted files there.
+                if paths.iter().all(|p| ef_config::is_cloud_path(p)) {
+                    self.select_after_removal();
+                    return self.cloud_trash(paths);
+                }
+                if paths.iter().any(|p| ef_config::is_cloud_path(p)) {
+                    self.toast_error("Couldn't move to Trash".into(), "Google Drive files and files on this computer go to different trashes. Delete them separately.".into());
+                    return Task::none();
+                }
                 self.select_after_removal();
                 background(move || Arc::new(ops::trash_all(&paths)), |r| Message::File(FileMsg::Trashed(r)))
             }
@@ -540,14 +554,21 @@ impl App {
             FileMsg::AskDelete => {
                 let paths = self.targets();
                 if !paths.is_empty() {
-                    self.queue_dialog(Dialog::Delete { paths, reason: None, opened: Instant::now() });
+                    let reason = paths.iter().any(|p| ef_config::is_cloud_path(p)).then(|| "This skips Google Drive's trash.".to_string());
+                    self.queue_dialog(Dialog::Delete { paths, reason, opened: Instant::now() });
                 }
                 Task::none()
             }
             FileMsg::Delete(paths) => {
                 self.select_after_removal();
+                // Drive files are deleted on Google's side, past its trash (FUSE would trash them).
+                let (cloud, paths): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| ef_config::is_cloud_path(p));
+                let purge = if cloud.is_empty() { Task::none() } else { self.cloud_purge(cloud) };
+                if paths.is_empty() {
+                    return purge;
+                }
                 let p2 = paths.clone();
-                background(move || ops::delete(&p2, &Progress::default()), move |errs| Message::File(FileMsg::Deleted(paths.clone(), errs)))
+                Task::batch([purge, background(move || ops::delete(&p2, &Progress::default()), move |errs| Message::File(FileMsg::Deleted(paths.clone(), errs)))])
             }
             FileMsg::Deleted(paths, errs) => {
                 // Success speaks for itself (the items are gone); only problems get a toast.
