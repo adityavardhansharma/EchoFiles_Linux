@@ -60,14 +60,15 @@ impl App {
             let ids: Vec<String> = self.settings.cloud.accounts.iter().map(|a| a.id.clone()).collect();
             return Task::batch(ids.iter().map(|id| self.cloud_crawl(id, true)).collect::<Vec<_>>());
         }
-        let ids: Vec<String> = self.settings.cloud.accounts.iter().map(|a| a.id.clone()).collect();
+        let ids: Vec<String> = self.settings.cloud.accounts.iter().filter(|a| a.in_index()).map(|a| a.id.clone()).collect();
         Task::batch(ids.iter().map(|id| self.cloud_crawl(id, false)).collect::<Vec<_>>())
     }
 
     /// An account mounted: crawl if its catalog is missing or a day old (index on), or build
     /// the in-memory folder map (index off).
     pub(crate) fn cloud_index_mounted(&mut self, id: &str) -> Task<Message> {
-        if !self.settings.cloud.index {
+        let in_index = self.cloud_account(id).is_some_and(|a| a.in_index());
+        if !self.settings.cloud.index || !in_index {
             return if self.cloud.index.folders.contains_key(id) { Task::none() } else { self.cloud_crawl(id, true) };
         }
         if age(id).is_some_and(|a| a < STALE) {
@@ -195,7 +196,7 @@ impl App {
         if !self.settings.cloud.index {
             return Task::none();
         }
-        let stale: Vec<String> = self.settings.cloud.accounts.iter().filter(|a| self.cloud.status.get(&a.id).is_some_and(|s| s.mounted)).filter(|a| age(&a.id).is_none_or(|t| t >= STALE)).map(|a| a.id.clone()).collect();
+        let stale: Vec<String> = self.settings.cloud.accounts.iter().filter(|a| a.in_index() && self.cloud.status.get(&a.id).is_some_and(|s| s.mounted)).filter(|a| age(&a.id).is_none_or(|t| t >= STALE)).map(|a| a.id.clone()).collect();
         Task::batch(stale.iter().map(|id| self.cloud_crawl(id, false)).collect::<Vec<_>>())
     }
 

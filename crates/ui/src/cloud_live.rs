@@ -73,6 +73,8 @@ pub struct LiveState {
     pending: Option<(u64, u64)>,
     roots: HashMap<String, String>,
     folders_asked: HashMap<String, Instant>,
+    /// Paths of this answer's full-text-only matches.
+    inside: HashSet<PathBuf>,
 }
 
 impl LiveState {
@@ -117,14 +119,19 @@ impl App {
             self.cloud.live.pending = Some((pane_id, generation));
             return Task::none();
         }
+        let ask = live::Ask { fulltext: self.settings.cloud.fulltext, ..ask };
         let Ok(q) = live::translate(&ask) else { return Task::none() };
         let Some(sup) = self.cloud.sup.clone() else { return Task::none() };
         if let Some(p) = self.pane_by_id_mut(pane_id) {
             p.live = Some(LiveStatus::Searching);
         }
         self.cloud.live.inflight = true;
+        // A shared drive's top folder is the drive itself.
         let accounts: Vec<(String, Option<String>)> = self.mounted_accounts().into_iter().map(|a| {
-            let r = self.cloud.live.roots.get(&a).cloned();
+            let r = self.cloud.live.roots.get(&a).cloned().or_else(|| match self.cloud_account(&a).and_then(|x| x.place.clone()) {
+                Some(ef_config::CloudPlace::Team { drive }) => Some(drive),
+                _ => None,
+            });
             (a, r)
         }).collect();
         background(
@@ -181,11 +188,23 @@ impl App {
             if let Some(r) = &ans.root {
                 folders.insert(r.clone(), String::new());
             }
+            // Shared with me: items whose owner's folders we can't see sit at its top.
+            let shared = matches!(self.cloud_account(&ans.account).and_then(|a| a.place.clone()), Some(ef_config::CloudPlace::Shared));
+            let fulltext = self.settings.cloud.fulltext;
             for f in &ans.found {
                 let name = f.mount_name();
-                let Some(rank) = filter.rank(&name, f.is_dir()) else { continue };
+                // Full-text matches can miss our name rules; they rank after name matches.
+                let (rank, inside) = match filter.rank(&name, f.is_dir()) {
+                    Some(r) => (r, false),
+                    None if fulltext => (u64::MAX / 2, true),
+                    None => continue,
+                };
                 let google = GoogleKind::from_mime(&f.mime);
-                match f.path_in(&folders) {
+                let placed = f.path_in(&folders).or_else(|| shared.then(|| f.mount_name()));
+                if inside {
+                    self.cloud.live.inside.insert(paths::mount_point(&ans.account).join(placed.clone().unwrap_or_default()));
+                }
+                match placed {
                     Some(path) => {
                         let put = catalog::Entry { id: f.id.clone(), parent: f.parents.first().cloned().unwrap_or_default(), path: path.clone(), dir: f.is_dir(), size: f.size, modified: f.modified, mime: f.mime.clone(), md5: String::new() };
                         let shown = name.strip_suffix(ef_cloud::drive::LINK_SUFFIX).unwrap_or(&name);
@@ -221,6 +240,7 @@ impl App {
                 }
             }
         }
+        let inside = std::mem::take(&mut self.cloud.live.inside);
         let Some(pane) = self.pane_by_id_mut(pane_id) else { return Task::batch(tasks) };
         let Some(res) = pane.results.as_mut() else {
             pane.live = Some(LiveStatus::Done { fresh: 0, at: Instant::now() });
@@ -235,6 +255,8 @@ impl App {
                 let mut h = search::drive_hit(&settings, c.path.clone(), c.dir, c.size, c.modified, c.google);
                 if c.put.is_none() {
                     h.location = "Google Drive · folder not indexed yet (opens in the browser)".into();
+                } else if inside.contains(&c.path) {
+                    h.location.push_str(" · matched inside");
                 }
                 h
             })
