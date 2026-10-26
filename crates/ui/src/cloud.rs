@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ef_cloud::drive::{self, GoogleKind, MountOptions, Uploads};
+use ef_cloud::drive::{self, MountOptions, Uploads};
 use ef_cloud::signin::SignIn;
 use ef_cloud::supervisor::{Health, Supervisor};
 use ef_cloud::{paths, Availability, DriveUri};
@@ -102,6 +102,9 @@ pub struct CloudState {
     pub form: crate::cloud_settings::CloudForm,
     /// A change (client ID, access) waiting for its sign-in.
     pub again: Option<crate::cloud_settings::Again>,
+    /// Drive index runs and folder maps.
+    pub index: crate::cloud_index::CloudIndex,
+    index_at: Option<Instant>,
 }
 
 impl std::fmt::Debug for CloudState {
@@ -142,7 +145,6 @@ pub enum CloudMsg {
     Polled(Vec<(String, Result<Uploads, ef_cloud::Error>)>),
     Health(Health, Vec<String>),
     TryAgain,
-    Kinds(PathBuf, HashMap<String, GoogleKind>),
     Trashed(Vec<PathBuf>, Vec<String>),
     Purged(Vec<PathBuf>, Vec<String>),
     QuitWait,
@@ -169,6 +171,11 @@ pub enum CloudMsg {
     SetIndex(bool),
     SetLive(bool),
     OpenLog,
+    // index
+    RefreshIndex,
+    Crawled { account: String, dirs_only: bool, result: Result<(usize, HashMap<String, String>), String> },
+    Folders(String, HashMap<String, String>),
+    Listed { dir: PathBuf, account: String, path: String, entries: Vec<drive::Entry> },
 }
 
 /// A sign-in handle that can travel in a message.
@@ -334,6 +341,10 @@ impl App {
                 |(h, lost)| cm(CloudMsg::Health(h, lost)),
             ));
         }
+        if self.cloud.index_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(3600)) {
+            self.cloud.index_at = Some(Instant::now());
+            tasks.push(self.cloud_index_tick());
+        }
         let stale: Vec<String> = self.cloud.status.iter().filter(|(_, s)| s.mounted && s.quota_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(600))).map(|(id, _)| id.clone()).collect();
         for id in stale {
             if let Some(s) = self.cloud.status.get_mut(&id) {
@@ -348,18 +359,18 @@ impl App {
     /// per folder at most), so they show as "Google Doc" with the right icon.
     pub(crate) fn cloud_listed(&mut self, dir: &Path) -> Task<Message> {
         let Some(uri) = DriveUri::from_mount_path(dir) else { return Task::none() };
-        if self.cloud.kinds_asked.get(dir).is_some_and(|t| t.elapsed() < Duration::from_secs(60)) {
+        if self.cloud.kinds_asked.get(dir).is_some_and(|t| t.elapsed() < Duration::from_secs(5)) {
             return Task::none();
         }
         let Some(sup) = self.cloud.sup.clone() else { return Task::none() };
         self.cloud.kinds_asked.insert(dir.to_path_buf(), Instant::now());
         let dir = dir.to_path_buf();
         background(
-            move || {
-                let Some(rc) = sup.running() else { return HashMap::new() };
-                drive::list(&rc, &uri.account, &uri.path).map(|e| drive::google_kinds(&e)).unwrap_or_default()
+            {
+                let uri = uri.clone();
+                move || sup.running().and_then(|rc| drive::list(&rc, &uri.account, &uri.path).ok()).unwrap_or_default()
             },
-            move |k| cm(CloudMsg::Kinds(dir.clone(), k)),
+            move |entries| cm(CloudMsg::Listed { dir: dir.clone(), account: uri.account.clone(), path: uri.path.clone(), entries }),
         )
     }
 
@@ -443,6 +454,18 @@ impl App {
             },
             move |errs| cm(CloudMsg::CopiedWithin(sources.clone(), errs)),
         )
+    }
+
+    /// A saved Drive result whose account isn't mounted: offer to connect it.
+    pub(crate) fn open_drive_uri(&mut self, p: &Path) -> Task<Message> {
+        let Some(u) = DriveUri::parse(&p.to_string_lossy()) else { return Task::none() };
+        let name = self.cloud_account(&u.account).map(|a| a.name.clone()).unwrap_or_else(|| "Google Drive".into());
+        if self.cloud_account(&u.account).is_none() {
+            self.toast_error(format!("“{}” is on a Google Drive that isn't connected", u.name()), "Connect it again from the Cloud section.".into());
+            return Task::none();
+        }
+        self.push_toast(Tone::Accent, format!("{name} isn't connected"), Some(format!("“{}” opens once it's connected.", display_stem(u.name()).unwrap_or(u.name()))), Some(("Connect".into(), cm(CloudMsg::Click(u.account.clone())))));
+        Task::none()
     }
 
     /// Both ends are on the same Drive account (a copy can stay on Google's side).
@@ -676,7 +699,7 @@ impl App {
                         st.error = None;
                         st.offline = false;
                         st.net_failures = 0;
-                        let mut tasks = vec![self.cloud_quota_task(&id)];
+                        let mut tasks = vec![self.cloud_quota_task(&id), self.cloud_index_mounted(&id)];
                         if let Some(s) = self.cloud.status.get_mut(&id) {
                             s.quota_at = Some(Instant::now());
                         }
@@ -788,6 +811,8 @@ impl App {
                 let leave = self.cloud_leave(&id);
                 self.settings.cloud.accounts.retain(|a| a.id != id);
                 self.cloud.status.remove(&id);
+                self.cloud.index.folders.remove(&id);
+                self.cloud.index.runs.remove(&id);
                 let save = self.persist_settings();
                 let sup = self.cloud.sup.clone();
                 let last = self.settings.cloud.accounts.is_empty();
@@ -920,11 +945,26 @@ impl App {
                 let ids: Vec<String> = self.settings.cloud.accounts.iter().map(|a| a.id.clone()).collect();
                 Task::batch(ids.iter().map(|id| self.cloud_mount_task(id)).collect::<Vec<_>>())
             }
-            CloudMsg::Kinds(dir, kinds) => {
-                crate::kinds::set_google(dir, kinds);
+            CloudMsg::Listed { dir, account, path, entries } => {
+                if !entries.is_empty() {
+                    crate::kinds::set_google(dir, drive::google_kinds(&entries));
+                    self.cloud_folder_listed(&account, &path, &entries);
+                }
+                Task::none()
+            }
+            CloudMsg::RefreshIndex => {
+                let ids: Vec<String> = self.settings.cloud.accounts.iter().map(|a| a.id.clone()).collect();
+                Task::batch(ids.iter().map(|id| self.cloud_crawl(id, false)).collect::<Vec<_>>())
+            }
+            CloudMsg::Crawled { account, dirs_only, result } => self.cloud_crawled(account, dirs_only, result),
+            CloudMsg::Folders(account, f) => {
+                self.cloud.index.folders.insert(account, f);
                 Task::none()
             }
             CloudMsg::Trashed(paths, errs) => {
+                if errs.is_empty() {
+                    self.cloud_index_removed(&paths);
+                }
                 if errs.is_empty() {
                     let n = paths.len();
                     self.push_toast(Tone::Accent, if n == 1 { "Moved to Google Drive's trash".into() } else { format!("Moved {n} items to Google Drive's trash") }, None, Some(("Open trash in browser".into(), cm(CloudMsg::OpenUrl(TRASH_URL.into())))));
@@ -934,6 +974,9 @@ impl App {
                 self.cloud_refresh_parents(&paths)
             }
             CloudMsg::Purged(paths, errs) => {
+                if errs.is_empty() {
+                    self.cloud_index_removed(&paths);
+                }
                 if !errs.is_empty() {
                     self.toast_error("Couldn't delete from Google Drive".into(), errs.join("\n"));
                 }

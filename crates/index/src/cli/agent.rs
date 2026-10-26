@@ -21,13 +21,28 @@ use super::output::{self, json_str};
 
 /// Phone files (cached while the phone is away) for searches of "everywhere".
 pub fn add_phone_hits(a: &FindArgs, ran: &mut Ran) {
+    add_cached_hits(a, ran, crate::phone::entries);
+}
+
+/// Google Drive files from the Drive index, for searches of "everywhere". The UI asks
+/// when Drive's index is on; `ef` also needs "Let ef search Google Drive".
+pub fn add_drive_hits(a: &FindArgs, ran: &mut Ran) {
+    add_cached_hits(a, ran, crate::drive::entries);
+}
+
+/// `ef` reaches Drive only with both switches on (they never turn each other on).
+pub fn ef_searches_drive(settings: &Settings) -> bool {
+    settings.agents.gdrive && settings.cloud.index
+}
+
+fn add_cached_hits(a: &FindArgs, ran: &mut Ran, entries: fn(&crate::Query<'_>) -> Vec<crate::phone::Entry>) {
     let plain = matches!(a.syntax, None | Some(Syntax::Words)) && a.sizes.is_empty() && a.newer.is_none() && a.older.is_none() && a.owner.is_none() && !a.full_path;
     let Some(text) = a.pattern.as_deref().filter(|_| plain) else { return };
     let kind = if a.types.dir && !a.types.file { crate::KindFilter::Dirs } else if a.types.file || a.types.not_dir { crate::KindFilter::Files } else { crate::KindFilter::Any };
     let ext = a.exts.first().map(String::as_str);
     let q = crate::Query { text, within: crate::ROOT, kind, ext, hidden: a.hidden, limit: None };
     let ranker = crate::Ranker::new(text);
-    for e in crate::phone::entries(&q) {
+    for e in entries(&q) {
         let path = e.uri.as_os_str().as_bytes().to_vec();
         let name = e.uri.file_name().map(|n| n.as_bytes().to_vec()).unwrap_or_default();
         ran.outcome.hits.push(Hit {
@@ -93,6 +108,13 @@ pub fn notes(a: &FindArgs, ctx: &Ctx, s: &Search, ran: &Ran, shown: usize) {
     if total == 0 && !a.count && a.flavor == Flavor::Ef {
         lines.push(format!("no matches in {}", source_text(settings, ran)));
         lines.extend(why_nothing(a, ctx, s));
+        if ran.everywhere && !settings.cloud.accounts.is_empty() {
+            match (settings.agents.gdrive, settings.cloud.index) {
+                (false, _) => lines.push("Google Drive wasn't searched: it's off for ef (Settings → AI agents → Let ef search Google Drive)".into()),
+                (true, false) => lines.push("Google Drive wasn't searched: it isn't indexed (Settings → Google Drive → Include Google Drive in search index)".into()),
+                _ => {}
+            }
+        }
     }
     for l in lines {
         errln!(ctx, "ef: {l}");
@@ -240,6 +262,13 @@ pub fn write_json(a: &FindArgs, ran: &Ran, ctx: &Ctx, out: &mut Vec<u8>) {
         }
         let p = output::display(h, &ran.views, false);
         let _ = write!(out, "{{\"path\":{},\"type\":\"{}\"", json_str(&p), h.ftype.name());
+        // Drive results say so, with their stable URI (the mount path moves).
+        let raw = std::path::Path::new(std::ffi::OsStr::from_bytes(&h.path));
+        if h.path.starts_with(ef_cloud::uri::SCHEME.as_bytes()) {
+            let _ = write!(out, ",\"source\":\"gdrive\",\"uri\":{}", json_str(&h.path));
+        } else if let Some(u) = ef_cloud::DriveUri::from_mount_path(raw) {
+            let _ = write!(out, ",\"source\":\"gdrive\",\"uri\":{}", json_str(u.to_string().as_bytes()));
+        }
         if let Some(m) = &h.meta {
             if h.ftype != FType::Dir {
                 let _ = write!(out, ",\"size\":{}", m.size);

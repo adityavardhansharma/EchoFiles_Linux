@@ -1014,12 +1014,14 @@ impl App {
                     let directory = self.pane().results.as_ref().and_then(|r| r.hits.get(i)).is_some_and(|h| h.is_dir);
                     self.open_phone_result(&p, directory, false)
                 }
+                Some(p) if p.to_string_lossy().starts_with(ef_cloud::uri::SCHEME) => self.open_drive_uri(&p),
                 Some(p) => self.open_path(p),
                 None => Task::none(),
             },
             Message::ResultReveal(i) => {
                 let Some(h) = self.pane().results.as_ref().and_then(|r| r.hits.get(i)) else { return Task::none() };
                 if h.path.to_string_lossy().starts_with("phone://") { let p = h.path.clone(); return self.open_phone_result(&p, false, true); }
+                if h.path.to_string_lossy().starts_with(ef_cloud::uri::SCHEME) { let p = h.path.clone(); return self.open_drive_uri(&p); }
                 let (Some(parent), Some(name)) = (h.path.parent().map(Path::to_path_buf), h.path.file_name().map(|n| n.to_os_string())) else { return Task::none() };
                 self.pane_mut().scope = Scope::Folder;
                 let t = self.go(parent, true);
