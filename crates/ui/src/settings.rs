@@ -74,6 +74,7 @@ pub enum SettingsMsg {
     TenXer(bool),
     Footer(bool),
     Peek(bool),
+    AgentsPhone(bool),
     Reveal(PathBuf),
     Saved(Result<(), String>),
 }
@@ -329,6 +330,10 @@ impl App {
             SettingsMsg::Peek(on) => {
                 self.settings.appearance.peek = on;
                 self.peek = None;
+                self.save_settings()
+            }
+            SettingsMsg::AgentsPhone(on) => {
+                self.settings.agents.phone = on;
                 self.save_settings()
             }
             SettingsMsg::Density(d) => {
@@ -811,6 +816,12 @@ impl App {
                     "ef command",
                     if ef_path.is_some() { "Installed on your PATH." } else { "Run scripts/install.sh from the EchoFiles folder to put ef on your PATH." },
                     location,
+                ),
+                self.setting_with(
+                    "Let ef fetch phone photos",
+                    "ef phone photos copies recent photos and videos from your paired phone (today, the last 5…) into EchoFiles' cache and prints where they are, so agents can look at them. Off: ef can't see your phone's photos at all.",
+                    !a.cli,
+                    w::switch(p, a.phone, a.cli.then(|| Box::new(|b| Message::Settings(SettingsMsg::AgentsPhone(b))) as Box<dyn Fn(bool) -> Message>)),
                 ),
             ],
         ));
