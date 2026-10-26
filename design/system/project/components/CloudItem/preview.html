@@ -1,0 +1,22 @@
+<!-- @dsCard group="Navigation" height=260 -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>CloudItem</title></head>
+<body>
+<div id="root"></div>
+<script>
+(function(){
+var E = window.Echo, h = React.createElement;
+function App(){
+return h("div", {className:"ef", style:{width:236, padding:8, background:"var(--bg-sunken)"}},
+  h(E.CloudItem, {name:"Google Drive", used:28, usage:"4.2 GB of 15 GB", active:true}),
+  h(E.CloudItem, {name:"Work Drive", state:"uploading", uploads:3, used:61, usage:"9.1 GB of 15 GB"}),
+  h(E.CloudItem, {name:"Google Drive 3", state:"connecting"}),
+  h(E.CloudItem, {name:"Old account", state:"signin"}),
+  h(E.CloudItem, {name:"Travel", state:"offline"}));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+</body>
+</html>

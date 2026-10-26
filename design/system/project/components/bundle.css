@@ -402,6 +402,24 @@ body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--f
 .ef-net-meta { grid-column: 2 / 4; font-size: 11px; line-height: 18px; color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ef-net .ef-ibtn { grid-row: 1 / 3; grid-column: 3; width: 24px; height: 24px; }
 .ef-net-off .ef-net-icon, .ef-net-off .ef-net-name { color: var(--ink-muted); }
+.ef-cloud { font: inherit; display: grid; grid-template-columns: 18px 1fr auto; column-gap: var(--space-3); row-gap: 3px; align-items: center; padding: 5px var(--space-2) 7px var(--space-3); border-radius: var(--radius-1); color: var(--ink); cursor: pointer; transition: background-color var(--dur-fast) var(--ease-standard); }
+.ef-cloud:hover { background: var(--state-hover); }
+.ef-cloud[aria-current="true"] { background: var(--state-active); }
+.ef-cloud[aria-current="true"] .ef-cloud-name { color: var(--ink-strong); font-weight: 600; }
+.ef-cloud:focus-visible { outline: 1px solid var(--focus-ring); outline-offset: -1px; }
+.ef-cloud-icon { color: var(--world-cloud); grid-row: 1; }
+.ef-cloud-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ef-cloud > .ef-usage { grid-column: 2 / 4; }
+.ef-cloud-meta { grid-column: 2 / 4; display: flex; align-items: center; gap: var(--space-2); font-size: 11px; line-height: 18px; color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ef-cloud-off .ef-cloud-icon, .ef-cloud-off .ef-cloud-name { color: var(--ink-muted); }
+.ef-dialog-text { margin: 0 0 var(--space-3); }
+.ef-cloud-cmd { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-2) var(--space-3); background: var(--bg-deep); border-radius: var(--radius-2); }
+.ef-cloud-wait { display: flex; gap: var(--space-4); align-items: flex-start; }
+.ef-cloud-client { display: grid; grid-template-columns: 1fr 1fr auto; gap: var(--space-3); align-items: end; margin-bottom: var(--space-3); }
+.ef-results-live { display: inline-flex; align-items: center; gap: 6px; }
+.ef-results-live-done .ef-icon { color: var(--success-ink); }
+.ef-results-live-timeout, .ef-results-live-offline { color: var(--warning-ink); }
+.ef-results-gone { color: var(--ink-muted); font-style: normal; }
 .ef-connect-field { display: flex; align-items: stretch; margin-top: var(--space-3); }
 .ef-connect-field .ef-field { flex: 1; }
 .ef-scheme { display: inline-flex; align-items: center; padding: 0 var(--space-2); border: 1px solid var(--line-strong); border-radius: var(--radius-2); background: var(--bg-deep); color: var(--ink-muted); font-size: 13px; }

@@ -37,8 +37,10 @@
     zip: "file-archive", "7z": "file-archive", tar: "file-archive-alt", gz: "file-archive-alt", zst: "file-archive-alt", rar: "file-package",
     ttf: "file-font", otf: "file-font", woff2: "file-font", svg: "file-vector", lnk: "file", iso: "drive"
   };
+  var GOOGLE = { "google-doc": "file-doc", "google-sheet": "file-sheet", "google-slides": "file-slides", "google-form": "file-text", "google-drawing": "file-vector" };
   function iconFor(name, kind) {
     if (kind === "folder") return "folder";
+    if (GOOGLE[kind]) return GOOGLE[kind];
     var m = /\.([^.]+)$/.exec(name || "");
     return (m && EXT[m[1].toLowerCase()]) || "file";
   }
@@ -251,7 +253,8 @@
   var STATE = {
     mounted: ["success", "Mounted"], readonly: ["warning", "Read-only"], dirty: ["warning", "Needs check"],
     locked: ["danger", "Locked"], unmounted: [null, "Not mounted"], mounting: ["accent", "Mounting…"], connecting: ["info", "Connecting…"],
-    cloud: ["info", "Cloud-only"], ads: ["info", "+ADS"], hidden: [null, "Hidden"], system: [null, "System"]
+    cloud: ["info", "Cloud-only"], ads: ["info", "+ADS"], hidden: [null, "Hidden"], system: [null, "System"],
+    offline: [null, "Offline"], signin: ["warning", "Sign in again"], uploading: ["info", "Uploading"], waiting: [null, "Waiting for connection"], notmounted: [null, "Not mounted"]
   };
   function StatePill(p) {
     var s = STATE[p.state] || [p.tone, p.children];
@@ -597,6 +600,100 @@
           h(Button, { size: "sm", icon: "copy" }, p.windowsPath ? "Copy Windows path" : "Copy path"))));
   }
 
+
+  // ------------------------------------------------------------ cloud
+  /** A cloud account in the sidebar: name, usage bar, then the usage in words — or a state pill when it isn't the normal state. */
+  function CloudItem(p) {
+    var st = p.state || "connected";
+    var on = st === "connected" || st === "uploading";
+    var pill = st === "connecting" ? h(StatePill, { state: "connecting" }) :
+      st === "uploading" ? h(StatePill, { state: "uploading" }, "Uploading " + (p.uploads || 1)) :
+      st === "offline" ? h(StatePill, { state: "offline" }) :
+      st === "signin" ? h(StatePill, { state: "signin" }) :
+      st === "notmounted" ? h(StatePill, { state: "notmounted" }) : null;
+    return h("div", { className: cx("ef-cloud", !on && st !== "connecting" && "ef-cloud-off"), "aria-current": p.active ? "true" : undefined, role: "button", tabIndex: 0, title: p.tooltip || ((p.name || "Google Drive") + " · " + (p.usage || "4.2 GB of 15 GB")) },
+      h(Icon, { name: "cloud", size: 16, className: "ef-cloud-icon" }),
+      h("span", { className: "ef-cloud-name" }, p.name || "Google Drive"),
+      st === "connecting" ? h("span", { className: "ef-spinner", role: "status", "aria-label": "Connecting" }) : h("span"),
+      on && p.used !== undefined ? h(UsageBar, { value: p.used, world: "cloud" }) : null,
+      h("span", { className: "ef-cloud-meta" }, pill || h("span", null, p.usage || "4.2 GB of 15 GB")));
+  }
+
+  /** Connect Google Drive: what happens, Full or Read-only, then the browser does the rest. */
+  function CloudConnectDialog(p) {
+    var step = p.step || "start";
+    var acc = useState(p.access || "full");
+    if (step === "missing") return h(Dialog, {
+      title: "Google Drive needs rclone", icon: "cloud", height: p.height || 360,
+      footer: [h(Button, { key: "c", variant: "ghost", kbd: ["Esc"] }, "Close"), h(Button, { key: "a", variant: "primary", icon: "refresh" }, "Check again")]
+    },
+      h("p", { className: "ef-dialog-text" }, p.old ? "EchoFiles needs rclone " + (p.need || "1.64") + " or newer. This computer has " + p.old + "." : "EchoFiles reaches Google Drive through rclone, which isn't installed. Install it, then check again."),
+      h("div", { className: "ef-cloud-cmd" }, h("code", null, p.command || "sudo pacman -S rclone"), h(IconButton, { icon: "copy", label: "Copy command" })));
+    if (step === "waiting") return h(Dialog, {
+      title: p.again ? "Sign in again for your app" : "Finish signing in in your browser", icon: "cloud", height: p.height || 340,
+      footer: [h(Button, { key: "l", icon: "copy" }, "Copy sign-in link"), h("span", { key: "g", className: "ef-grow" }), h(Button, { key: "c", variant: "ghost", kbd: ["Esc"] }, "Cancel")]
+    },
+      h("div", { className: "ef-cloud-wait" }, h(Spinner, { label: "Waiting for the browser" }),
+        h("p", { className: "ef-dialog-text" }, "Google's sign-in page opened in your browser. Sign in there and allow rclone to use Google Drive. If no browser opened, copy the link and open it yourself.")),
+      p.error ? h("div", { className: "ef-inline-error", role: "alert" }, h(Icon, { name: "error", size: 14 }), p.error) : null);
+    return h(Dialog, {
+      title: "Connect Google Drive", icon: "cloud", height: p.height || 380,
+      footer: [h(Button, { key: "c", variant: "ghost", kbd: ["Esc"] }, "Cancel"), h(Button, { key: "s", variant: "primary", icon: "external", kbd: ["Enter"] }, "Sign in with browser")]
+    },
+      h("p", { className: "ef-dialog-text" }, "You sign in on Google's page in your browser, through rclone. EchoFiles never sees your Google password."),
+      h("div", { className: "ef-row-flex" },
+        h(SegmentedControl, { label: "Access", value: acc[0], onChange: acc[1], options: [{ value: "full", text: "Full" }, { value: "read", text: "Read-only" }] }),
+        h("span", { className: "ef-muted" }, acc[0] === "full" ? "Open, change, add and delete files" : "Open and copy files; nothing changes on Drive")),
+      p.error ? h("div", { className: "ef-inline-error", role: "alert" }, h(Icon, { name: "error", size: 14 }), p.error) : null);
+  }
+
+  var DRIVE_FILES = [
+    { name: "Shared", kind: "folder", items: 6, type: "Folder", modified: "Yesterday" },
+    { name: "Taxes", kind: "folder", items: 24, type: "Folder", modified: "2 Sep" },
+    { name: "Budget 2026", kind: "google-sheet", size: "—", type: "Google Sheet", modified: "Today 10:14", selected: true },
+    { name: "Trip notes", kind: "google-doc", size: "—", type: "Google Doc", modified: "Today 09:02" },
+    { name: "Pitch", kind: "google-slides", size: "—", type: "Google Slides", modified: "12 Sep" },
+    { name: "scan-0042.pdf", size: "1.8 MB", type: "PDF", modified: "Yesterday" },
+    { name: "IMG_4471.HEIC", size: "3.1 MB", type: "HEIC image", modified: "14 Sep" }];
+
+  /** Google Drive open in a pane: Google Docs with no size, a live upload in the status bar. */
+  function CloudPage(p) {
+    return h("div", { className: "ef ef-app", style: { height: p.height || 520 } },
+      h(Toolbar, { segments: [{ label: "Google Drive", icon: "cloud" }, { label: "Projects" }], preview: false }),
+      h("div", { className: "ef-app-scroll" }, h(FileList, { files: DRIVE_FILES, cursor: 2 })),
+      h(StatusBar, { count: "7", selected: 1, task: "Uploading 3 files to Google Drive · 12 MB left", volume: "Google Drive", free: "11 GB free" }));
+  }
+
+  function driveSettings(p) {
+    p = p || {};
+    var none = p.rclone === "missing";
+    return [
+      h(PageHead, { key: "h", title: "Google Drive" }, "Your Google Drive in the sidebar, through rclone. Sign-in happens in your browser."),
+      h(SettingsGroup, { key: "a", title: "Account" },
+        none ? h(Banner, { tone: "warning", onClose: false, actions: h(Button, { size: "sm", icon: "copy" }, "Copy command") }, h("strong", null, "rclone isn't installed. "), "Install it with sudo pacman -S rclone, then come back here.") : null,
+        none ? null : h(SettingRow, { label: "Google Drive", description: "Full access · 4.2 GB of 15 GB used" },
+          h("span", { className: "ef-row-flex" }, h(IconButton, { icon: "more-vertical", label: "Rename… · Change access…" }), h(Button, { variant: "danger" }, "Sign out…"))),
+        h(SettingRow, { label: "Add another account", description: "Each account gets its own place in the sidebar." }, h(Button, { icon: "plus", disabled: none }, "Connect Google Drive"))),
+      h(SettingsGroup, { key: "b", title: "Search" },
+        h(SettingRow, { label: "Include Google Drive in search index", description: "Saves file names, folders, sizes and dates from Google Drive on this computer, so search is instant. File contents are never saved. Off: nothing about your Drive is saved here. This switch is separate from the main search index." }, h(Switch, { label: "Include Google Drive in search index", defaultChecked: !!p.index })),
+        p.index ? h(IndexStatus, { state: "ready", detail: "212,904 items · indexed 3 minutes ago" }) : null,
+        h(SettingRow, { label: "Search Google Drive live", description: "After showing saved results, also asks Google Drive. Google Drive only matches the start of words." }, h(Switch, { label: "Search Google Drive live", defaultChecked: true }))),
+      h(SettingsGroup, { key: "c", title: "Storage" },
+        h(SettingRow, { label: "Cache size limit", description: "Files you open are kept here so they open instantly next time. Between 1 and 500 GB." }, h(TextField, { defaultValue: "10", "aria-label": "Cache size limit in GB", style: { width: 64 }, trailing: h("span", { className: "ef-muted" }, "GB") })),
+        h(SettingRow, { label: "Cached now: 1.3 GB", description: "~/.cache/echofiles/rclone" }, h(Button, { variant: "ghost", disabled: !!p.uploading }, "Clear cache"))),
+      h(SettingsGroup, { key: "d", title: "Advanced" },
+        h(SettingRow, { label: "Use my own client ID", description: p.own ? "Using your app (…bf2a.apps.googleusercontent.com)." : "Using rclone's shared app. Your own app has its own speed limits instead of sharing rclone's, and lets the index update almost instantly. rclone is retiring its shared Drive app during 2026." },
+          p.own ? h(Button, { variant: "ghost" }, "Use rclone's app") : null),
+        h(SettingBlock, null,
+          h("div", { className: "ef-cloud-client" },
+            h(TextField, { label: "Client ID", id: "cid", placeholder: "…apps.googleusercontent.com", defaultValue: p.own ? "1234-abcd.apps.googleusercontent.com" : "" }),
+            h(TextField, { label: "Client secret", id: "csec", type: "password", placeholder: "Client secret", trailing: h(IconButton, { icon: "eye", label: "Show secret" }) }),
+            h(Button, { variant: "primary", icon: "key" }, "Save and sign in again")),
+          h(CommandList, { items: [["1", "Create a project in Google Cloud Console"], ["2", "Enable the Google Drive API"], ["3", "OAuth consent screen: External, add yourself as a test user"], ["4", "Publish the app (In production), or Google signs you out every 7 days"], ["5", "Credentials → OAuth client ID → Desktop app; paste the ID and secret here"]] }))),
+      h(SettingsGroup, { key: "e", title: "rclone" },
+        h(SettingRow, { label: none ? "rclone not found" : "rclone 1.68.2", description: none ? "Looked on PATH, /usr/bin and /usr/local/bin." : "/usr/bin/rclone · log in ~/.local/state/echofiles/rclone.log" }, none ? null : h(Button, { variant: "ghost", icon: "file-text" }, "Open log")))];
+  }
+
   // ------------------------------------------------------------ pages
   var DEMO_FILES = [
     { name: "Projects", kind: "folder", items: 14, type: "Folder", modified: "Today 11:02" },
@@ -634,7 +731,9 @@
       h(SidebarSection, { title: "Network", world: "network", count: 1, collapsible: true, action: h(IconButton, { icon: "plus", label: "Connect to server (Ctrl+Shift+S)" }) },
         h(NetworkItem, { name: "Media", protocol: "SMB", where: "nas.local", state: "connected", keep: true }),
         h(NetworkItem, { name: "build-box", protocol: "SFTP", where: "me@build-box" }),
-        h(SidebarItem, { icon: "plus", label: "Connect to server…" })));
+        h(SidebarItem, { icon: "plus", label: "Connect to server…" })),
+      h(SidebarSection, { title: "Cloud", world: "cloud", collapsible: true, defaultOpen: true },
+        h(CloudItem, { name: "Google Drive", used: 28, usage: "4.2 GB of 15 GB", keep: true })));
   }
 
   function AppWindow(p) {
@@ -805,6 +904,7 @@
     { id: "search", icon: "search", label: "Search & index" },
     { id: "agents", icon: "terminal", label: "AI agents" },
     { id: "phone", icon: "phone", label: "Phone" },
+    { id: "cloud", icon: "cloud", label: "Google Drive" },
     { id: "appearance", icon: "image", label: "Appearance" },
     { id: "about", icon: "info", label: "About" }];
 
@@ -837,6 +937,7 @@
 
   function settingsPage(page) {
     if (page === "phone") return phoneSettings({});
+    if (page === "cloud") return driveSettings({ index: true });
     if (page === "general") return [
       h(PageHead, { key: "h", title: "General" }, "How EchoFiles starts, runs and opens."),
       h(SettingsGroup, { key: "a", title: "Running" },
@@ -849,7 +950,8 @@
       h(PageHead, { key: "h", title: "AI agents" }, "Let AI agents on this computer use EchoFiles' index. Nothing leaves your computer."),
       h(SettingsGroup, { key: "a", title: "Command line" },
         h(SettingRow, { label: "Allow EchoFiles commands", description: "Lets AI agents and scripts search your files with ef find — milliseconds instead of walking the disk. When off, ef refuses and says it's turned off." }, h(Switch, { defaultChecked: true, label: "Allow EchoFiles commands" })),
-        h(SettingRow, { label: "ef command", description: "Installed on your PATH." }, h("span", { className: "ef-muted" }, "~/.local/bin/ef"))),
+        h(SettingRow, { label: "ef command", description: "Installed on your PATH." }, h("span", { className: "ef-muted" }, "~/.local/bin/ef")),
+        h(SettingRow, { label: "Let ef search Google Drive", description: "Separate from Google Drive's index switch: turning on the index never lets agents see Drive, and this never turns the index on. ef searches Drive only when both are on." }, h(Switch, { label: "Let ef search Google Drive" }))),
       h(SettingsGroup, { key: "b", title: "Skill" },
         h(SettingRow, { label: "Teach AI agents about ef", description: "Links the EchoFiles skill into ~/.claude/skills so agents like Claude Code reach for ef before find. Turning it off removes only that link." }, h(Switch, { label: "Teach AI agents about ef" }))),
       h(SettingsGroup, { key: "c", title: "Commands" }, h(SettingBlock, null, h(CommandList, { items: [
@@ -866,7 +968,8 @@
       h(SettingsGroup, { key: "c", title: "Sidebar" },
         h(SettingRow, { label: "Windows drives", description: "The Windows section with your NTFS and BitLocker drives. Click its heading to open or close it." }, h(Switch, { label: "Windows drives", defaultChecked: true })),
         h(SettingRow, { label: "Network places", description: "The Network section with Windows shares, SSH and FTP servers. Ctrl+Shift+S connects to a server either way." }, h(Switch, { label: "Network places", defaultChecked: true })),
-        h(SettingRow, { label: "Phone", description: "The Phone section with your paired phone, its files and photos. Pairing stays when it's hidden." }, h(Switch, { label: "Phone", defaultChecked: true })))];
+        h(SettingRow, { label: "Phone", description: "The Phone section with your paired phone, its files and photos. Pairing stays when it's hidden." }, h(Switch, { label: "Phone", defaultChecked: true })),
+        h(SettingRow, { label: "Cloud", description: "The Cloud section with your Google Drive accounts. Signed-in accounts stay when it's hidden." }, h(Switch, { label: "Cloud", defaultChecked: true })))];
     if (page === "about") return [
       h(PageHead, { key: "h", title: "About" }, "Where EchoFiles keeps things, and how to drive it from the keyboard."),
       h(SettingsGroup, { key: "a", title: "EchoFiles" },
@@ -880,7 +983,8 @@
       h(PageHead, { key: "h", title: "Search & index" }, "What search covers, and the index that makes it instant."),
       h(SettingsGroup, { key: "a", title: "Index" },
         h(SettingRow, { label: "Search index", description: "A list of file names kept on disk so Everywhere search answers instantly and AI agents can use ef. Updates within seconds in Downloads, Desktop and Documents and every minute elsewhere. Turning it off deletes the index." }, h(Switch, { defaultChecked: true, label: "Search index" })),
-        h(IndexStatus, { state: "ready" })),
+        h(IndexStatus, { state: "ready" }),
+        h(SettingBlock, { muted: true }, "Google Drive has its own index switch in Settings → Google Drive.")),
       h(SettingsGroup, { key: "b", title: "Search box" },
         h(SettingRow, { label: "Search looks in", description: "What the search box searches when a window opens. Ctrl+E switches it any time." }, h(SegmentedControl, { label: "Default scope", value: "folder", options: [{ value: "folder", text: "This folder" }, { value: "everywhere", text: "Everywhere" }] }))),
       h(SettingsGroup, { key: "c", title: "Indexed folders" },
@@ -1352,6 +1456,13 @@
     { name: "cargo", kind: "folder", location: "~/.local/share", size: "—", date: "9 Sep" }];
 
   /** "Everywhere" results: name, where it lives, size, date — answered from the index. */
+  var LIVE = {
+    searching: function () { return [h(Spinner, { key: "s", label: "Searching Google Drive" }), h("span", { key: "t" }, "Searching Google Drive…")]; },
+    done: function (p) { return [h(Icon, { key: "i", name: "check", size: 14 }), h("span", { key: "t" }, "Google Drive checked" + (p.fresh ? " · " + p.fresh + " new" : ""))]; },
+    timeout: function () { return [h(Icon, { key: "i", name: "alert", size: 14 }), h("span", { key: "t" }, "Google Drive didn't answer — showing saved results")]; },
+    offline: function () { return [h(Icon, { key: "i", name: "cloud", size: 14 }), h("span", { key: "t" }, "Google Drive unreachable — showing saved results")]; },
+    pattern: function () { return [h(Icon, { key: "i", name: "info", size: 14 }), h("span", { key: "t" }, "Google Drive can't search by pattern — showing saved results")]; }
+  };
   function SearchResults(p) {
     var hits = p.hits || DEMO_HITS;
     var st = useState(0);
@@ -1361,11 +1472,13 @@
         return h("div", { key: i, role: "row", className: "ef-results-row", "aria-selected": String(i === st[0]), onClick: function () { st[1](i); } },
           h(FileIcon, { name: iconFor(f.name, f.kind), size: 18 }),
           h("span", { className: "ef-results-name" }, f.name),
-          h("span", { className: "ef-results-loc", title: f.location }, f.location),
+          h("span", { className: cx("ef-results-loc", f.gone && "ef-results-gone"), title: f.location }, f.gone ? "No longer on Google Drive" : f.location),
           h("span", { className: "ef-num" }, f.size), h("span", null, f.date));
       })),
       h("div", { className: "ef-results-foot" },
         h(Kbd, { keys: ["Enter"] }), h("span", null, "open"), h(Kbd, { keys: ["Alt", "Enter"] }), h("span", null, "show in folder"),
+        p.live ? h("span", { className: "ef-status-sep" }) : null,
+        p.live ? h("span", { className: cx("ef-results-live", "ef-results-live-" + p.live) }, LIVE[p.live](p)) : null,
         h("span", { className: "ef-status-grow" }),
         h(Button, { icon: "folder" }, "Show in folder")));
   }
@@ -1374,7 +1487,7 @@
     Icon: Icon, FileIcon: FileIcon, Button: Button, IconButton: IconButton, SegmentedControl: SegmentedControl,
     Switch: Switch, Checkbox: Checkbox, Kbd: Kbd, TextField: TextField, SearchField: SearchField, PathBar: PathBar,
     TabStrip: TabStrip, Toolbar: Toolbar, ViewButton: ViewButton, ViewMenu: ViewMenu, Sidebar: Sidebar, SidebarSection: SidebarSection, SidebarItem: SidebarItem,
-    DriveItem: DriveItem, NetworkItem: NetworkItem, ConnectDialog: ConnectDialog, SignInDialog: SignInDialog, SharesPage: SharesPage, UsageBar: UsageBar, StatePill: StatePill, FileRow: FileRow, ColumnHeader: ColumnHeader,
+    DriveItem: DriveItem, NetworkItem: NetworkItem, CloudItem: CloudItem, CloudConnectDialog: CloudConnectDialog, CloudPage: CloudPage, DRIVE_FILES: DRIVE_FILES, ConnectDialog: ConnectDialog, SignInDialog: SignInDialog, SharesPage: SharesPage, UsageBar: UsageBar, StatePill: StatePill, FileRow: FileRow, ColumnHeader: ColumnHeader,
     FileList: FileList, Skeleton: Skeleton, FileTile: FileTile, FileGrid: FileGrid, StatusBar: StatusBar,
     EmptyState: EmptyState, DriveCard: DriveCard, Spinner: Spinner, Banner: Banner, Toast: Toast,
     TransferToast: TransferToast, Dialog: Dialog, ConflictDialog: ConflictDialog, Tooltip: Tooltip,

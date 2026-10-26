@@ -32,7 +32,9 @@ return h("div", {className:"ef", style:{display:"flex", height:690}},
     h(E.SidebarSection, {title:"Network", world:"network", count:1, collapsible:true, action:h(E.IconButton, {icon:"plus", label:"Connect to server (Ctrl+Shift+S)"})},
       h(E.NetworkItem, {name:"Media", protocol:"SMB", where:"nas.local", state:"connected", keep:true}),
       h(E.NetworkItem, {name:"build-box", protocol:"SFTP", where:"me@build-box"}),
-      h(E.SidebarItem, {icon:"plus", label:"Connect to server…"}))));
+      h(E.SidebarItem, {icon:"plus", label:"Connect to server…"})),
+    h(E.SidebarSection, {title:"Cloud", world:"cloud", collapsible:true, defaultOpen:true, action:h(E.IconButton, {icon:"plus", label:"Connect Google Drive"})},
+      h(E.CloudItem, {name:"Google Drive", used:28, usage:"4.2 GB of 15 GB", keep:true}))));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(h(App));
 })();
