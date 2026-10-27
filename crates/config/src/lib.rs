@@ -20,6 +20,7 @@
 //! [agents]
 //! cli = true                  # off: `ef` refuses to run
 //! skill = false               # EchoFiles skill linked into global agent skill folders
+//! phone = false               # let `ef phone photos` copy photos from a paired phone
 //!
 //! [appearance]
 //! density = "default"         # "compact", "default" or "comfortable"
@@ -185,11 +186,14 @@ impl SearchConfig {
 pub struct Agents {
     pub cli: bool,
     pub skill: bool,
+    /// `ef phone photos` may copy photos and videos from a paired phone. Off until the
+    /// user turns it on: it hands personal pictures to whatever runs `ef`.
+    pub phone: bool,
 }
 
 impl Default for Agents {
     fn default() -> Self {
-        Agents { cli: true, skill: false }
+        Agents { cli: true, skill: false, phone: false }
     }
 }
 
@@ -358,6 +362,12 @@ pub fn index_dir() -> PathBuf {
 /// `$XDG_STATE_HOME/echofiles` — last folder and similar things that aren't settings.
 pub fn state_dir() -> PathBuf {
     xdg("XDG_STATE_HOME", ".local/state").join("echofiles")
+}
+
+/// `$XDG_CACHE_HOME/echofiles/phone` — photos `ef phone photos` copied, one folder per
+/// phone, laid out like the phone's storage.
+pub fn phone_cache_dir() -> PathBuf {
+    xdg("XDG_CACHE_HOME", ".cache").join("echofiles/phone")
 }
 
 /// `$XDG_RUNTIME_DIR/echofiles.sock` — the running app listens here.
