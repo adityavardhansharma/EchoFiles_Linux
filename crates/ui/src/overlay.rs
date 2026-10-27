@@ -16,6 +16,7 @@ use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Point
 use crate::actions::{place_name, FileMsg};
 use crate::app::{App, Message};
 use crate::drives::DriveMsg;
+use crate::pane::Layout;
 use crate::settings::{Page, SettingsMsg};
 use crate::style::{self, color};
 use crate::widgets::{self as w, Variant};
@@ -44,6 +45,35 @@ pub struct MenuItem {
 
 pub(crate) fn item(icon: &'static str, label: impl Into<String>, kbd: Option<&'static str>, msg: Message) -> Entry {
     Entry::Item(MenuItem { icon, label: label.into(), kbd, hint: None, msg: Some(msg), danger: false, submenu: Vec::new(), checked: false })
+}
+
+fn check(icon: &'static str, label: &str, kbd: Option<&'static str>, msg: Message, on: bool) -> MenuItem {
+    MenuItem { icon, label: label.into(), kbd, hint: None, msg: Some(msg), danger: false, submenu: Vec::new(), checked: on }
+}
+
+fn submenu(icon: &'static str, label: &str, items: Vec<MenuItem>) -> Entry {
+    Entry::Item(MenuItem { icon, label: label.into(), kbd: None, hint: None, msg: None, danger: false, submenu: items, checked: false })
+}
+
+/// The glyph standing for a folder icon in menus.
+fn icon_glyph(icon: &str) -> &'static str {
+    match icon {
+        "folder-heart" => "heart",
+        "folder-image" => "image",
+        "folder-video" => "video",
+        "folder-music" => "music",
+        "folder-download" => "download",
+        "folder-user" => "user",
+        "folder-users" => "users",
+        "folder-lock" => "lock",
+        "folder-settings" => "settings",
+        "folder-clock" => "clock",
+        "folder-share" => "share",
+        "folder-search" => "search",
+        "folder-link" => "link",
+        "folder-plus" => "plus",
+        _ => "folder",
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -116,7 +146,7 @@ pub enum Dialog {
     Login { ask: ef_net::LoginAsk, user: String, domain: String, password: String, guest: bool, remember: bool, opened: Instant },
     /// A server connection has a question, e.g. an unknown SSH host key.
     Question { ask: ef_net::QuestionAsk, opened: Instant },
-    EmptyTrash { opened: Instant },
+    EmptyTrash { items: usize, opened: Instant },
     /// Properties (Alt+Enter): facts only, closed with × or Esc.
     Properties { paths: Vec<PathBuf>, data: Option<std::sync::Arc<crate::preview::PreviewData>>, total: Option<std::sync::Arc<ef_core::ops::DirSize>>, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>, opened: Instant },
 }
@@ -131,7 +161,7 @@ impl Dialog {
             | Dialog::WriteSystem { opened, .. }
             | Dialog::Login { opened, .. }
             | Dialog::Question { opened, .. }
-            | Dialog::EmptyTrash { opened }
+            | Dialog::EmptyTrash { opened, .. }
             | Dialog::Properties { opened, .. } => *opened,
         }
     }
@@ -337,6 +367,15 @@ impl App {
                         let pinned = self.settings.sidebar.pinned.iter().any(|s| config::expand(s) == targets[0]);
                         e.push(if pinned { item("pin", "Unpin from sidebar", None, f(FileMsg::Unpin(targets[0].clone()))) } else { item("pin", "Pin to sidebar", None, f(FileMsg::Pin(targets[0].clone()))) });
                     }
+                    if !targets.is_empty() && targets.iter().all(|t| t.is_dir()) {
+                        let now = self.folders.get(&targets[0]).cloned().unwrap_or_default();
+                        let mut colors = vec![check("folder", "Usual colour", None, Message::FolderColor(targets.clone(), None), now.color.is_none())];
+                        colors.extend(crate::folders::COLORS.iter().map(|(c, label, _, _)| check("folder", label, None, Message::FolderColor(targets.clone(), Some(c)), now.color.as_deref() == Some(c))));
+                        let mut icons = vec![check("folder", "Usual icon", None, Message::FolderIcon(targets.clone(), None), now.icon.is_none())];
+                        icons.extend(crate::folders::ICONS.iter().map(|(i, label)| check(icon_glyph(i), label, None, Message::FolderIcon(targets.clone(), Some(i)), now.icon.as_deref() == Some(i))));
+                        e.push(submenu("image", "Folder colour", colors));
+                        e.push(submenu("tag", "Folder icon", icons));
+                    }
                     if let Some(pid) = self.phone_id().filter(|i| self.phone_online(i))
                         && targets.iter().all(|t| t.is_file())
                     {
@@ -357,7 +396,12 @@ impl App {
                     e.push(item("paste", "Paste", Some("Ctrl+V"), f(FileMsg::Paste)));
                     e.push(item("check", "Select all", Some("Ctrl+A"), f(FileMsg::SelectAll)));
                     e.push(Entry::Sep);
-                    e.push(if p.grid { item("list", "View as list", Some("Ctrl+1"), Message::SetGrid(false)) } else { item("grid", "View as grid", Some("Ctrl+2"), Message::SetGrid(true)) });
+                    e.push(submenu("grid", "View", vec![
+                        check("list", "List", Some("Ctrl+1"), Message::SetLayout(Layout::List), p.layout == Layout::List),
+                        check("grid", "Grid", Some("Ctrl+2"), Message::SetLayout(Layout::Grid), p.layout == Layout::Grid),
+                        check("columns", "Columns", Some("Ctrl+3"), Message::SetLayout(Layout::Columns), p.layout == Layout::Columns),
+                    ]));
+                    e.push(item("filter", "Filter this folder", Some("Ctrl+F"), Message::OpenFilter(false)));
                     e.push(item(if self.show_hidden { "eye-off" } else { "eye" }, if self.show_hidden { "Hide hidden files" } else { "Show hidden files" }, Some("Ctrl+H"), Message::ToggleHidden));
                     e.push(Entry::Sep);
                     e.push(item("terminal", "Open terminal here", None, f(FileMsg::OpenTerminal)));
@@ -373,7 +417,7 @@ impl App {
             }
             MenuFor::Place { path, pinned } => {
                 let mut e = vec![item("external", "Open", None, Message::Navigate(path.clone())), item("plus", "Open in new tab", None, Message::OpenTab(path.clone()))];
-                if path == trash::home_trash().join("files") {
+                if trash::label(&path).is_some() {
                     e.push(Entry::Sep);
                     e.push(Entry::Item(MenuItem { icon: "trash", label: "Empty Trash".into(), kbd: None, hint: None, msg: Some(f(FileMsg::AskEmptyTrash)), danger: true, submenu: Vec::new(), checked: false }));
                     return e;
@@ -412,17 +456,28 @@ impl App {
             MenuFor::Network(key) => self.net_menu(&key),
             MenuFor::Crumbs(segs) => segs.into_iter().map(|(label, p)| item("folder", label, None, Message::Navigate(p))).collect(),
             MenuFor::View => {
-                let grid = self.pane().grid;
-                let toggle = |icon, label: &str, kbd, msg, on| Entry::Item(MenuItem { icon, label: label.into(), kbd: Some(kbd), hint: None, msg: Some(msg), danger: false, submenu: Vec::new(), checked: on });
+                let layout = self.pane().layout;
+                let toggle = |icon, label: &str, kbd, msg, on| Entry::Item(check(icon, label, kbd, msg, on));
+                let zoom = self.pane().zoom as usize;
                 vec![
                     Entry::Heading("Layout".into()),
-                    toggle("list", "List", "Ctrl+1", Message::SetGrid(false), !grid),
-                    toggle("grid", "Grid", "Ctrl+2", Message::SetGrid(true), grid),
+                    toggle("list", "List", Some("Ctrl+1"), Message::SetLayout(Layout::List), layout == Layout::List),
+                    toggle("grid", "Grid", Some("Ctrl+2"), Message::SetLayout(Layout::Grid), layout == Layout::Grid),
+                    toggle("columns", "Columns", Some("Ctrl+3"), Message::SetLayout(Layout::Columns), layout == Layout::Columns),
+                    Entry::Sep,
+                    Entry::Heading(format!("Icon size · {} of {}", zoom + 1, crate::folders::ZOOMS.len())),
+                    Entry::Item(MenuItem { msg: (zoom + 1 < crate::folders::ZOOMS.len()).then_some(Message::Zoom(1)), ..check("plus", "Bigger", Some("Ctrl+="), Message::Zoom(1), false) }),
+                    Entry::Item(MenuItem { msg: (zoom > 0).then_some(Message::Zoom(-1)), ..check("minus", "Smaller", Some("Ctrl+-"), Message::Zoom(-1), false) }),
                     Entry::Sep,
                     Entry::Heading("Show".into()),
-                    toggle("columns", "Dual pane", "F3", Message::ToggleDual, self.dual()),
-                    toggle("sidebar", "Preview pane", "Space", Message::TogglePreview, self.settings.appearance.preview),
-                    toggle("eye", "Hidden files", "Ctrl+H", Message::ToggleHidden, self.show_hidden),
+                    toggle("columns", "Dual pane", Some("F3"), Message::ToggleDual, self.dual()),
+                    toggle("sidebar", "Preview pane", Some("Space"), Message::TogglePreview, self.settings.appearance.preview),
+                    toggle("eye", "Hidden files", Some("Ctrl+H"), Message::ToggleHidden, self.show_hidden),
+                    toggle("keyboard", "Footer with shortcuts", None, Message::ToggleFooter, self.settings.appearance.footer),
+                    toggle("folder", "Peek into folders", None, Message::TogglePeek, self.settings.appearance.peek),
+                    Entry::Sep,
+                    toggle("keyboard", "10xer keys", Some("Ctrl+Shift+Y"), Message::ToggleTenxer, self.tenxer()),
+                    toggle("info", "Keyboard shortcuts", Some("F1"), Message::ToggleHelp, false),
                 ]
             }
             MenuFor::Tab(i) => {
@@ -472,6 +527,15 @@ impl App {
             ("file-plus", "New file", None, f(FileMsg::NewFile)),
             ("paste", "Paste", Some("Ctrl+V"), f(FileMsg::Paste)),
             ("undo", "Undo", Some("Ctrl+Z"), f(FileMsg::Undo)),
+            ("redo", "Redo", Some("Ctrl+Shift+Z"), f(FileMsg::Redo)),
+            ("filter", "Filter this folder", Some("Ctrl+F"), Message::OpenFilter(false)),
+            ("filter", "Filter this folder and subfolders", Some("Ctrl+Shift+F"), Message::OpenFilter(true)),
+            ("keyboard", "Keyboard shortcuts", Some("F1"), Message::ToggleHelp),
+            ("keyboard", if self.tenxer() { "Turn 10xer keys off" } else { "Turn 10xer keys on (Yazi-style)" }, Some("Ctrl+Shift+Y"), Message::ToggleTenxer),
+            ("keyboard", "Toggle footer", None, Message::ToggleFooter),
+            ("folder", "Toggle folder peek", None, Message::TogglePeek),
+            ("plus", "Bigger icons", Some("Ctrl+="), Message::Zoom(1)),
+            ("minus", "Smaller icons", Some("Ctrl+-"), Message::Zoom(-1)),
             ("rename", "Rename", Some("F2"), f(FileMsg::StartRename)),
             ("trash", "Move to Trash", Some("Del"), f(FileMsg::Trash)),
             ("check", "Select all", Some("Ctrl+A"), f(FileMsg::SelectAll)),
@@ -481,8 +545,9 @@ impl App {
             ("sidebar", "Toggle preview pane", Some("Space"), Message::TogglePreview),
             ("sidebar", "Toggle sidebar", Some("Ctrl+B"), Message::ToggleSidebar),
             ("eye", "Toggle hidden files", Some("Ctrl+H"), Message::ToggleHidden),
-            ("grid", "View as grid", Some("Ctrl+2"), Message::SetGrid(true)),
-            ("list", "View as list", Some("Ctrl+1"), Message::SetGrid(false)),
+            ("grid", "View as grid", Some("Ctrl+2"), Message::SetLayout(Layout::Grid)),
+            ("list", "View as list", Some("Ctrl+1"), Message::SetLayout(Layout::List)),
+            ("columns", "View as columns", Some("Ctrl+3"), Message::SetLayout(Layout::Columns)),
             ("drive", "Show all drives", Some("Ctrl+Shift+D"), Message::ShowDrives),
             ("network", "Connect to server…", Some("Ctrl+Shift+S"), Message::Net(crate::network::NetMsg::Open(None))),
             ("terminal", "Open terminal here", None, f(FileMsg::OpenTerminal)),
@@ -545,6 +610,9 @@ impl App {
             places.push(("folder", home.join(n)));
         }
         places.push(("trash", trash::home_trash().join("files")));
+        for t in &self.trashes {
+            places.push(("trash", t.clone()));
+        }
         for s in &self.settings.sidebar.pinned {
             places.push(("pin", config::expand(s)));
         }
@@ -561,7 +629,7 @@ impl App {
             if !p.is_dir() || !seen.insert(p.clone()) {
                 continue;
             }
-            let label = self.volumes.iter().find(|v| v.mount_points.first().is_some_and(|m| *m == p)).map(|v| crate::drives::display_name(v, &self.volumes)).unwrap_or_else(|| config::tilde(&p));
+            let label = self.volumes.iter().find(|v| v.mount_points.first().is_some_and(|m| *m == p)).map(|v| crate::drives::display_name(v, &self.volumes)).or_else(|| trash::label(&p)).unwrap_or_else(|| config::tilde(&p));
             add("Go to", icon, label, (icon == "history").then(|| "recent".to_string()), None, Message::Navigate(p));
         }
         for (page, icon, label) in [(Page::General, "sliders", "Settings: General"), (Page::Search, "search", "Settings: Search & index"), (Page::Agents, "terminal", "Settings: AI agents"), (Page::Phone, "phone", "Settings: Phone"), (Page::Appearance, "image", "Settings: Appearance"), (Page::About, "info", "Settings: About & shortcuts")] {
@@ -815,7 +883,7 @@ impl App {
     }
 
     /// Where a panel of `size` fits inside the window, near `at`.
-    fn fit(&self, at: Point, w: f32, h: f32) -> Point {
+    pub(crate) fn fit(&self, at: Point, w: f32, h: f32) -> Point {
         let size = self.window_size;
         let x = if at.x + w > size.width - 4.0 { (at.x - w).max(4.0) } else { at.x };
         let y = if at.y + h > size.height - 4.0 { (size.height - h - 4.0).max(4.0) } else { at.y };
@@ -909,8 +977,8 @@ impl App {
                 foot.push(self.btn("Delete permanently", Some("trash"), None, Variant::Danger, Message::Ui(UiMsg::Confirm(Box::new(Message::File(FileMsg::Delete(paths)))))));
                 self.dialog_frame("trash-full", format!("Delete {what} permanently?"), self.body_text(body), foot, true, *opened)
             }
-            Dialog::EmptyTrash { opened } => {
-                let n = std::fs::read_dir(trash::home_trash().join("files")).map(|r| r.count()).unwrap_or(0);
+            Dialog::EmptyTrash { items, opened } => {
+                let n = *items;
                 let foot = vec![cancel(), self.btn("Empty Trash", Some("trash"), None, Variant::Danger, Message::Ui(UiMsg::Confirm(Box::new(Message::File(FileMsg::EmptyTrash)))))];
                 self.dialog_frame("trash-full", "Empty the Trash?".into(), self.body_text(format!("{n} {} will be deleted permanently. This can't be undone.", if n == 1 { "item" } else { "items" })), foot, true, *opened)
             }
