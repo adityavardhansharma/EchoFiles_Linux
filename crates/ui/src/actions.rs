@@ -562,6 +562,7 @@ impl App {
                 if !ok.is_empty() {
                     self.push_undo(Undo::Trash(ok.clone()));
                 }
+                self.refresh_trashes();
                 if !failed.is_empty() {
                     // No trash on this drive (read-only, or no permission to make one): offer
                     // to delete for good instead, never silently.
@@ -590,6 +591,7 @@ impl App {
                 }
                 let mut dirs: Vec<PathBuf> = paths.iter().filter_map(|p| p.parent().map(Path::to_path_buf)).collect();
                 dirs.dedup();
+                self.refresh_trashes();
                 Task::batch(dirs.iter().map(|d| self.refresh(d)).collect::<Vec<_>>())
             }
             FileMsg::NewFolder | FileMsg::NewFile => {
@@ -642,6 +644,7 @@ impl App {
                         self.toast_error("Couldn't undo".into(), e);
                     }
                 }
+                self.refresh_trashes();
                 let dirs: Vec<PathBuf> = self.tabs[self.tab].panes.iter().map(|p| p.location.clone()).collect();
                 Task::batch(dirs.iter().map(|d| self.refresh(d)).collect::<Vec<_>>())
             }
@@ -871,21 +874,25 @@ impl App {
                 if !errs.is_empty() {
                     self.toast_error("Couldn't restore everything".into(), errs.join("\n"));
                 }
+                self.refresh_trashes();
                 let dir = self.pane().location.clone();
                 self.refresh(&dir)
             }
             FileMsg::AskEmptyTrash => {
-                self.queue_dialog(Dialog::EmptyTrash { opened: Instant::now() });
+                self.queue_dialog(Dialog::EmptyTrash { items: trash::count_all(), opened: Instant::now() });
                 Task::none()
             }
-            FileMsg::EmptyTrash => background(|| trash::empty_home().map_err(|e| e.to_string()), |r| Message::File(FileMsg::Emptied(r))),
+            // Every trash: items trashed on another drive wait in that drive's own trash.
+            FileMsg::EmptyTrash => background(|| trash::empty_all().map_err(|e| e.to_string()), |r| Message::File(FileMsg::Emptied(r))),
             FileMsg::Emptied(r) => {
                 match r {
                     Ok(()) => {}
                     Err(e) => self.toast_error("Couldn't empty the Trash".into(), e),
                 }
-                let dir = trash::home_trash().join("files");
-                self.refresh(&dir)
+                let mut dirs = vec![trash::home_trash().join("files")];
+                dirs.append(&mut self.trashes);
+                self.refresh_trashes();
+                Task::batch(dirs.iter().map(|d| self.refresh(d)).collect::<Vec<_>>())
             }
             FileMsg::SetAttr(path, bit, on) => {
                 let dest = path.clone();

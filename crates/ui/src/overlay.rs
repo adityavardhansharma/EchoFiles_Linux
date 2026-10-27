@@ -146,7 +146,7 @@ pub enum Dialog {
     Login { ask: ef_net::LoginAsk, user: String, domain: String, password: String, guest: bool, remember: bool, opened: Instant },
     /// A server connection has a question, e.g. an unknown SSH host key.
     Question { ask: ef_net::QuestionAsk, opened: Instant },
-    EmptyTrash { opened: Instant },
+    EmptyTrash { items: usize, opened: Instant },
     /// Properties (Alt+Enter): facts only, closed with × or Esc.
     Properties { paths: Vec<PathBuf>, data: Option<std::sync::Arc<crate::preview::PreviewData>>, total: Option<std::sync::Arc<ef_core::ops::DirSize>>, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>, opened: Instant },
 }
@@ -161,7 +161,7 @@ impl Dialog {
             | Dialog::WriteSystem { opened, .. }
             | Dialog::Login { opened, .. }
             | Dialog::Question { opened, .. }
-            | Dialog::EmptyTrash { opened }
+            | Dialog::EmptyTrash { opened, .. }
             | Dialog::Properties { opened, .. } => *opened,
         }
     }
@@ -415,7 +415,7 @@ impl App {
             }
             MenuFor::Place { path, pinned } => {
                 let mut e = vec![item("external", "Open", None, Message::Navigate(path.clone())), item("plus", "Open in new tab", None, Message::OpenTab(path.clone()))];
-                if path == trash::home_trash().join("files") {
+                if trash::label(&path).is_some() {
                     e.push(Entry::Sep);
                     e.push(Entry::Item(MenuItem { icon: "trash", label: "Empty Trash".into(), kbd: None, hint: None, msg: Some(f(FileMsg::AskEmptyTrash)), danger: true, submenu: Vec::new(), checked: false }));
                     return e;
@@ -608,6 +608,9 @@ impl App {
             places.push(("folder", home.join(n)));
         }
         places.push(("trash", trash::home_trash().join("files")));
+        for t in &self.trashes {
+            places.push(("trash", t.clone()));
+        }
         for s in &self.settings.sidebar.pinned {
             places.push(("pin", config::expand(s)));
         }
@@ -624,7 +627,7 @@ impl App {
             if !p.is_dir() || !seen.insert(p.clone()) {
                 continue;
             }
-            let label = self.volumes.iter().find(|v| v.mount_points.first().is_some_and(|m| *m == p)).map(|v| crate::drives::display_name(v, &self.volumes)).unwrap_or_else(|| config::tilde(&p));
+            let label = self.volumes.iter().find(|v| v.mount_points.first().is_some_and(|m| *m == p)).map(|v| crate::drives::display_name(v, &self.volumes)).or_else(|| trash::label(&p)).unwrap_or_else(|| config::tilde(&p));
             add("Go to", icon, label, (icon == "history").then(|| "recent".to_string()), None, Message::Navigate(p));
         }
         for (page, icon, label) in [(Page::General, "sliders", "Settings: General"), (Page::Search, "search", "Settings: Search & index"), (Page::Agents, "terminal", "Settings: AI agents"), (Page::Phone, "phone", "Settings: Phone"), (Page::Appearance, "image", "Settings: Appearance"), (Page::About, "info", "Settings: About & shortcuts")] {
@@ -968,8 +971,8 @@ impl App {
                 foot.push(self.btn("Delete permanently", Some("trash"), None, Variant::Danger, Message::Ui(UiMsg::Pick(Box::new(Message::File(FileMsg::Delete(paths)))))));
                 self.dialog_frame("trash-full", format!("Delete {what} permanently?"), self.body_text(body), foot, true, *opened)
             }
-            Dialog::EmptyTrash { opened } => {
-                let n = std::fs::read_dir(trash::home_trash().join("files")).map(|r| r.count()).unwrap_or(0);
+            Dialog::EmptyTrash { items, opened } => {
+                let n = *items;
                 let foot = vec![cancel(), self.btn("Empty Trash", Some("trash"), None, Variant::Danger, Message::Ui(UiMsg::Pick(Box::new(Message::File(FileMsg::EmptyTrash)))))];
                 self.dialog_frame("trash-full", "Empty the Trash?".into(), self.body_text(format!("{n} {} will be deleted permanently. This can't be undone.", if n == 1 { "item" } else { "items" })), foot, true, *opened)
             }

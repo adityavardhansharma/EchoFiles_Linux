@@ -861,7 +861,8 @@ pub fn delete(paths: &[PathBuf], progress: &Progress) -> Vec<String> {
                 return None;
             }
             progress.set_current(p);
-            let r = remove_any(p);
+            // Deleting from a trash: its record goes too, or other apps still offer to restore it.
+            let r = remove_any(p).inspect(|()| if p.parent().is_some_and(crate::trash::is_trash_files) { crate::trash::forget(p) });
             progress.files_done.fetch_add(1, Ordering::Relaxed);
             r.err().map(|e| format!("Couldn't delete {}: {}.", p.display(), describe_io(&e)))
         })
