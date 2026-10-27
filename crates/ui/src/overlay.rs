@@ -190,6 +190,8 @@ pub struct Command {
 pub enum UiMsg {
     CloseMenu,
     Pick(Box<Message>),
+    /// A dialog's confirm button: close the dialog (not a cancel), then run the action.
+    Confirm(Box<Message>),
     MenuHover(usize),
     MenuMove(i32),
     MenuActivate,
@@ -658,6 +660,10 @@ impl App {
                 self.command = None;
                 self.update(*m)
             }
+            UiMsg::Confirm(m) => {
+                self.dialog = None;
+                self.update(*m)
+            }
             UiMsg::MenuHover(i) => {
                 if let Some(m) = &mut self.menu {
                     m.hover = Some(i);
@@ -965,15 +971,15 @@ impl App {
                 body.push_str("Deleting permanently can't be undone.");
                 let mut foot = vec![cancel()];
                 if reason.is_none() {
-                    foot.push(self.btn("Move to Trash", Some("trash"), None, Variant::Secondary, Message::Ui(UiMsg::Pick(Box::new(Message::File(FileMsg::Trash))))));
+                    foot.push(self.btn("Move to Trash", Some("trash"), None, Variant::Secondary, Message::Ui(UiMsg::Confirm(Box::new(Message::File(FileMsg::Trash))))));
                 }
                 let paths = paths.clone();
-                foot.push(self.btn("Delete permanently", Some("trash"), None, Variant::Danger, Message::Ui(UiMsg::Pick(Box::new(Message::File(FileMsg::Delete(paths)))))));
+                foot.push(self.btn("Delete permanently", Some("trash"), None, Variant::Danger, Message::Ui(UiMsg::Confirm(Box::new(Message::File(FileMsg::Delete(paths)))))));
                 self.dialog_frame("trash-full", format!("Delete {what} permanently?"), self.body_text(body), foot, true, *opened)
             }
             Dialog::EmptyTrash { items, opened } => {
                 let n = *items;
-                let foot = vec![cancel(), self.btn("Empty Trash", Some("trash"), None, Variant::Danger, Message::Ui(UiMsg::Pick(Box::new(Message::File(FileMsg::EmptyTrash)))))];
+                let foot = vec![cancel(), self.btn("Empty Trash", Some("trash"), None, Variant::Danger, Message::Ui(UiMsg::Confirm(Box::new(Message::File(FileMsg::EmptyTrash)))))];
                 self.dialog_frame("trash-full", "Empty the Trash?".into(), self.body_text(format!("{n} {} will be deleted permanently. This can't be undone.", if n == 1 { "item" } else { "items" })), foot, true, *opened)
             }
             Dialog::Conflict { id, index, all, opened } => {
@@ -1055,7 +1061,7 @@ impl App {
             Dialog::Question { ask, opened } => self.question_dialog(ask, *opened),
             Dialog::WriteSystem { drive, opened } => {
                 let name = self.volumes.get(*drive).map(|v| crate::drives::display_name(v, &self.volumes)).unwrap_or_default();
-                let foot = vec![cancel(), self.btn("Allow writing", Some("unlock"), None, Variant::Danger, Message::Ui(UiMsg::Pick(Box::new(Message::Drive(DriveMsg::AllowWrite(*drive))))))];
+                let foot = vec![cancel(), self.btn("Allow writing", Some("unlock"), None, Variant::Danger, Message::Ui(UiMsg::Confirm(Box::new(Message::Drive(DriveMsg::AllowWrite(*drive))))))];
                 self.dialog_frame(
                     "shield",
                     format!("Allow writing to {name}?"),
