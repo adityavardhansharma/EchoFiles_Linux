@@ -17,12 +17,13 @@ use crate::drives::display_name;
 use crate::file_list::{self, FileList};
 use crate::indexer::{self, IndexState};
 use crate::overlay::{MenuFor, UiMsg};
-use crate::pane::Pane;
+use crate::pane::{Layout, Pane};
 use crate::settings::SettingsMsg;
 use crate::style::{self, color};
 use crate::widgets::{self as w, Variant};
 
 const TABS_H: f32 = 32.0;
+pub const FILTER_ID: &str = "filter";
 
 /// A sidebar section that folds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,9 +111,17 @@ impl App {
             body = body.push(w::vline(p.line));
             body = body.push(self.preview_view());
         }
-        let root = column![self.tab_strip(), self.toolbar(), w::hline(p.line), body, w::hline(p.line), self.status_bar()];
+        let mut root = column![self.tab_strip(), self.toolbar(), w::hline(p.line), body, w::hline(p.line)];
+        if let Some(f) = self.footer() {
+            root = root.push(f);
+            root = root.push(w::hline(p.line));
+        }
+        root = root.push(self.status_bar());
         let base: Element<'_, Message> = w::fill(root, p.bg).width(Length::Fill).height(Length::Fill).into();
         let mut layers = vec![base];
+        if let Some(k) = self.peek_layer() {
+            layers.push(k);
+        }
         if let Some(g) = self.drag_ghost() {
             layers.push(g);
         }
@@ -130,6 +139,9 @@ impl App {
         }
         if let Some(c) = self.phone_layer() {
             layers.push(c);
+        }
+        if let Some(h) = self.help_layer() {
+            layers.push(h);
         }
         if let Some(d) = self.dialog_layer() {
             layers.push(d);
@@ -343,7 +355,12 @@ impl App {
         let at = iced::Point::new(right - 272.0, TABS_H + style::TOOLBAR - 2.0);
         let open = Message::Ui(UiMsg::OpenMenu(MenuFor::View, at));
         let ink = color(p.ink_muted);
-        let content = row![self.glyph(if self.pane().grid { "grid" } else { "list" }, style::GLYPH, ink), self.glyph("chevron-down", 12.0, ink)].spacing(2).align_y(Alignment::Center);
+        let glyph = match self.pane().layout {
+            Layout::List => "list",
+            Layout::Grid => "grid",
+            Layout::Columns => "columns",
+        };
+        let content = row![self.glyph(glyph, style::GLYPH, ink), self.glyph("chevron-down", 12.0, ink)].spacing(2).align_y(Alignment::Center);
         let pal = p.clone();
         let b = button(container(content).height(28).padding([0, 6]).align_y(Alignment::Center)).padding(0).on_press(open).style(move |_, status| button::Style {
             background: match status {
@@ -545,6 +562,8 @@ impl App {
             self.phone_page_view(page)
         } else if pane.everywhere() {
             self.results_view(pane)
+        } else if pane.layout == Layout::Columns {
+            self.columns_view(pane, active)
         } else {
             self.list(pane, active)
         };
@@ -572,6 +591,10 @@ impl App {
             col = col.push(w::fill(container(head).height(24).align_y(Alignment::Center).padding([0, 16]).clip(true), bg).width(Length::Fill));
             col = col.push(w::hline(p.line));
         }
+        if pane.filter_bar && !pane.special() {
+            col = col.push(self.filter_bar(pane, active));
+            col = col.push(w::hline(p.line));
+        }
         col = col.push(content);
         if let Some(r) = self.rename.as_ref().filter(|r| r.pane == pane.id && r.error.is_some()) {
             let tone = p.danger;
@@ -587,7 +610,50 @@ impl App {
         mouse_area(container(col).width(Length::Fill).height(Length::Fill)).on_press(Message::List(id, file_list::Action::Focus)).into()
     }
 
-    fn list<'a>(&'a self, pane: &'a Pane, active: bool) -> Element<'a, Message> {
+    /// The quick filter (Ctrl+F): narrows this folder as you type; with Subfolders on it
+    /// reaches into every folder below, through the search engine.
+    fn filter_bar<'a>(&'a self, pane: &'a Pane, active: bool) -> Element<'a, Message> {
+        let p = &self.palette;
+        let mut field = text_input(if pane.deep { "Filter this folder and its subfolders" } else { "Filter this folder" }, &pane.query)
+            .size(style::BODY)
+            .font(style::FONT)
+            .padding([4, 8])
+            .width(Length::Fill)
+            .style(w::field_style(p, false));
+        // Only the active pane's bar takes typing (and owns the id focus looks for).
+        if active {
+            field = field.id(FILTER_ID).on_input(Message::Search).on_submit(Message::SearchSubmit);
+        }
+        let mut count = String::new();
+        if pane.deep && !pane.query.trim().is_empty() {
+            match &pane.results {
+                Some(r) => {
+                    fmt::count(r.total, &mut count);
+                    count.push_str(if r.total == 1 { " match" } else { " matches" });
+                }
+                None if pane.searching => count.push_str("Searching…"),
+                None => {}
+            }
+        } else if !pane.query.is_empty() {
+            let total = pane.loaded.as_ref().map_or(0, |l| l.listing.len() - if self.show_hidden { 0 } else { l.hidden });
+            fmt::count(pane.order.len(), &mut count);
+            count.push_str(" of ");
+            fmt::count(total, &mut count);
+        }
+        let deep = pane.deep;
+        let bar = row![
+            self.glyph("filter", 14.0, color(p.accent_ink)),
+            field,
+            self.tip(w::checkbox(p, &self.icons, "Subfolders", deep, Message::SetDeep), "Include every folder below this one", Some("Ctrl+Shift+F")),
+            text(count).size(style::META).font(style::FONT).color(color(p.ink_muted)).wrapping(text::Wrapping::None),
+            self.tool("close", "Close the filter", Some("Esc"), Some(Message::CloseFilter), false),
+        ]
+        .spacing(style::SPACE_3)
+        .align_y(Alignment::Center);
+        w::fill(container(bar).padding([4, 12]), p.bg_sunken).width(Length::Fill).into()
+    }
+
+    pub(crate) fn list<'a>(&'a self, pane: &'a Pane, active: bool) -> Element<'a, Message> {
         let Some(loaded) = &pane.loaded else { return container(Space::new()).width(Length::Fill).height(Length::Fill).into() };
         let empty = (!pane.skeleton && pane.order.is_empty()).then(|| {
             if !pane.query.is_empty() {
@@ -622,7 +688,7 @@ impl App {
         });
         let l = &loaded.listing;
         let thumbs = &self.thumbs;
-        let grid = pane.grid;
+        let grid = pane.grid();
         let thumb: Box<dyn Fn(usize) -> Option<iced::advanced::image::Handle> + 'a> = Box::new(move |i: usize| if grid { thumbs.get(&l.path(i)) } else { None });
         let id = pane.id;
         FileList::new(
@@ -643,6 +709,11 @@ impl App {
                 dragging: self.drag.is_some(),
                 renaming,
                 thumb,
+                zoom: pane.zoom,
+                compact: false,
+                decor: self.decor_fn(l),
+                // Column view shows a folder's contents beside it already.
+                peek: self.settings.appearance.peek && self.drag.is_none() && pane.layout != Layout::Columns,
             },
             &self.palette,
             &self.icons,
@@ -806,7 +877,8 @@ impl App {
                     fmt::count(l.hidden, &mut left);
                     left.push_str(" hidden");
                 }
-            if let Some(c) = self.clip.as_ref() {
+            // The footer shows the clipboard when it's on.
+            if let Some(c) = self.clip.as_ref().filter(|_| !self.settings.appearance.footer) {
                 left.push_str(&format!("  ·  {} {} on the clipboard", c.paths.len(), if c.cut { "cut" } else { "copied" }));
             }
         }

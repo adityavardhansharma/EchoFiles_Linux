@@ -69,6 +69,15 @@ pub fn find_font_files(family: &str) -> Vec<std::path::PathBuf> {
 pub struct Icons {
     color: HashMap<&'static str, svg::Handle>,
     glyph: HashMap<&'static str, svg::Handle>,
+    /// Folder icons in the colours people can give folders, in `folders::COLORS` order.
+    tinted: HashMap<&'static str, Vec<svg::Handle>>,
+}
+
+/// The glyph ink on a coloured folder: its back shade at 45% brightness.
+fn darken(hex: &str) -> String {
+    let v = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0);
+    let ch = |shift: u32| (((v >> shift) & 0xFF) as f32 * 0.45) as u32;
+    format!("#{:02X}{:02X}{:02X}", ch(16), ch(8), ch(0))
 }
 
 mod embedded {
@@ -85,7 +94,27 @@ impl Icons {
             .iter()
             .map(|(name, svg)| (*name, svg::Handle::from_memory(svg.as_bytes())))
             .collect();
-        Self { color, glyph }
+        let tinted = embedded::COLOR
+            .iter()
+            .filter(|(n, _)| *n == "folder" || crate::folders::ICONS.iter().any(|i| i.0 == *n))
+            .map(|(name, svg)| {
+                let shades = crate::folders::COLORS
+                    .iter()
+                    .map(|(_, _, front, back)| {
+                        let svg = svg.replace("#FFC83D", front).replace("#F2AE1C", back).replace("#7A5306", &darken(back));
+                        svg::Handle::from_memory(palette.recolor_icon(&svg).into_bytes())
+                    })
+                    .collect();
+                (*name, shades)
+            })
+            .collect();
+        Self { color, glyph, tinted }
+    }
+
+    /// A folder's icon: its chosen colour icon (`folder` by default), in its chosen colour.
+    pub fn folder(&self, icon: &str, tint: Option<&str>) -> svg::Handle {
+        let shade = tint.and_then(|t| crate::folders::COLORS.iter().position(|c| c.0 == t));
+        shade.and_then(|i| self.tinted.get(icon)?.get(i)).cloned().unwrap_or_else(|| self.color(icon))
     }
 
     /// Colour icon by name, falling back to the generic file icon.

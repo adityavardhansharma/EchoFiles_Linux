@@ -1068,6 +1068,100 @@ impl Undo {
     }
 }
 
+/// What Redo (Ctrl+Shift+Z) does again after an undo. Read from the [`Undo`] step before
+/// it runs (see [`Undo::redo`]); applying it makes a fresh undo step.
+#[derive(Clone, Debug)]
+pub enum Redo {
+    /// Rename `from` to `to` again, if `from` is still the (device, inode) that was renamed.
+    Rename { from: PathBuf, to: PathBuf, dev: u64, ino: u64 },
+    /// Put items back in the Trash: where they were restored to, and the (device, inode)
+    /// they had in the Trash, so nothing that took their place since goes instead.
+    Trash(Vec<(PathBuf, u64, u64)>),
+    /// Make the empty folder or file again.
+    Create { path: PathBuf, dir: bool },
+}
+
+impl Undo {
+    /// How to redo this step once it has been undone, if it can be. A new item that had
+    /// content when it was undone went to the Trash: making it again empty would not be
+    /// the same thing, so that one has no redo.
+    pub fn redo(&self) -> Option<Redo> {
+        match self {
+            Undo::Rename { from, to } => {
+                let m = fs::symlink_metadata(to).ok()?;
+                Some(Redo::Rename { from: from.clone(), to: to.clone(), dev: m.dev(), ino: m.ino() })
+            }
+            Undo::Trash(items) => {
+                let back: Vec<(PathBuf, u64, u64)> = items.iter().filter_map(|t| fs::symlink_metadata(&t.file).ok().map(|m| (t.original.clone(), m.dev(), m.ino()))).collect();
+                (!back.is_empty()).then_some(Redo::Trash(back))
+            }
+            Undo::Create(p) => {
+                let m = fs::symlink_metadata(p).ok()?;
+                (m.is_dir() || m.len() == 0).then(|| Redo::Create { path: p.clone(), dir: m.is_dir() })
+            }
+            Undo::Checked { action, .. } => action.redo(),
+            _ => None,
+        }
+    }
+}
+
+impl Redo {
+    /// "Redo rename" etc. for menus.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Redo::Rename { .. } => "rename",
+            Redo::Trash(_) => "move to Trash",
+            Redo::Create { .. } => "new item",
+        }
+    }
+
+    /// Do the step again: the undo step for what was done, and a problem if part of it
+    /// couldn't be (both can be set when only some items went).
+    pub fn apply(&self) -> (Option<Undo>, Option<String>) {
+        let err = |p: &Path, e: io::Error| format!("Couldn't redo for {}: {}.", p.display(), describe_io(&e));
+        match self {
+            Redo::Rename { from, to, dev, ino } => match fs::symlink_metadata(from) {
+                Ok(m) if m.dev() != *dev || m.ino() != *ino => (None, Some(format!("{} was replaced after the undo; leaving it where it is.", from.display()))),
+                Err(e) => (None, Some(err(from, e))),
+                Ok(_) => match rename_noreplace(from, to) {
+                    Ok(()) => (Some(Undo::Rename { from: from.clone(), to: to.clone() }), None),
+                    Err(e) => (None, Some(err(from, e))),
+                },
+            },
+            Redo::Trash(items) => {
+                let mut problem = None;
+                let paths: Vec<PathBuf> = items
+                    .iter()
+                    .filter(|(p, dev, ino)| match fs::symlink_metadata(p) {
+                        Ok(m) if m.dev() == *dev && m.ino() == *ino => true,
+                        Ok(_) => {
+                            problem.get_or_insert_with(|| format!("{} was replaced after the undo; leaving it where it is.", p.display()));
+                            false
+                        }
+                        Err(e) => {
+                            problem.get_or_insert_with(|| err(p, e));
+                            false
+                        }
+                    })
+                    .map(|(p, _, _)| p.clone())
+                    .collect();
+                let (ok, failed) = trash_all(&paths);
+                if let Some((p, why)) = failed.first() {
+                    problem.get_or_insert_with(|| format!("Couldn't redo for {}: {why}.", p.display()));
+                }
+                ((!ok.is_empty()).then_some(Undo::Trash(ok)), problem)
+            }
+            Redo::Create { path, dir } => {
+                let r = if *dir { fs::create_dir(path) } else { OpenOptions::new().write(true).create_new(true).open(path).map(drop) };
+                match r {
+                    Ok(()) => (Some(Undo::Create(path.clone())), None),
+                    Err(e) => (None, Some(err(path, e))),
+                }
+            }
+        }
+    }
+}
+
 /// Remove recovery folders that hold nothing but their `RECOVERY.txt` note. Each folder is
 /// listed once, however many of its entries were restored.
 fn tidy_recovery(dirs: impl IntoIterator<Item = PathBuf>) {
@@ -1214,6 +1308,49 @@ mod tests {
         assert_eq!(new_folder(&d).unwrap(), d.join("New folder"));
         assert_eq!(new_folder(&d).unwrap(), d.join("New folder 2"));
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn undo_then_redo_rename_and_new_items() {
+        let d = tmp("redo");
+        let (a, b) = (d.join("a.txt"), d.join("b.txt"));
+        fs::write(&a, b"x").unwrap();
+        let to = rename(&a, "b.txt").unwrap();
+        assert_eq!(to, b);
+        let step = Undo::Rename { from: a.clone(), to: b.clone() };
+        let again = step.redo().unwrap();
+        step.apply().unwrap();
+        assert!(a.exists() && !b.exists());
+        let (undo, problem) = again.apply();
+        assert!(problem.is_none());
+        assert!(b.exists() && !a.exists());
+        // Redoing makes a fresh undo step that undoes again.
+        undo.unwrap().apply().unwrap();
+        assert!(a.exists());
+        // A rename can't be redone over something that took the name meanwhile.
+        fs::write(&b, b"other").unwrap();
+        let (undo, problem) = again.apply();
+        assert!(undo.is_none() && problem.is_some());
+        assert_eq!(fs::read(&b).unwrap(), b"other");
+        // Nor can it rename a different file that replaced the source.
+        fs::remove_file(&b).unwrap();
+        fs::write(d.join("c.txt"), b"replacement").unwrap();
+        fs::rename(d.join("c.txt"), &a).unwrap();
+        let (undo, problem) = again.apply();
+        assert!(undo.is_none() && problem.is_some() && a.exists() && !b.exists());
+
+        let folder = new_folder(&d).unwrap();
+        let step = Undo::Create(folder.clone());
+        let again = step.redo().unwrap();
+        step.apply().unwrap();
+        assert!(!folder.exists());
+        let (undo, problem) = again.apply();
+        assert!(folder.is_dir() && problem.is_none() && undo.is_some());
+        // A new file that got content isn't recreated empty.
+        let file = new_file(&d).unwrap();
+        fs::write(&file, b"typed").unwrap();
+        assert!(Undo::Create(file).redo().is_none());
+        fs::remove_dir_all(d).unwrap();
     }
 
     #[test]
