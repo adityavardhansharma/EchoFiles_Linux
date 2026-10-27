@@ -71,6 +71,9 @@ pub enum SettingsMsg {
     ShowWindows(bool),
     ShowNetwork(bool),
     ShowPhone(bool),
+    TenXer(bool),
+    Footer(bool),
+    Peek(bool),
     Reveal(PathBuf),
     Saved(Result<(), String>),
 }
@@ -312,6 +315,20 @@ impl App {
             }
             SettingsMsg::ShowPhone(on) => {
                 self.settings.sidebar.phone = on;
+                self.save_settings()
+            }
+            SettingsMsg::TenXer(on) => {
+                self.settings.general.keys = if on { config::KeyMode::TenXer } else { config::KeyMode::Standard };
+                self.chord = None;
+                self.save_settings()
+            }
+            SettingsMsg::Footer(on) => {
+                self.settings.appearance.footer = on;
+                self.save_settings()
+            }
+            SettingsMsg::Peek(on) => {
+                self.settings.appearance.peek = on;
+                self.peek = None;
                 self.save_settings()
             }
             SettingsMsg::Density(d) => {
@@ -653,7 +670,15 @@ impl App {
                 self.setting("Show hidden files", "Dotfiles and dot-folders. Ctrl+H switches it for the open window.", self.toggle(g.show_hidden, SettingsMsg::ShowHidden)),
             ],
         );
-        self.page(self.page_head("General", "How EchoFiles starts, runs and opens."), vec![window, windows])
+        let keyboard = self.group(
+            "Keyboard",
+            vec![self.setting(
+                "10xer keys",
+                "Yazi-style: j/k move, h/l go up and open, gg/G jump, Space marks, y/x/p copy, cut and paste, d trashes. Letters stop jumping to names. Ctrl+Shift+Y switches it; F1 lists every key.",
+                self.toggle(g.keys == config::KeyMode::TenXer, SettingsMsg::TenXer),
+            )],
+        );
+        self.page(self.page_head("General", "How EchoFiles starts, runs and opens."), vec![window, windows, keyboard])
     }
 
     fn index_status(&self) -> Element<'_, Message> {
@@ -854,20 +879,30 @@ impl App {
                 ),
             ), self.setting(
                 "Folders open as",
-                "Automatic uses a grid in Pictures, Videos and camera folders and a list everywhere else. Changing this resets views you switched by hand (Ctrl+1 / Ctrl+2).",
+                "Automatic uses a grid in Pictures, Videos and camera folders and a list everywhere else. Columns opens each folder in a new column. Changing this resets views you switched by hand (Ctrl+1, Ctrl+2, Ctrl+3).",
                 w::segmented(
                     p,
                     &[
                         ("Automatic", Message::Settings(SettingsMsg::DefaultView(DefaultView::Auto))),
                         ("List", Message::Settings(SettingsMsg::DefaultView(DefaultView::List))),
                         ("Grid", Message::Settings(SettingsMsg::DefaultView(DefaultView::Grid))),
+                        ("Columns", Message::Settings(SettingsMsg::DefaultView(DefaultView::Columns))),
                     ],
                     match self.settings.appearance.view {
                         DefaultView::Auto => 0,
                         DefaultView::List => 1,
                         DefaultView::Grid => 2,
+                        DefaultView::Columns => 3,
                     },
                 ),
+            ), self.setting(
+                "Footer",
+                "A line above the status bar with the keys that matter right now and what's on the clipboard.",
+                self.toggle(self.settings.appearance.footer, SettingsMsg::Footer),
+            ), self.setting(
+                "Peek into folders",
+                "Resting the pointer on a folder shows what's inside it.",
+                self.toggle(self.settings.appearance.peek, SettingsMsg::Peek),
             )],
         );
         let sb = &self.settings.sidebar;
@@ -979,8 +1014,12 @@ impl App {
         let keys = self.group(
             "Keyboard",
             vec![self.block(self.mono_block(&[
-                ("Ctrl+F  /", "search"),
+                ("F1", "every shortcut"),
+                ("Ctrl+F", "filter this folder (Ctrl+Shift+F: and subfolders)"),
+                ("/", "search"),
                 ("Ctrl+E", "search this folder ↔ everywhere"),
+                ("Ctrl+Z  Ctrl+Shift+Z", "undo · redo"),
+                ("Ctrl+1 2 3", "list · grid · columns"),
                 ("Esc", "clear search · leave Settings"),
                 ("Alt+← Alt+→ Alt+↑", "back · forward · parent"),
                 ("Backspace", "parent folder"),
