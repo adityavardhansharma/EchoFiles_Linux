@@ -157,6 +157,39 @@ impl App {
         });
     }
 
+    /// Google's change feed (own client ID): index changes almost as they happen.
+    pub(crate) fn cloud_apply_changes(&mut self, account: &str, changes: Vec<ef_cloud::changes::Change>) {
+        if changes.is_empty() || !self.settings.cloud.index {
+            return;
+        }
+        let folders = self.cloud.index.folders.entry(account.to_string()).or_default();
+        let root = self.cloud.live.root(account);
+        let mut lines = Vec::new();
+        for c in changes {
+            if c.gone {
+                folders.remove(&c.id);
+                lines.push(catalog::del_change(&c.id, ""));
+                continue;
+            }
+            let found = ef_cloud::live::Found { id: c.id.clone(), name: c.name.clone(), parents: c.parents.clone(), mime: c.mime.clone(), size: c.size, modified: c.modified, web: String::new() };
+            let mut known = folders.clone();
+            if let Some(r) = &root {
+                known.insert(r.clone(), String::new());
+            }
+            let Some(path) = found.path_in(&known) else { continue };
+            if found.is_dir() {
+                folders.insert(c.id.clone(), path.clone());
+            }
+            lines.push(catalog::put_change(&catalog::Entry { id: c.id, parent: c.parents.first().cloned().unwrap_or_default(), path, dir: found.is_dir(), size: c.size, modified: c.modified, mime: c.mime, md5: String::new() }));
+        }
+        let account = account.to_string();
+        std::thread::spawn(move || {
+            for l in lines {
+                let _ = catalog::append(&account, &l);
+            }
+        });
+    }
+
     /// Hourly: catalogs a day old crawl again.
     pub(crate) fn cloud_index_tick(&mut self) -> Task<Message> {
         if !self.settings.cloud.index {
