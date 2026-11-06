@@ -1,0 +1,16 @@
+[package]
+name = "echofiles-cloud"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "ef_cloud"
+
+[dependencies]
+ef-config.workspace = true
+libc = "0.2"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

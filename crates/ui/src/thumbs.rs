@@ -63,8 +63,9 @@ impl Thumbs {
         for (p, m) in items {
             // A changed file (new mtime) gets a new thumbnail.
             let fresh = self.map.get(&p).is_some_and(|(t, _)| *t == m);
-            // Like Nautilus: no thumbnails for network files (each one reads the whole file).
-            if !fresh && thumbnailable(&p) && !ef_net::gvfs::is_network_path(&p) {
+            // Like Nautilus: no thumbnails for network or Drive files (each one reads the
+            // whole file).
+            if !fresh && thumbnailable(&p) && !crate::remote::is_remote(&p) {
                 self.queue.push_back((p, m));
             }
         }

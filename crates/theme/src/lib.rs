@@ -117,6 +117,9 @@ pub struct Palette {
     pub world_phone: Rgb,
     /// Network section mark (SMB, SFTP, FTP places).
     pub world_network: Rgb,
+    /// Cloud section mark (Google Drive). Omarchy `cyan`, the same hue as `info`; a world
+    /// mark never means state.
+    pub world_cloud: Rgb,
     /// Colour-icon slot values, keyed by slot name (`folder`, `blue`, …).
     pub icon_slots: Vec<(&'static str, Rgb)>,
 }
@@ -305,6 +308,7 @@ pub fn derive(name: &str, colors_toml: &str) -> Result<Palette, Error> {
         world_windows: world("blue")?,
         world_phone: world("green")?,
         world_network: world("magenta")?,
+        world_cloud: world("cyan")?,
         icon_slots,
     })
 }
