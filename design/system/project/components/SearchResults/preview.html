@@ -8,7 +8,10 @@
 (function(){
 var E = window.Echo, h = React.createElement;
 function App(){
-return h("div", {className:"ef", style:{height:290, display:"flex"}}, h(E.SearchResults, null));
+return h("div", {className:"ef", style:{display:"grid", gap:12}},
+  h("div", {style:{height:290, display:"flex"}}, h(E.SearchResults, null)),
+  h("div", {style:{height:200, display:"flex"}}, h(E.SearchResults, {live:"searching", hits:[{name:"Budget 2026", kind:"google-sheet", location:"Google Drive › Finance", size:"—", date:"Today 10:14"}, {name:"report-q3.pdf", location:"Google Drive › Work", size:"1.1 MB", date:"2 Sep"}]})),
+  h("div", {style:{height:200, display:"flex"}}, h(E.SearchResults, {live:"done", fresh:1, hits:[{name:"Budget 2026", kind:"google-sheet", location:"Google Drive › Finance", size:"—", date:"Today 10:14"}, {name:"report-old.pdf", location:"Google Drive › Work", size:"1.0 MB", date:"1 Aug", gone:true}, {name:"report-q4.pdf", location:"Google Drive › Work", size:"1.3 MB", date:"Today 11:40"}]})));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(h(App));
 })();

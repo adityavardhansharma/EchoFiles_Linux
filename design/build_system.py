@@ -250,17 +250,20 @@ return h("div", {className:"ef", style:{display:"flex", height:690}},
     h(E.SidebarSection, {title:"Network", world:"network", count:1, collapsible:true, action:h(E.IconButton, {icon:"plus", label:"Connect to server (Ctrl+Shift+S)"})},
       h(E.NetworkItem, {name:"Media", protocol:"SMB", where:"nas.local", state:"connected", keep:true}),
       h(E.NetworkItem, {name:"build-box", protocol:"SFTP", where:"me@build-box"}),
-      h(E.SidebarItem, {icon:"plus", label:"Connect to server…"}))));
+      h(E.SidebarItem, {icon:"plus", label:"Connect to server…"})),
+    h(E.SidebarSection, {title:"Cloud", world:"cloud", collapsible:true, defaultOpen:true, action:h(E.IconButton, {icon:"plus", label:"Connect Google Drive"})},
+      h(E.CloudItem, {name:"Google Drive", used:28, usage:"4.2 GB of 15 GB", keep:true}))));
 """, """# Sidebar
 
-The place list on `bg-sunken`: Linux, Pinned (when anything is pinned), Windows, **All drives**, Phone, then Network.
+The place list on `bg-sunken`: Linux, Pinned (when anything is pinned), Windows, **All drives**, Phone, Network, then Cloud.
 
-**Provide** `Sidebar` > `SidebarSection` (`title`, optional `world`: `linux`, `windows`, `network`, `phone`, optional `count`, optional `action` at the end of the head, `collapsible` + `defaultOpen`) > `SidebarItem` (`icon`, `label`, `active`, `trail`, `dropTarget`, `indent`), `DriveItem`, `NetworkItem` or `PhoneItem` (`keep` = still shown while collapsed).
+**Provide** `Sidebar` > `SidebarSection` (`title`, optional `world`: `linux`, `windows`, `network`, `phone`, `cloud`, optional `count`, optional `action` at the end of the head, `collapsible` + `defaultOpen`) > `SidebarItem` (`icon`, `label`, `active`, `trail`, `dropTarget`, `indent`), `DriveItem`, `NetworkItem`, `PhoneItem` or `CloudItem` (`keep` = still shown while collapsed).
 
 - **Windows** and **Network** fold. Their head is a 24px row — chevron (`chevron-right` / `chevron-down`, 12px `ink-muted`), world mark, title, count, and Network's `+` — with the standard hover; clicking it opens or closes the section. Both start **collapsed**, and the open/closed state is remembered (`settings.toml` `[sidebar] windows_open`, `network_open`). Collapsed, the section still shows the one place you're in (the drive or share holding the open folder, or All drives while that page is open), so the sidebar always says where you are. Everything the section held (All drives, Connect to server…) folds with it.
 - **Settings → Appearance → Sidebar** hides either section entirely (*Windows drives*, *Network places*; both on by default). Hidden, the section's head goes too; Ctrl+Shift+D and Ctrl+Shift+S still reach drives and servers.
 
-- A world is marked by a 6px square in `world-linux`, `world-windows`, `world-network` or `world-phone` — the only place world colours appear besides drive usage bars and network glyphs.
+- **Cloud** (`world-cloud`) holds one `CloudItem` per connected Google Drive account, in the order they were added. Its head ends with a `+` (**Connect Google Drive**). With no account it shows one **Add Google Drive** row. It folds like Phone and starts open (`[sidebar] cloud_open`); collapsed, the account holding the open folder stays. Settings → Appearance → Sidebar can hide it (`cloud`).
+- A world is marked by a 6px square in `world-linux`, `world-windows`, `world-network`, `world-phone` or `world-cloud` — the only place world colours appear besides drive usage bars and network glyphs.
 - **Network** lists saved servers (in the order saved) and then live connections made elsewhere (Nautilus, `gio mount`, a link). Its head counts live connections and ends with a `+` that opens `ConnectDialog`; a **Connect to server…** row always closes the section. With nothing saved it says "Windows shares, SSH and FTP servers you connect to appear here."
 - Active item: `state-active` ground, `ink-strong` bold label, `accent-ink` glyph. No side rail.
 - **Phone** (`world-phone`) holds the paired phone's `PhoneItem` — or **Connect phone** before pairing — with its **Files** and **Photos** indented under it while connected. It folds like Windows and Network but starts open; collapsed, the phone row stays. Settings → Appearance → Sidebar can hide it.
@@ -311,6 +314,57 @@ A network place in the sidebar: its short name, then how and where — "SMB · n
 - Glyphs: `network` for SMB, `server` for SFTP and FTP. The tooltip is the full address and its state.
 - When a server goes away, GVfs drops the connection: panes inside it go home and a toast says "Lost the connection to Media".
 """)
+
+comp("CloudItem", "Navigation", 260, """
+return h("div", {className:"ef", style:{width:236, padding:8, background:"var(--bg-sunken)"}},
+  h(E.CloudItem, {name:"Google Drive", used:28, usage:"4.2 GB of 15 GB", active:true}),
+  h(E.CloudItem, {name:"Work Drive", state:"uploading", uploads:3, used:61, usage:"9.1 GB of 15 GB"}),
+  h(E.CloudItem, {name:"Google Drive 3", state:"connecting"}),
+  h(E.CloudItem, {name:"Old account", state:"signin"}),
+  h(E.CloudItem, {name:"Travel", state:"offline"}));
+""", """# CloudItem
+
+A Google Drive account in the sidebar's Cloud section: the name the person gave it, a usage bar, and the usage in words ("4.2 GB of 15 GB").
+
+**Provide** `name` ("Google Drive", "Google Drive 2", … renamable; never an email or a mount path), `state` (`connected` default, `connecting`, `uploading` + `uploads`, `offline`, `signin`, `notmounted`), `used` (percent), `usage`, `active`.
+
+- Glyph `cloud` in `world-cloud`, like a connected network place. No Google logo, ever — brand marks stay out of the working UI.
+- Normal state has no pill. **Connecting…** (`info`) with a spinner while rclone mounts; **Uploading 3** (`info`) while files copied in are still going up; **Offline** (neutral) after two failed calls in a row; **Sign in again** (`warning`) when Google revoked the token; **Not mounted** (neutral) when FUSE isn't available. The pill leads the second line, like `DriveItem`.
+- The usage bar follows `UsageBar` (grows once, 400ms; `warning` above 90%, `danger` above 97%), coloured `world-cloud`.
+- Click: opens the Drive root in the pane (mounts first if needed). Middle-click: new tab. Right-click: Open · Open in new tab · Open in browser · Refresh · Rename… · Disconnect · Sign out… · Google Drive settings.
+- Tooltip: the name, access (Full / Read-only) and usage.
+""")
+
+comp("CloudConnectDialog", "Overlays", 420, """
+return h("div", {className:"ef", style:{display:"grid", gap:16}},
+  h(E.CloudConnectDialog, {height:300}),
+  h(E.CloudConnectDialog, {step:"waiting", height:260}),
+  h(E.CloudConnectDialog, {step:"missing", height:240}));
+""", """# CloudConnectDialog
+
+**Connect Google Drive** (the Cloud `+`, **Add Google Drive**, the command palette, Settings → Google Drive): choose access, then sign in on Google's page in the browser through rclone.
+
+**Provide** `step` (`start` default, `waiting`, `missing`), `access` (`full` | `read`), `error`, `again` (signing in again after a client ID change), `old` + `need` (rclone too old), `command` (install command for this distro).
+
+- **start**: one sentence that sign-in happens in the browser through rclone and EchoFiles never sees the password. **Access** `SegmentedControl` Full · Read-only with what each means beside it. **Sign in with browser** (primary, Enter) and **Cancel** (Esc).
+- **waiting**: title "Finish signing in in your browser" (or "Sign in again for your app"), a `Spinner`, what to do, **Copy sign-in link** (the URL rclone printed, for when no browser opened) and **Cancel**, which stops rclone and removes the half-made account. After 5 minutes it closes with "Sign-in timed out."
+- **missing**: rclone isn't installed (or is older than 1.64): the install command in a `bg-deep` well with a copy button, and **Check again**. Never installs anything itself.
+- Errors stay in the dialog in a `danger-soft` box, in words that say what to do: "Another sign-in is using port 53682. Finish or close it, then try again." / "Google didn't allow access. Try again and choose Allow." / "Couldn't reach Google. Check the internet connection."
+""")
+
+comp("CloudPage", "Pages", 540, """
+return h(E.CloudPage, {height:520});
+""", """# CloudPage
+
+Google Drive open in a pane — the reference for Drive-specific rows and states.
+
+**Provide** nothing; reference composition.
+
+- **Google Docs, Sheets, Slides, Forms, Drawings** show their name without rclone's `.html`, kind "Google Doc" / "Google Sheet" / "Google Slides" / …, the matching colour icon (`file-doc`, `file-sheet`, `file-slides`) and **—** for size. Enter opens them in the browser; the menu adds **Download as…** (Word / PDF / OpenDocument, Excel / CSV / PDF, PowerPoint / PDF). Dragging one out asks "Google Docs can't be copied as files. Download as Word or PDF?".
+- **Honest uploads:** a copy into Drive finishes when the data reaches rclone's cache, so the transfer toast ends "Copied — uploading to Google Drive" and the status bar shows "Uploading 3 files to Google Drive · 12 MB left" until the queue is empty, then "Uploaded to Google Drive" for a few seconds. Offline it reads "Waiting for connection".
+- Delete moves to **Google Drive's trash**: toast "Moved to Google Drive's trash" with **Open trash in browser**. Shift+Delete says it bypasses Google's trash.
+- No thumbnails (a thumbnail would download the whole file); the status bar's free space comes from Drive's quota.
+""", extra=' width=1000 page')
 
 comp("ConnectDialog", "Overlays", 600, """
 return h("div", {className:"ef"}, h(E.ConnectDialog, {value:"nas.local:4445/Media", parsed:"ok", describe:"Windows share “Media” on nas.local · port 4445", recent:[["Media on nas.local","smb://nas.local/Media/","network"],["me on build-box","sftp://me@build-box/","server"]], nearby:[["Living Room NAS","SMB · nas.local","network"]]}));
@@ -416,6 +470,7 @@ The 24px footer: counts, selection size, background task and volume facts.
 - Numbers in `ink` bold, words in `ink-muted`. The volume's state pill repeats here so read-only is never a surprise.
 - Selection size for folders is computed in the background and fills in when ready ("12.4 MB+" until done).
 - Also says what's on the clipboard ("3 cut on the clipboard") and how many transfers are running. The right side names the volume: "AVS (D:) · ntfs3 · 66 GB free", or "Linux · btrfs · …".
+- Inside Google Drive the right side reads "Google Drive · 11 GB free" (from Drive's quota), and pending uploads show as the task: "Uploading 3 files to Google Drive · 12 MB left", then "Uploaded to Google Drive" for a few seconds, or "Waiting for connection" while offline.
 """)
 
 comp("EmptyState", "Files", 330, """
@@ -663,7 +718,10 @@ Where the search box looks: **Folder** filters the open folder as you type; **Ev
 """)
 
 comp("SearchResults", "Search", 300, """
-return h("div", {className:"ef", style:{height:290, display:"flex"}}, h(E.SearchResults, null));
+return h("div", {className:"ef", style:{display:"grid", gap:12}},
+  h("div", {style:{height:290, display:"flex"}}, h(E.SearchResults, null)),
+  h("div", {style:{height:200, display:"flex"}}, h(E.SearchResults, {live:"searching", hits:[{name:"Budget 2026", kind:"google-sheet", location:"Google Drive › Finance", size:"—", date:"Today 10:14"}, {name:"report-q3.pdf", location:"Google Drive › Work", size:"1.1 MB", date:"2 Sep"}]})),
+  h("div", {style:{height:200, display:"flex"}}, h(E.SearchResults, {live:"done", fresh:1, hits:[{name:"Budget 2026", kind:"google-sheet", location:"Google Drive › Finance", size:"—", date:"Today 10:14"}, {name:"report-old.pdf", location:"Google Drive › Work", size:"1.0 MB", date:"1 Aug", gone:true}, {name:"report-q4.pdf", location:"Google Drive › Work", size:"1.3 MB", date:"Today 11:40"}]})));
 """, """# SearchResults
 
 Everywhere results in place of the file list: name, the folder it lives in (`~`-relative), size and date.
@@ -674,6 +732,9 @@ Everywhere results in place of the file list: name, the folder it lives in (`~`-
 - ↑/↓ move, Enter opens (folders open in place, files in their app), Alt+Enter / **Show in folder** opens the parent folder with the file selected. Double-click opens.
 - Location clips on the right; it never pushes into Size. Rows use the same hover and active layers as `FileRow`.
 - No matches: a centred search glyph, "No matches for “…”", and when the index answered, how fresh it is ("updated 20 s ago; new files elsewhere can take up to a minute").
+- **Google Drive, two steps.** Saved results (local index and the Drive index if it's on) paint first. 350ms after typing stops the same search goes to Google Drive and the footer shows `live`: **searching** (`Spinner`, "Searching Google Drive…") → **done** ("Google Drive checked · 3 new", for 3 s) or **timeout** / **offline** ("…— showing saved results", `warning-ink`) or **pattern** ("Google Drive can't search by pattern — showing saved results").
+- New Drive matches join the list without moving anything under the cursor: if the cursor hasn't moved since the first paint the list re-ranks in one frame (no animation); otherwise they're added below the cursor. A saved hit that turns out to be gone fades out (`dur-base`, `ease-exit`); if it's the selected row it stays, its location reads "No longer on Google Drive" in `ink-muted` and it can't be opened (`gone`).
+- Drive locations read "Google Drive › Folder"; with the account offline, "Google Drive · offline" and opening offers **Connect**.
 """)
 
 # ------------------------------------------------------------------ Phone
@@ -1018,10 +1079,11 @@ Settings is its own screen (Ctrl+, or the gear): a top bar with a ghost **← Fi
 **Provide** optional `page`; the nav is live in the preview.
 
 - **General** — Running: Keep running in the background (close hides the window; later launches reuse it) · Start at login (disabled unless running in the background). Windows: New windows open at Home / Last folder · Show hidden files.
-- **Search & index** — Index: Search index switch (off deletes the index) + `IndexStatus`. Search box: Search looks in (This folder / Everywhere). Indexed folders and Never show in search (`PathListEditor`). Skip contents of: Skip cache folders + `NameChips`.
-- **AI agents** — Allow EchoFiles commands (when off, `ef` exits 3 with "turned off"), ef location, Teach AI agents about ef (links the skill into ~/.claude/skills; off removes only that link), `CommandList` of examples. A `warning` note appears if `ef` is allowed but the index is off.
+- **Search & index** — Index: Search index switch (off deletes the index) + `IndexStatus`, and a muted line "Google Drive has its own index switch in Settings → Google Drive." (it never changes that switch). Search box: Search looks in (This folder / Everywhere). Indexed folders and Never show in search (`PathListEditor`). Skip contents of: Skip cache folders + `NameChips`.
+- **AI agents** — Allow EchoFiles commands (when off, `ef` exits 3 with "turned off"), ef location, Teach AI agents about ef (links the skill into ~/.claude/skills; off removes only that link), `CommandList` of examples. A `warning` note appears if `ef` is allowed but the index is off. **Let ef search Google Drive** (off by default) is its own switch: the Drive index never gives agents access and this never turns the index on.
+- **Google Drive** — Account: one row per account (usage, **Sign out…**, and a ⋮ menu with **Rename…** and **Change access…**) and **Connect Google Drive**; a `warning` `Banner` with the install command when rclone is missing. Search: *Include Google Drive in search index* (off by default, separate from every other index switch) + `IndexStatus`, *Search Google Drive live* (on). Storage: cache size limit (1–500 GB), cached size and **Clear cache** (disabled while uploads are pending). Advanced: *Use my own client ID* — Client ID and secret fields, **Save and sign in again**, the five setup steps, and **Use rclone's app** when one is set. rclone: version, path and **Open log**.
 - **Phone** — see `PhoneSettings`: this phone and Forget, phone picture, feature switches, Accept files automatically + Save to, notifications Off / In app / Desktop too and muted apps.
-- **Appearance** — the Omarchy theme's name and swatches (it follows the system); Row height Compact / Default / Comfortable (24 / 28 / 34px); Folders open as Automatic / List / Grid (resets per-folder choices). Sidebar: show or hide the Windows drives, Phone and Network places sections.
+- **Appearance** — the Omarchy theme's name and swatches (it follows the system); Row height Compact / Default / Comfortable (24 / 28 / 34px); Folders open as Automatic / List / Grid (resets per-folder choices). Sidebar: show or hide the Windows drives, Phone, Network places and Cloud sections.
 - **About** — version, settings file and index folder with **Show**, keyboard shortcuts.
 - Everything saves to `~/.config/echofiles/settings.toml` the moment it changes (shared with `ef`). Only settings that work today appear.
 """, extra=' width=1100 page')
