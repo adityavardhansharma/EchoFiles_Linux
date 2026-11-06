@@ -142,6 +142,8 @@ pub struct Pane {
     pub result_cursor: Option<usize>,
     pub searching: bool,
     pub search_generation: u64,
+    /// Step 2 of search: Google Drive asked live (design §10).
+    pub live: Option<crate::cloud_live::LiveStatus>,
     pub search_cancel: Arc<AtomicBool>,
     pub layout: Layout,
     /// Icon size step (`folders::ZOOMS`).
@@ -194,6 +196,7 @@ impl Pane {
             result_cursor: None,
             searching: false,
             search_generation: 0,
+            live: None,
             search_cancel: Arc::new(AtomicBool::new(false)),
             layout: Layout::List,
             zoom: crate::folders::DEFAULT_ZOOM,
@@ -496,6 +499,7 @@ impl Pane {
         self.search_generation = next_id();
         self.filter_bar = false;
         self.deep = false;
+        self.live = None;
         self.query.clear();
         self.results = None;
         self.result_cursor = None;

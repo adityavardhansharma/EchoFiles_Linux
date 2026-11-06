@@ -30,9 +30,100 @@ pub fn add_drive_hits(a: &FindArgs, ran: &mut Ran) {
     add_cached_hits(a, ran, crate::drive::entries);
 }
 
+/// `--drive-live`: ask Google Drive itself through EchoFiles' rclone (it listens on its own
+/// socket while EchoFiles runs) and add matches the Drive index doesn't have yet. Waits up
+/// to 10 s. Returns a note for stderr when it couldn't.
+pub fn add_live_drive_hits(a: &FindArgs, ran: &mut Ran) -> Option<String> {
+    let (ask, filter) = match live_filter(a) {
+        Ok(x) => x,
+        Err(_) => return Some("--drive-live skipped: Google Drive can only be searched by plain words".into()),
+    };
+    let q = ef_cloud::live::translate(&ask).ok()?;
+    let rc = ef_cloud::Rc::new(ef_cloud::paths::socket());
+    if rc.ping().is_err() {
+        return Some("--drive-live needs EchoFiles running with Google Drive connected; showing indexed results".into());
+    }
+    let have: std::collections::HashSet<Vec<u8>> = ran.outcome.hits.iter().map(|h| h.path.clone()).collect();
+    let ranker = crate::Ranker::new(a.pattern.as_deref().unwrap_or(""));
+    let mut failed = None;
+    for account in crate::drive::accounts() {
+        let mut folders = ef_cloud::catalog::load(&account).folder_paths();
+        if let Ok(Some(root)) = ef_cloud::live::root_id(&rc, &account) {
+            folders.insert(root, String::new());
+        }
+        let found = match ef_cloud::live::query(&rc, &account, &q) {
+            Ok(f) => f,
+            Err(e) => {
+                failed = Some(e.explain());
+                continue;
+            }
+        };
+        for f in found {
+            let name = f.mount_name();
+            if filter.rank(&name, f.is_dir()).is_none() {
+                continue;
+            }
+            let Some(path) = f.path_in(&folders) else { continue };
+            let full = crate::drive::location(&account, &path);
+            let bytes = full.as_os_str().as_bytes().to_vec();
+            if have.contains(&bytes) {
+                continue;
+            }
+            let shown = name.strip_suffix(ef_cloud::drive::LINK_SUFFIX).unwrap_or(&name);
+            let ftype = if f.is_dir() { FType::Dir } else { FType::File };
+            ran.outcome.hits.push(Hit {
+                rank: ranker.rank(shown.as_bytes()),
+                path: bytes,
+                root: u16::MAX,
+                depth: 0,
+                ftype,
+                meta: Some(Box::new(crate::filter::Meta { ftype, size: f.size.max(0) as u64, mtime: units::from_unix(f.modified), mode: 0o644, uid: 0, gid: 0, nlink: 1, dev: 0, ino: 0 })),
+            });
+        }
+    }
+    failed.map(|e| format!("Google Drive live search: {e}"))
+}
+
 /// `ef` reaches Drive only with both switches on (they never turn each other on).
 pub fn ef_searches_drive(settings: &Settings) -> bool {
     settings.agents.gdrive && settings.cloud.index
+}
+
+/// The part of a search that Google Drive's live search can serve: plain words, with
+/// type, extension and hidden-file rules applied by our own matcher afterwards.
+#[derive(Clone, Debug)]
+pub struct LiveFilter {
+    text: String,
+    kind: crate::KindFilter,
+    ext: Option<String>,
+    hidden: bool,
+}
+
+impl LiveFilter {
+    /// Rank of a Drive name (Google Docs by their real name), or `None` if our rules say no.
+    pub fn rank(&self, name: &str, dir: bool) -> Option<u64> {
+        let q = crate::Query { text: &self.text, within: crate::ROOT, kind: self.kind, ext: self.ext.as_deref(), hidden: self.hidden, limit: None };
+        let m = crate::matcher::Matcher::new(&q)?;
+        let shown = name.strip_suffix(ef_cloud::drive::LINK_SUFFIX).unwrap_or(name);
+        if !self.hidden && shown.starts_with('.') {
+            return None;
+        }
+        let folded = crate::fold::fold(shown);
+        m.accepts(&folded, if dir { crate::Kind::Dir } else { crate::Kind::File }).then(|| m.rank(&folded))
+    }
+}
+
+/// What to ask Drive for this search, and how to judge its answers.
+pub fn live_filter(a: &FindArgs) -> Result<(ef_cloud::live::Ask, LiveFilter), ef_cloud::live::Skip> {
+    use ef_cloud::live::{Ask, Skip};
+    if !matches!(a.syntax, None | Some(Syntax::Words)) || !a.sizes.is_empty() || a.newer.is_some() || a.older.is_some() || a.owner.is_some() || a.full_path {
+        return Err(Skip::Pattern);
+    }
+    let text = a.pattern.clone().ok_or(Skip::TooShort)?;
+    let kind = if a.types.dir && !a.types.file { crate::KindFilter::Dirs } else if a.types.file || a.types.not_dir { crate::KindFilter::Files } else { crate::KindFilter::Any };
+    let ask = Ask { words: text.split_whitespace().map(str::to_string).collect(), dirs_only: kind == crate::KindFilter::Dirs, files_only: kind == crate::KindFilter::Files, modified_after: None };
+    ef_cloud::live::translate(&ask)?;
+    Ok((ask, LiveFilter { text, kind, ext: a.exts.first().cloned(), hidden: a.hidden }))
 }
 
 fn add_cached_hits(a: &FindArgs, ran: &mut Ran, entries: fn(&crate::Query<'_>) -> Vec<crate::phone::Entry>) {

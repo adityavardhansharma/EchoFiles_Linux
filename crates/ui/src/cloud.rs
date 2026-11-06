@@ -105,6 +105,7 @@ pub struct CloudState {
     /// Drive index runs and folder maps.
     pub index: crate::cloud_index::CloudIndex,
     index_at: Option<Instant>,
+    pub live: crate::cloud_live::LiveState,
 }
 
 impl std::fmt::Debug for CloudState {
@@ -176,6 +177,10 @@ pub enum CloudMsg {
     Crawled { account: String, dirs_only: bool, result: Result<(usize, HashMap<String, String>), String> },
     Folders(String, HashMap<String, String>),
     Listed { dir: PathBuf, account: String, path: String, entries: Vec<drive::Entry> },
+    // live search
+    LiveDue { pane: u64, generation: u64 },
+    LiveResults { pane: u64, generation: u64, result: Result<Vec<crate::cloud_live::Answer>, ef_cloud::Error> },
+    LiveChecked { pane: u64, generation: u64, gone: Vec<PathBuf> },
 }
 
 /// A sign-in handle that can travel in a message.
@@ -957,6 +962,9 @@ impl App {
                 Task::batch(ids.iter().map(|id| self.cloud_crawl(id, false)).collect::<Vec<_>>())
             }
             CloudMsg::Crawled { account, dirs_only, result } => self.cloud_crawled(account, dirs_only, result),
+            CloudMsg::LiveDue { pane, generation } => self.cloud_live_due(pane, generation),
+            CloudMsg::LiveResults { pane, generation, result } => self.cloud_live_results(pane, generation, result),
+            CloudMsg::LiveChecked { pane, generation, gone } => self.cloud_live_checked(pane, generation, gone),
             CloudMsg::Folders(account, f) => {
                 self.cloud.index.folders.insert(account, f);
                 Task::none()

@@ -24,7 +24,7 @@ mod fold_tables;
 pub mod gitignore;
 pub mod glob;
 pub mod live;
-mod matcher;
+pub(crate) mod matcher;
 pub mod pattern;
 pub mod suggest;
 pub mod units;
