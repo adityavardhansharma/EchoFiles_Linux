@@ -1509,6 +1509,7 @@ name = "echofiles-index"
 version = "0.1.0"
 dependencies = [
  "divan",
+ "echofiles-cloud",
  "echofiles-config",
  "memchr",
  "mimalloc",
