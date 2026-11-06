@@ -13,6 +13,8 @@ pub mod rc;
 pub mod error;
 pub mod supervisor;
 pub mod uri;
+pub mod drive;
+pub mod signin;
 
 pub use error::{Error, Kind};
 pub use rc::Rc;
