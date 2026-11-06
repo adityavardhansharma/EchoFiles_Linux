@@ -108,3 +108,52 @@ fn search_counted(directory: &Path, q: &Query<'_>) -> (usize, Vec<Entry>) {
         assert_eq!(total, 2); assert_eq!(hits.len(), 1);
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// The running app's phone link, for `ef phone`
+// ---------------------------------------------------------------------------------------
+
+/// A paired phone as the app sees it now.
+#[derive(Clone, Debug)]
+pub struct LinkPhone {
+    pub id: String,
+    pub name: String,
+    /// Reachable over Wi-Fi now (files don't go over Bluetooth).
+    pub online: bool,
+    /// Runs EchoConnect, which answers photo and file requests.
+    pub echoconnect: bool,
+}
+
+/// What `ef phone` needs from the app's phone connection. The app installs one at
+/// startup ([`set_link`]); an `ef` running in its own process has none.
+pub trait Link: Send + Sync {
+    fn phones(&self) -> Vec<LinkPhone>;
+    /// Send `kind` with `body` (a fresh `requestId` is added) and wait for the packet that
+    /// answers it.
+    fn ask(&self, phone: &str, kind: &str, body: serde_json::Value, wait: std::time::Duration) -> Result<serde_json::Value, String>;
+    /// Send a request the phone answers with a file, save that file into `dir` and return
+    /// its path. `wait` bounds the whole exchange; a late transfer is cancelled.
+    fn fetch(&self, phone: &str, kind: &str, body: serde_json::Value, dir: &Path, wait: std::time::Duration) -> Result<PathBuf, String>;
+}
+
+static LINK: std::sync::OnceLock<Box<dyn Link>> = std::sync::OnceLock::new();
+
+/// Called once by the app.
+pub fn set_link(link: Box<dyn Link>) {
+    let _ = LINK.set(link);
+}
+
+pub fn link() -> Option<&'static dyn Link> {
+    LINK.get().map(|b| b.as_ref())
+}
+
+/// The full-storage file index's saved entries for one phone (`phone_index` on), as
+/// (path, size, modified seconds, directory).
+pub fn indexed_files(device: &str) -> Vec<(String, u64, i64, bool)> {
+    let path = ef_config::state_dir().join("phone-index").join(format!("{device}.jsonl"));
+    parse(&path).into_iter().filter_map(|c| {
+        let uri = c.entry.uri.to_string_lossy().into_owned();
+        let rel = uri.strip_prefix("phone://")?.split_once('/')?.1.to_owned();
+        Some((rel, c.entry.size, c.entry.modified, c.entry.directory))
+    }).collect()
+}

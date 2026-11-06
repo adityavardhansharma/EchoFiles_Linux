@@ -67,9 +67,11 @@ The installer adds the **EchoFiles** app launcher and installs `echofiles` and `
 
 - **Open large folders quickly.** Names, sort order and file details are loaded with a parallel, native Rust pipeline.
 - **Search by name across indexed folders.** The index maps from disk, supports Unicode and can skip development caches to keep results useful.
-- **Use the layout that fits the task.** List, grid, tabs and dual pane are available from the main window.
+- **Use the layout that fits the task.** List, grid, column view (each folder opens in a new column, like the macOS browser), tabs and dual pane are available from the main window. Each folder remembers its layout, sort order and icon size, and folders can get their own colour and icon.
+- **Filter as you type.** Ctrl+F narrows the open folder; turn on Subfolders (Ctrl+Shift+F) to reach every folder below it. Resting the pointer on a folder peeks at what's inside.
+- **Drive it from the keyboard.** F1 lists every shortcut, the footer shows the keys that matter right now and what's on the clipboard, and the optional 10xer mode (Ctrl+Shift+Y) adds Yazi-style keys: `j`/`k`, `h`/`l`, `gg`/`G`, Space to mark, `y`/`x`/`p`.
 - **Preview before opening.** Image and text previews, file properties and folder sizes are close at hand.
-- **Move with confidence.** Copy, move, rename, trash and undo are built into the file manager.
+- **Move with confidence.** Copy, move, rename, trash, undo and redo (Ctrl+Shift+Z) are built into the file manager.
 - **Connect to Windows volumes.** Inspect mounted drives, assign letters and choose when a drive can be written to.
 - **Open network places.** Connect to Windows shares (SMB), SSH servers (SFTP) and FTP/FTPS servers from the sidebar's Network section or Ctrl+Shift+S, then browse, copy and rename there like any folder. Addresses such as `smb://nas/Media` or `\\nas\Media` also work in the path bar and from other apps.
 - **Use your Android phone over Wi-Fi.** Pair it with the free KDE Connect app (Google Play or F-Droid) — nothing else to install on the laptop. Browse its files and photos, import new photos, send files both ways, share the clipboard, ring it, and see its battery, notifications and texts. See [Connect your phone](#connect-your-phone).

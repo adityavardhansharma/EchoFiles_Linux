@@ -7,6 +7,7 @@
 //! start_at_login = false      # launch in the background when you log in
 //! open_to = "home"            # "home" or "last"
 //! show_hidden = false
+//! keys = "standard"           # "standard" or "10xer" (Yazi-style: hjkl, gg/G, Space marks)
 //!
 //! [search]
 //! index = true                # off: search reads folders live instead
@@ -20,11 +21,14 @@
 //! cli = true                  # off: `ef` refuses to run
 //! skill = false               # EchoFiles skill linked into global agent skill folders
 //! gdrive = false              # let `ef` search Google Drive (separate from [cloud] index)
+//! phone = false               # let `ef phone photos` copy photos from a paired phone
 //!
 //! [appearance]
 //! density = "default"         # "compact", "default" or "comfortable"
 //! preview = false             # the preview pane (Space)
-//! view = "auto"               # "auto" (grid in picture/video folders), "list" or "grid"
+//! view = "auto"               # "auto" (grid in picture/video folders), "list", "grid" or "columns"
+//! footer = true               # the footer with shortcuts and what's on the clipboard
+//! peek = true                 # hovering a folder shows what's inside
 //!
 //! [sidebar]
 //! pinned = ["~/Projects"]     # the Pinned section, in order
@@ -115,6 +119,16 @@ impl Density {
     }
 }
 
+/// How the keyboard drives the file list: the usual keys, or Yazi-style single letters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum KeyMode {
+    #[default]
+    #[serde(rename = "standard")]
+    Standard,
+    #[serde(rename = "10xer")]
+    TenXer,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct General {
@@ -122,11 +136,12 @@ pub struct General {
     pub start_at_login: bool,
     pub open_to: OpenTo,
     pub show_hidden: bool,
+    pub keys: KeyMode,
 }
 
 impl Default for General {
     fn default() -> Self {
-        General { background: false, start_at_login: false, open_to: OpenTo::Home, show_hidden: false }
+        General { background: false, start_at_login: false, open_to: OpenTo::Home, show_hidden: false, keys: KeyMode::Standard }
     }
 }
 
@@ -187,16 +202,19 @@ pub struct Agents {
     /// `ef` may search Google Drive. Separate from `[cloud] index`: it never follows it,
     /// and `ef` searches Drive only when both are on.
     pub gdrive: bool,
+    /// `ef phone photos` may copy photos and videos from a paired phone. Off until the
+    /// user turns it on: it hands personal pictures to whatever runs `ef`.
+    pub phone: bool,
 }
 
 impl Default for Agents {
     fn default() -> Self {
-        Agents { cli: true, skill: false, gdrive: false }
+        Agents { cli: true, skill: false, gdrive: false, phone: false }
     }
 }
 
-/// How folders open: every folder as a list, every folder as a grid, or grid only where
-/// pictures and videos live.
+/// How folders open: every folder as a list, every folder as a grid, every folder in
+/// columns, or grid only where pictures and videos live.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DefaultView {
@@ -204,14 +222,25 @@ pub enum DefaultView {
     Auto,
     List,
     Grid,
+    Columns,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
     pub density: Density,
     pub preview: bool,
     pub view: DefaultView,
+    /// The footer with shortcut hints and the clipboard.
+    pub footer: bool,
+    /// Hovering a folder shows a popover of what's inside.
+    pub peek: bool,
+}
+
+impl Default for Appearance {
+    fn default() -> Self {
+        Appearance { density: Density::Default, preview: false, view: DefaultView::Auto, footer: true, peek: true }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -454,6 +483,12 @@ pub fn cloud_mount_root() -> PathBuf {
 /// Inside a mounted Google Drive.
 pub fn is_cloud_path(p: &Path) -> bool {
     p.starts_with(cloud_mount_root())
+}
+
+/// `$XDG_CACHE_HOME/echofiles/phone` — photos `ef phone photos` copied, one folder per
+/// phone, laid out like the phone's storage.
+pub fn phone_cache_dir() -> PathBuf {
+    xdg("XDG_CACHE_HOME", ".cache").join("echofiles/phone")
 }
 
 /// `$XDG_RUNTIME_DIR/echofiles.sock` — the running app listens here.

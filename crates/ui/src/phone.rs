@@ -305,6 +305,8 @@ pub fn start() {
         let t2 = tx.clone();
         // On failure `Event::Failed` has already said why.
         match Service::start(move |e| {
+            // Answers to `ef phone` never reach the window.
+            if crate::phone_link::claim(&e) { return; }
             let _ = t2.unbounded_send(PhoneMsg::Event(e));
         }) {
             Ok(s) => { crate::connect::bluetooth(s.clone()); let _ = SERVICE.set(s); },
