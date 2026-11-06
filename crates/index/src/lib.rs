@@ -595,6 +595,7 @@ impl Index {
 
 /// Cached phone file names remain searchable when the phone is offline.
 pub mod phone;
+pub mod drive;
 
 /// The common cross-root ranking key, also used when merging live and mapped results.
 pub fn rank_name(text: &str, name: &[u8]) -> u64 {

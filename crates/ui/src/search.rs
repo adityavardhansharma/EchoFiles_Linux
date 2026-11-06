@@ -51,6 +51,25 @@ impl Results {
     }
 }
 
+/// "Google Drive › Work", or "Google Drive · offline" for a Drive result that isn't mounted.
+pub fn drive_location(settings: &Settings, path: &std::path::Path) -> Option<String> {
+    let text = path.to_string_lossy();
+    let (uri, mounted) = match ef_cloud::DriveUri::from_mount_path(path) {
+        Some(u) => (u, true),
+        None => (ef_cloud::DriveUri::parse(&text)?, false),
+    };
+    let name = settings.cloud.accounts.iter().find(|a| a.id == uri.account).map_or("Google Drive", |a| a.name.as_str());
+    let parent = uri.parent().map(|p| p.path).unwrap_or_default();
+    let mut s = name.to_string();
+    if !mounted {
+        s.push_str(" · offline");
+    } else if !parent.is_empty() {
+        s.push_str(" › ");
+        s.push_str(&parent.replace('/', " › "));
+    }
+    Some(s)
+}
+
 fn hit(path: PathBuf, is_dir: bool) -> Hit {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let location = path.parent().map(config::tilde).unwrap_or_default();
@@ -126,6 +145,10 @@ fn run_with(settings: &Settings, indexes: Arc<find::Indexes>, text: &str, hidden
     if ran.everywhere && settings.phone.phone_index {
         agent::add_phone_hits(&a, &mut ran);
     }
+    // Your own search: Drive's index switch alone decides (ef's Drive switch is for agents).
+    if ran.everywhere && settings.cloud.index {
+        agent::add_drive_hits(&a, &mut ran);
+    }
     let hits = &mut ran.outcome.hits;
     hits.sort_unstable_by(|x, y| x.path.cmp(&y.path));
     hits.dedup_by(|x, y| x.path == y.path);
@@ -139,6 +162,11 @@ fn run_with(settings: &Settings, indexes: Arc<find::Indexes>, text: &str, hidden
             let mut out = hit(path, h.ftype == FType::Dir);
             if h.path.starts_with(b"phone://") {
                 out.location = "Phone · cached; reconnect to open".into();
+            } else if let Some(loc) = drive_location(settings, &out.path) {
+                out.location = loc;
+                if let Some(stem) = out.name.strip_suffix(ef_cloud::drive::LINK_SUFFIX) {
+                    out.name = stem.to_string();
+                }
             }
             if let Some(m) = &h.meta {
                 out.size = if out.is_dir { 0 } else { m.size };

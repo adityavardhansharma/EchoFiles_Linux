@@ -1080,7 +1080,7 @@ impl App {
     }
 }
 
-fn fmt_count(n: usize) -> String {
+pub(crate) fn fmt_count(n: usize) -> String {
     let mut s = String::new();
     ef_core::fmt::count(n, &mut s);
     s
