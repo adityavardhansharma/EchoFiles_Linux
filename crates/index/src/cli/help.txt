@@ -59,3 +59,10 @@ MORE
   ef batch -c 'find x' -c 'recent'           several commands in one call (or stdin)
   ef dupes [PATH] [--min-size 1k]            identical files, biggest waste first
   ef index [PATH] [--all]   re-index          ef status   what's indexed, how fresh
+
+PHONE (Settings → AI agents → Let ef fetch phone photos)
+  ef phone photos today | yesterday | week | 3d | 5 | 2026-10-20 | A..B
+                         copy photos from the paired phone, print local paths, newest first
+    --camera --screenshots --chats   --videos --only-videos   --list   --json   --to DIR
+    --max N (50)  --max-size 1g      --from auto|phone|saved  --phone NAME
+  ef phone status        ef phone cache [--clear]        ef phone help   all the details
