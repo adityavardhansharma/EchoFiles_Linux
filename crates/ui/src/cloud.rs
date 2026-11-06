@@ -98,6 +98,10 @@ pub struct CloudState {
     pub uploaded_at: Option<Instant>,
     /// "Stopped responding" was already said.
     gave_up_shown: bool,
+    /// Settings → Google Drive drafts and facts.
+    pub form: crate::cloud_settings::CloudForm,
+    /// A change (client ID, access) waiting for its sign-in.
+    pub again: Option<crate::cloud_settings::Again>,
 }
 
 impl std::fmt::Debug for CloudState {
@@ -147,6 +151,24 @@ pub enum CloudMsg {
     Downloaded(String, Result<PathBuf, String>),
     CopiedWithin(Vec<PathBuf>, Vec<String>),
     CopyText(String),
+    // Settings → Google Drive
+    ClientDraft(String),
+    SecretDraft(String),
+    ToggleSecret,
+    ToggleAdvanced,
+    SaveClient,
+    UseRcloneApp,
+    ClientsRead(Vec<(String, Option<String>)>),
+    ClientChanged { account: String, result: Result<Option<drive::Client>, String> },
+    ChangeAccess(String),
+    ScopeSet(String, Result<(), String>),
+    CacheDraft(String),
+    CacheSubmit,
+    CacheSize(u64),
+    ClearCache,
+    SetIndex(bool),
+    SetLive(bool),
+    OpenLog,
 }
 
 /// A sign-in handle that can travel in a message.
@@ -207,7 +229,7 @@ impl App {
         Some((a, paths::mount_point(&a.id)))
     }
 
-    fn cloud_mount_options(&self, a: &CloudAccount) -> MountOptions {
+    pub(crate) fn cloud_mount_options(&self, a: &CloudAccount) -> MountOptions {
         MountOptions { cache_max_gb: self.settings.cloud.cache_max_gb, read_only: a.access == CloudAccess::Read }
     }
 
@@ -455,6 +477,7 @@ impl App {
 
     pub(crate) fn cloud_update(&mut self, msg: CloudMsg) -> Task<Message> {
         match msg {
+            CloudMsg::ClientDraft(_) | CloudMsg::SecretDraft(_) | CloudMsg::ToggleSecret | CloudMsg::ToggleAdvanced | CloudMsg::SaveClient | CloudMsg::UseRcloneApp | CloudMsg::ClientsRead(_) | CloudMsg::ClientChanged { .. } | CloudMsg::ChangeAccess(_) | CloudMsg::ScopeSet(..) | CloudMsg::CacheDraft(_) | CloudMsg::CacheSubmit | CloudMsg::CacheSize(_) | CloudMsg::ClearCache | CloudMsg::SetIndex(_) | CloudMsg::SetLive(_) | CloudMsg::OpenLog => self.cloud_settings_update(msg),
             CloudMsg::Checked(avail, fuse) => {
                 self.cloud.checking = false;
                 self.cloud.fuse = fuse;
@@ -499,9 +522,12 @@ impl App {
             }
             CloudMsg::Close => {
                 if let Some(d) = self.cloud.dialog.take()
-                    && matches!(d.step, Step::Waiting { .. })
+                    && let Step::Waiting { again, .. } = d.step
                 {
                     self.cloud_cancel_signin();
+                    if again {
+                        return self.cloud_restore_again();
+                    }
                 }
                 Task::none()
             }
@@ -592,14 +618,22 @@ impl App {
                         )
                     }
                     Err(e) => {
-                        if !again {
+                        let restore = if again { self.cloud_restore_again() } else {
                             self.cloud_drop_remote(&account);
-                        }
+                            Task::none()
+                        };
                         if let Some(d) = &mut self.cloud.dialog {
-                            d.step = Step::Start { access: CloudAccess::Full };
-                            d.error = Some(e);
+                            // Signing in again can't start over from "choose access"; just say why.
+                            if again {
+                                d.step = Step::Missing;
+                                self.cloud.dialog = None;
+                                self.toast_error("Couldn't sign in to Google Drive".into(), e);
+                            } else {
+                                d.step = Step::Start { access: CloudAccess::Full };
+                                d.error = Some(e);
+                            }
                         }
-                        Task::none()
+                        restore
                     }
                 }
             }
@@ -612,7 +646,7 @@ impl App {
                     st.signed_out = false;
                     if again {
                         self.push_toast(Tone::Accent, "Signed in to Google Drive again".into(), None, None);
-                        return self.cloud_mount_task(&account);
+                        return self.cloud_again_done(&account);
                     }
                     let access = self.cloud.pending_access.take().unwrap_or_default();
                     let name = self.cloud_next_name();
@@ -623,9 +657,12 @@ impl App {
                     Task::batch([self.persist_settings(), m])
                 }
                 Err(e) => {
-                    if !again {
-                        self.cloud_drop_remote(&account);
+                    if again {
+                        self.cloud.dialog = None;
+                        self.toast_error("Couldn't sign in to Google Drive".into(), e);
+                        return self.cloud_restore_again();
                     }
+                    self.cloud_drop_remote(&account);
                     self.cloud.dialog = Some(CloudDialog { step: Step::Start { access: CloudAccess::Full }, error: Some(e), opened: Instant::now() });
                     Task::none()
                 }
@@ -1105,6 +1142,8 @@ impl App {
             e.push(item("arrow-up", "Disconnect", None, cm(CloudMsg::Disconnect(a.id.clone()))));
         }
         e.push(item("close", "Sign out…", None, cm(CloudMsg::AskSignOut(a.id.clone()))));
+        e.push(Entry::Sep);
+        e.push(item("settings", "Google Drive settings", None, Message::Settings(crate::settings::SettingsMsg::OpenPage(crate::settings::Page::Cloud))));
         e
     }
 

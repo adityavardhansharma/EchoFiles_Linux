@@ -12,6 +12,8 @@
 mod actions;
 mod app;
 mod cloud;
+mod cloud_index;
+mod cloud_settings;
 mod codec;
 mod columns;
 mod drives;
