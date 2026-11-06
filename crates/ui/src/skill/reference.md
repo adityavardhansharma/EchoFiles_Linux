@@ -130,6 +130,56 @@ Use it when a script or habit expects fd. `ef find`'s extras don't apply.
 | `ef dupes [PATH] [--min-size 1k] [-H] [-I]` | files with identical contents, most wasted space first | groups of paths |
 | `ef status` | indexed folders, entry counts, index age, whether the app is running | text |
 | `ef index [PATH] [--all]` | rebuild the index now (normally the app does this) | stderr summary |
+| `ef phone photos [WHEN…]` | copy photos from the paired phone (see [below](#ef-phone)) | local paths, newest first |
+| `ef phone status` / `ef phone cache [--clear]` | paired phones and saved photo lists / size of local copies | text |
+
+## `ef phone`
+
+Photos and videos from the user's paired phone (EchoConnect), by date or by count. Needs
+Settings → AI agents → **Let ef fetch phone photos** (off by default; exit 3 when off) and
+Settings → Phone → **Files**. Copying needs the EchoFiles app running and the phone on the
+same Wi-Fi; `ef` talks to the phone through the app.
+
+```sh
+ef phone photos today                 # today's photos (local midnight onwards)
+ef phone photos yesterday             # yesterday only
+ef phone photos today yesterday       # several words widen the window: today and yesterday
+ef phone photos week                  # the last 7 calendar days (month: 30)
+ef phone photos 3d                    # today and the 2 days before; 2w = 14 days; 6h = rolling 6 hours
+ef phone photos 5                     # the newest 5 (same as -n 5); combine: `today 3`
+ef phone photos 2026-10-20            # one day;  2026-10-18..2026-10-20  a range (A.. / ..B open)
+ef phone photos --since 2026-10-01 --until 2026-10-10   # any ef time (2d, @unix, RFC 3339)
+ef phone photos                       # no WHEN: the newest 10
+ef phone videos today                 # videos only;  ef phone media today  photos and videos
+ef phone photos all --list            # everything, listed, nothing copied
+```
+
+| Option | Meaning |
+|---|---|
+| `-n, --last N` | the newest N of what matches |
+| `--camera` `--screenshots` `--chats` `--other` | only those folders (DCIM; anything with "Screenshot"; WhatsApp/Telegram/Signal; the rest). Repeatable |
+| `--videos` / `--only-videos` | photos and videos / videos only |
+| `--list` (`--dry-run`) | print `date  size  folder  phone/path  → local copy (if any)`; copy nothing |
+| `--json` | array of `{phone, phone_id, phone_path, name, taken (UTC RFC 3339), size, video, source, path (local or null), copied_now, error?}` |
+| `--to DIR` | also put the copies in DIR (relative to the current folder); never overwrites — `name (2).jpg` |
+| `--from auto\|phone\|saved` | `auto` (default): ask the phone for what's new, else the saved list; `phone`: fail if the phone can't be asked; `saved`: no phone round trip at all |
+| `--phone NAME` | which phone, by name or id, when several are paired |
+| `--max N` / `--max-size 2g` | the most files / bytes one run copies (default 50 / 1 GiB); the newest are kept and stderr says how many more matched |
+
+How it's fast: the app keeps a saved list of the phone's photos (newest first). A run asks
+the phone only for pages newer than that list — "the newest 5" is one round trip of a
+few milliseconds on Wi-Fi — and photos already copied come straight from
+`~/.cache/echofiles/phone/<phone id>/<path on the phone>` without touching the phone.
+Four copies run at once.
+
+When the phone is away (or EchoFiles isn't running), the saved list and the phone file
+index answer; stderr says so, and only photos already on the laptop are returned (the rest
+are reported as `not on the laptop yet`).
+
+Output: one absolute local path per line, newest first (with `--to`, the paths in DIR).
+Problems go to stderr as `ef: PHONE/PATH: reason`. Exit `0` everything asked for was
+returned, `1` nothing matched or some files couldn't be copied, `2` bad arguments, `3`
+turned off in Settings.
 
 ## `--json`
 
