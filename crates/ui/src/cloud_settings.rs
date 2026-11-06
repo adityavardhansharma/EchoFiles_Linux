@@ -295,7 +295,7 @@ impl App {
             };
             rows.push(self.block(self.note(p.warning, "alert", why, Some(("Check again", crate::settings::SettingsMsg::Page(crate::settings::Page::Cloud))))));
         }
-        for a in &c.accounts {
+        for a in c.accounts.iter().filter(|a| a.under.is_none()) {
             let st = self.cloud.status.get(&a.id).cloned().unwrap_or_default();
             let access = if a.access == CloudAccess::Read { "Read-only" } else { "Full access" };
             let mut desc = access.to_string();
@@ -323,6 +323,22 @@ impl App {
             .spacing(style::SPACE_3)
             .align_y(Alignment::Center);
             rows.push(self.setting(&a.name, &desc, controls.into()));
+            // Shared places under it: each indexed only with its own switch (other people's files).
+            for child in c.accounts.iter().filter(|x| x.under.as_deref() == Some(&a.id)) {
+                let what = match child.place {
+                    Some(config::CloudPlace::Shared) => "Files shared with you · read-only",
+                    _ => "Shared drive",
+                };
+                let id = child.id.clone();
+                let controls = row![
+                    text("In search index").size(style::META).font(style::FONT).color(color(p.ink_muted)),
+                    w::switch(p, child.indexed, c.index.then(|| Box::new(move |b| Message::Cloud(CloudMsg::PlaceIndexed(id.clone(), b))) as Box<dyn Fn(bool) -> Message>)),
+                    w::text_button(p, &self.icons, "Remove", None, None, Variant::Ghost, Some(cmsg(CloudMsg::SignOut(child.id.clone())))),
+                ]
+                .spacing(style::SPACE_3)
+                .align_y(Alignment::Center);
+                rows.push(self.setting(&format!("    {}", child.name), &format!("{what}. {}", if c.index { "Not in the search index unless switched on here." } else { "Turn on the Google Drive index first." }), controls.into()));
+            }
         }
         rows.push(self.setting(
             if c.accounts.is_empty() { "Connect Google Drive" } else { "Add another account" },
@@ -344,6 +360,12 @@ impl App {
             "Search Google Drive live",
             "After showing saved results, also asks Google Drive. Google Drive only matches the start of words.",
             w::switch(p, c.live_search, Some(Box::new(|b| Message::Cloud(CloudMsg::SetLive(b))))),
+        ));
+        rows.push(self.setting_with(
+            "Also search inside files",
+            if c.live_search { "Live search also finds Google Drive files whose text contains the words (Google's full-text search). They're marked “matched inside”." } else { "Needs Search Google Drive live." },
+            !c.live_search,
+            w::switch(p, c.fulltext, c.live_search.then(|| Box::new(|b| Message::Cloud(CloudMsg::SetFulltext(b))) as Box<dyn Fn(bool) -> Message>)),
         ));
         groups.push(self.group("Search", rows));
 
@@ -480,7 +502,36 @@ impl App {
         let Some(o) = self.cloud_account(account).map(|a| self.cloud_mount_options(a)) else { return save };
         let id = account.to_string();
         let i2 = id.clone();
-        let remount = background(move || sup.ensure().and_then(|(rc, _)| drive::remount(&rc, &i2, o)), move |r| Message::Cloud(CloudMsg::Mounted(id.clone(), r)));
+        // Shared places copied the old sign-in: give them the new one.
+        let children: Vec<(String, drive::Place, drive::MountOptions)> = self
+            .settings
+            .cloud
+            .accounts
+            .iter()
+            .filter(|c| c.under.as_deref() == Some(account))
+            .map(|c| {
+                let place = match &c.place {
+                    Some(config::CloudPlace::Team { drive }) => drive::Place::SharedDrive(drive.clone()),
+                    _ => drive::Place::SharedWithMe,
+                };
+                (c.id.clone(), place, self.cloud_mount_options(c))
+            })
+            .collect();
+        let parent = id.clone();
+        let remount = background(
+            move || {
+                let (rc, _) = sup.ensure()?;
+                let r = drive::remount(&rc, &i2, o);
+                for (cid, place, co) in &children {
+                    let _ = drive::delete_remote(&rc, cid);
+                    if drive::create_place(&rc, &parent, cid, place).is_ok() {
+                        let _ = drive::remount(&rc, cid, *co);
+                    }
+                }
+                r
+            },
+            move |r| Message::Cloud(CloudMsg::Mounted(id.clone(), r)),
+        );
         if let Some(st) = self.cloud.status.get_mut(account) {
             st.mounting = true;
         }

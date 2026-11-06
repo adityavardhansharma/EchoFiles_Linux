@@ -604,6 +604,7 @@ Only Drive-specific parts (query, Google Docs, OAuth, quotas) need a real Google
   - As built: server-side copies landed in phase 3; Undo uses `untrash` on the deleted items' folder and says so when it restored more than was deleted; the change feed polls every 60 s for accounts on their own client ID while the index is on (HTTPS via `ureq` + `rustls`, `ef-cloud` only). Drive thumbnails were **not** built: each one needs an authenticated call per file, and the cost/benefit wasn't worth it yet. Drive folders still show icons, not thumbnails.
 
 **Phase 8 — More of Drive.** Shared with me, shared drives, full-text search, multiple accounts polish.
+  - As built: shared places are their own rclone remotes created from the account's token over the socket (no second browser trip), listed under the account, mounted (Shared with me read-only), indexed only with their own switch. Signing the account in again re-copies its token to them. Full-text search is a Settings switch; matches only Drive found by content rank after name matches and say "matched inside". `ef --drive-live` stays name-only.
 
 ## 16. Known limits (say them, don't hide them)
 

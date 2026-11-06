@@ -85,6 +85,51 @@ pub fn client_id(rc: &Rc, account: &str) -> Result<Option<String>, Error> {
     Ok(v.get("client_id").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string))
 }
 
+/// Shared drives the account can see: (Drive's ID, name).
+pub fn shared_drives(rc: &Rc, account: &str) -> Result<Vec<(String, String)>, Error> {
+    let v = rc.call("backend/command", &json!({ "command": "drives", "fs": paths::fs(account) }), rc::METADATA)?;
+    Ok(parse_drives(&v))
+}
+
+pub fn parse_drives(v: &Value) -> Vec<(String, String)> {
+    v.get("result").unwrap_or(v).as_array().map(|a| {
+        a.iter().filter_map(|d| Some((d.get("id")?.as_str()?.to_string(), d.get("name").and_then(Value::as_str).unwrap_or("Shared drive").to_string()))).collect()
+    }).unwrap_or_default()
+}
+
+/// What a new remote under an account shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Place {
+    SharedWithMe,
+    SharedDrive(String),
+}
+
+/// A remote for a shared place, reusing the parent account's sign-in (token and client are
+/// copied over the socket; nothing on a command line, no second browser trip).
+pub fn create_place(rc: &Rc, parent: &str, account: &str, place: &Place) -> Result<(), Error> {
+    let v = rc.call("config/get", &json!({ "name": paths::remote(parent) }), rc::METADATA)?;
+    let mut params = Map::new();
+    for k in ["scope", "token", "client_id", "client_secret"] {
+        if let Some(x) = v.get(k).and_then(Value::as_str).filter(|x| !x.is_empty()) {
+            params.insert(k.into(), json!(x));
+        }
+    }
+    if !params.contains_key("token") {
+        return Err(Error::new(Kind::SignedOut, "the account isn't signed in"));
+    }
+    params.insert("export_formats".into(), json!("link.html"));
+    match place {
+        Place::SharedWithMe => {
+            params.insert("shared_with_me".into(), json!("true"));
+        }
+        Place::SharedDrive(id) => {
+            params.insert("team_drive".into(), json!(id));
+        }
+    }
+    rc.call("config/create", &json!({ "name": paths::remote(account), "type": "drive", "parameters": params, "opt": { "nonInteractive": true } }), rc::METADATA)?;
+    Ok(())
+}
+
 /// Remove the remote (and with it the token) from our config.
 pub fn delete_remote(rc: &Rc, account: &str) -> Result<(), Error> {
     rc.call("config/delete", &json!({ "name": paths::remote(account) }), rc::METADATA)?;
@@ -422,5 +467,6 @@ mod tests {
         assert!(valid_client_id("1234-abcd.apps.googleusercontent.com"));
         assert!(!valid_client_id(".apps.googleusercontent.com") && !valid_client_id("abc"));
         assert_eq!(vfs_options(MountOptions { cache_max_gb: 900, read_only: true })["CacheMaxSize"], "500G");
+        assert_eq!(parse_drives(&json!({"result": [{"id": "0AB", "name": "Team", "kind": "drive#drive"}, {"name": "no id"}]})), vec![("0AB".to_string(), "Team".to_string())]);
     }
 }
