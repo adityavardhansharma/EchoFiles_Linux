@@ -7,6 +7,8 @@ description: >
   files, folder maps, change tracking, duplicates. Use it instead of find/fd/locate/ls -R.
   Triggers: find a file, where is, search files, locate, which folder, all PDFs, recent
   files, what changed, tests for this file, project layout, duplicates, large files.
+  Also pulls photos/videos from the user's paired phone (`ef phone photos today`, `… 5`):
+  triggers: photos from my phone, the picture I just took, today's screenshots, last N pics.
 ---
 
 # EchoFiles — `ef`
@@ -32,7 +34,29 @@ ef why path/to/file                  # why a file does or doesn't show up
 ef related src/parser.rs             # its tests, header/source pair, styles, docs
 ef map                               # project shape: biggest folders, counts, sizes
 ef mark  →  ef changed --since ID    # exactly what a build/script added, removed, modified
+
+ef phone photos today                # copy today's photos from the paired phone; prints local paths
+ef phone photos 5                    # the newest 5 (also: yesterday, week, 3d, 2026-10-20, A..B)
+ef phone photos today --screenshots  # only screenshots (--camera, --chats); --videos adds videos
+ef phone photos week --list          # see what's there first, copy nothing
 ```
+
+## Photos from the phone
+
+`ef phone photos [WHEN…]` copies photos from the user's paired phone and prints one local
+path per line, newest first — then open those paths to look at them. Read the full section
+in [reference.md](reference.md#ef-phone) before using flags beyond the examples above.
+
+- Be specific: ask for the window or count you need (`today`, `3`, `yesterday --camera`);
+  with no WHEN it returns the newest 10. One run copies at most 50 files / 1 GB unless
+  you pass `--max` / `--max-size` — raise them only when the user asked for that many.
+- Use `--list` first when you don't know how many there are; `--json` gives paths, dates,
+  sizes and folders.
+- Copies live in EchoFiles' cache; pass `--to DIR` only when the user wants them somewhere.
+- If it says the feature is off (exit 3), the user hasn't turned on Settings → AI agents →
+  "Let ef fetch phone photos": tell them; don't try to turn it on. If the phone isn't
+  nearby, `ef` answers from the saved list and returns only photos copied before — say so.
+- Photos are personal: don't upload, share or describe them beyond what the user asked.
 
 ## Rules of thumb
 
