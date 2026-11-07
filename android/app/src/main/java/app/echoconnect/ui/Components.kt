@@ -2,9 +2,14 @@ package app.echoconnect.ui
 
 import android.app.Activity
 import android.content.ContextWrapper
+import android.os.Build
+import android.view.HapticFeedbackConstants
+import android.view.View
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -15,56 +20,96 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.*
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.*
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.*
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.vector.PathParser
-import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.*
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import app.echoconnect.Clip
 import app.echoconnect.Connect
 import app.echoconnect.Prefs
 import app.echoconnect.R
+import kotlinx.coroutines.launch
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.sin
 
-// ------------------------------------------------------------------ theme
+// ------------------------------------------------------------------ Relay: two materials and a signal
 
-val Mono = FontFamily(Font(R.font.jetbrains_mono), Font(R.font.jetbrains_mono_bold, FontWeight.Bold))
-val LocalTokens = staticCompositionLocalOf { THEMES.getValue("echo") }
-@Composable fun token(name: String): Color = Color(LocalTokens.current[name] ?: THEMES.getValue("echo").getValue(name))
-internal fun Map<String, Long>.color(name: String) = Color(this[name] ?: THEMES.getValue("echo").getValue(name))
+/**
+ * Relay's palette. Carbon is the laptop's half (it takes the laptop's Omarchy theme under
+ * Match laptop); paper is this phone's half (day or night with the system). Signal is the one
+ * loud colour, kept for things that cross between them.
+ */
+@Immutable data class Relay(
+    val paper: Color, val paper2: Color, val paper3: Color, val cap: Color, val edge: Color,
+    val ink: Color, val ink2: Color, val ink3: Color,
+    val carbon: Color, val carbon2: Color, val carbon3: Color, val capd: Color, val edged: Color,
+    val chalk: Color, val chalk2: Color, val chalk3: Color,
+    val sig: Color, val onSig: Color, val sigInk: Color,
+    val live: Color, val liveInk: Color, val warn: Color, val warnInk: Color, val bad: Color, val badInk: Color,
+    val night: Boolean,
+)
 
-@Composable fun EchoTheme(tokens: Map<String, Long>, content: @Composable () -> Unit) {
-    CompositionLocalProvider(LocalTokens provides tokens) {
-        val scheme = darkColorScheme(primary = token("accent"), onPrimary = token("on-accent"), background = token("bg"), onBackground = token("ink"), surface = token("bg-raised"), onSurface = token("ink"), outline = token("line-strong"), error = token("danger"))
-        MaterialTheme(colorScheme = scheme, typography = Typography(bodyLarge = TextStyle(fontFamily = Mono, fontSize = 15.sp, lineHeight = 22.sp)), content = content)
-    }
+private val SIGNAL = Color(0xFFFF4F1A)
+private val DAY_PAPER = listOf(0xFFECE8E1, 0xFFE2DDD3, 0xFFD2CBBE, 0xFFF9F7F2, 0xFFC4BBAB, 0xFF161512, 0xFF4E4B44, 0xFF67635B)
+private val NIGHT_PAPER = listOf(0xFF191816, 0xFF22211E, 0xFF34322E, 0xFF2C2B28, 0xFF0A0A09, 0xFFF2EFE8, 0xFFC2BEB4, 0xFF9C978E)
+
+fun relayOf(night: Boolean, laptop: Map<String, Long>?): Relay {
+    val p = (if (night) NIGHT_PAPER else DAY_PAPER).map { Color(it) }
+    fun t(k: String, d: Long) = Color(laptop?.get(k) ?: d)
+    val sig = if (laptop != null) t("accent", 0xFFFF4F1A) else SIGNAL
+    val onSig = if (laptop != null) t("on-accent", 0xFF000000) else Color(0xFF160700)
+    return Relay(
+        paper = p[0], paper2 = p[1], paper3 = p[2], cap = p[3], edge = p[4], ink = p[5], ink2 = p[6], ink3 = p[7],
+        carbon = t("bg", 0xFF121211), carbon2 = t("bg-raised", 0xFF1E1E1C), carbon3 = t("line", 0xFF2D2D2A),
+        capd = if (laptop != null) t("bg-raised", 0xFF2B2B28) else Color(0xFF2B2B28), edged = t("bg-deep", 0xFF000000),
+        chalk = t("ink-strong", 0xFFF2EFE8), chalk2 = t("ink", 0xFFBEBAB0), chalk3 = t("ink-muted", 0xFF97938B),
+        sig = sig, onSig = onSig, sigInk = if (night) sig else lerp(sig, Color.Black, 0.28f),
+        live = if (laptop != null) t("success", 0xFF2BD67B) else Color(0xFF2BD67B), liveInk = if (night) Color(0xFF2BD67B) else Color(0xFF0B7A3F),
+        warn = Color(0xFFF0A81C), warnInk = if (night) Color(0xFFF0A81C) else Color(0xFF8A5A00),
+        bad = Color(0xFFF0444B), badInk = if (night) Color(0xFFFF6B70) else Color(0xFFB3191F),
+        night = night,
+    )
+}
+
+val LocalRelay = staticCompositionLocalOf { relayOf(false, null) }
+/** True inside a carbon (laptop-side) surface: text and LEDs pick their carbon shades. */
+val LocalOnCarbon = compositionLocalOf { false }
+@Composable fun relay(): Relay = LocalRelay.current
+
+/** Text colour by emphasis (1 strong, 2 secondary, 3 caption) for the surface we're on. */
+@Composable fun ink(level: Int = 1): Color {
+    val r = relay(); val c = LocalOnCarbon.current
+    return when (level) { 1 -> if (c) r.chalk else r.ink; 2 -> if (c) r.chalk2 else r.ink2; else -> if (c) r.chalk3 else r.ink3 }
 }
 
 /**
- * The theme every EchoConnect window uses: Match laptop (its Omarchy tokens, sent over the
- * connection) or Phone (Echo in dark mode, Catppuccin Latte in light). Also tints the system bars.
+ * Every EchoConnect window: paper follows the system's dark mode; carbon is Relay's own, or the
+ * laptop's Omarchy theme (sent over the connection) under Match laptop. Tints the system bars.
  */
 @Composable fun AppTheme(content: @Composable () -> Unit) {
     val ctx = LocalContext.current
     val state by Connect.state.collectAsStateWithLifecycle()
-    val dark = isSystemInDarkTheme()
+    val night = isSystemInDarkTheme()
     var revision by remember { mutableIntStateOf(0) }
     DisposableEffect(Unit) {
         val prefs = ctx.getSharedPreferences("echoconnect", android.content.Context.MODE_PRIVATE)
@@ -72,57 +117,111 @@ internal fun Map<String, Long>.color(name: String) = Color(this[name] ?: THEMES.
         prefs.registerOnSharedPreferenceChangeListener(listener)
         onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
     }
-    val tokens = remember(revision, state.theme, dark) {
+    val r = remember(revision, state.theme, night) {
         val choice = Prefs.themeMode(ctx)
-        val phone = THEMES.getValue(if (dark) "echo" else "catppuccin-latte")
-        when {
+        val laptop = when {
             choice == "laptop" && state.theme != null -> THEMES.getValue("echo") + state.theme!!
             choice in THEMES -> THEMES.getValue(choice)
-            else -> phone
+            else -> null
         }
+        relayOf(night, laptop)
     }
     val view = LocalView.current
     if (!view.isInEditMode) SideEffect {
         var c = view.context
         while (c is ContextWrapper && c !is Activity) c = c.baseContext
         (c as? Activity)?.window?.let { window ->
-            val light = android.graphics.Color.luminance((tokens["bg"] ?: 0xFF0B1030).toInt()) > 0.5f
-            androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply { isAppearanceLightStatusBars = light; isAppearanceLightNavigationBars = light }
+            androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
+                isAppearanceLightStatusBars = r.carbon.luminance() > 0.5f
+                isAppearanceLightNavigationBars = !r.night
+            }
             window.isNavigationBarContrastEnforced = false
         }
     }
-    EchoTheme(tokens, content)
-}
-
-// ------------------------------------------------------------------ type
-
-@Composable fun Txt(text: String, muted: Boolean = false, size: Int = 15, bold: Boolean = false, modifier: Modifier = Modifier, color: Color? = null, line: Int = size + 7, align: TextAlign? = null, maxLines: Int = Int.MAX_VALUE) {
-    Text(text, modifier, color = color ?: token(if (muted) "ink-muted" else "ink"), fontFamily = Mono, fontSize = size.sp, lineHeight = line.sp, fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal, textAlign = align, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
-}
-/** Muted 14/21 paragraph that opens a screen or step. */
-@Composable fun Lede(text: AnnotatedString, modifier: Modifier = Modifier, align: TextAlign? = null) {
-    Text(text, modifier, color = token("ink-muted"), fontFamily = Mono, fontSize = 14.sp, lineHeight = 21.sp, textAlign = align)
-}
-@Composable fun Lede(text: String, modifier: Modifier = Modifier, align: TextAlign? = null) = Lede(AnnotatedString(text), modifier, align)
-/** 28/34, once per screen at most. */
-@Composable fun Display(text: String, modifier: Modifier = Modifier, align: TextAlign? = null) {
-    Text(text, modifier, color = token("ink-strong"), fontFamily = Mono, fontSize = 28.sp, lineHeight = 34.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.56).sp, textAlign = align)
-}
-/** Plain text with **strong** spans in `ink-strong`. */
-@Composable fun strong(text: String): AnnotatedString {
-    val ink = token("ink-strong")
-    return buildAnnotatedString {
-        text.split("**").forEachIndexed { i, part -> if (i % 2 == 1) withStyle(SpanStyle(color = ink, fontWeight = FontWeight.Bold)) { append(part) } else append(part) }
+    val scheme = if (r.night) darkColorScheme(primary = r.sig, onPrimary = r.onSig, background = r.paper, onBackground = r.ink, surface = r.cap, onSurface = r.ink)
+        else lightColorScheme(primary = r.sig, onPrimary = r.onSig, background = r.paper, onBackground = r.ink, surface = r.cap, onSurface = r.ink)
+    CompositionLocalProvider(LocalRelay provides r, LocalContentColor provides r.ink) {
+        MaterialTheme(colorScheme = scheme, content = content)
     }
 }
 
-// ------------------------------------------------------------------ glyphs and icons
+// ------------------------------------------------------------------ type: four voices
 
-@Composable fun Glyph(name: String, description: String? = null, color: Color = token("ink-muted"), size: Int = 20, stroke: Float = 2f) {
+@OptIn(ExperimentalTextApi::class)
+private fun sans(w: Int) = Font(R.font.instrument_sans, FontWeight(w), variationSettings = FontVariation.Settings(FontVariation.weight(w)))
+/** Names and actions. */
+val Sans = FontFamily(sans(400), sans(500), sans(600), sans(700))
+/** The human aside, always italic and always short. */
+val Serif = FontFamily(Font(R.font.instrument_serif_italic, FontWeight.Normal, FontStyle.Italic))
+/** Engraved labels: Omarchy's font. */
+val Mono = FontFamily(Font(R.font.jetbrains_mono), Font(R.font.jetbrains_mono_bold, FontWeight.Bold))
+/** Live readouts only. */
+@OptIn(ExperimentalTextApi::class)
+val Dot = FontFamily(Font(R.font.doto, FontWeight.Black, variationSettings = FontVariation.Settings(FontVariation.weight(900))))
+
+@Composable fun T(
+    text: String, size: Int = 15, weight: Int = 400, color: Color = LocalContentColor.current, modifier: Modifier = Modifier,
+    line: Int = size + size / 3 + 1, maxLines: Int = Int.MAX_VALUE, align: TextAlign? = null, tracking: Float = 0f, strike: Boolean = false,
+) = Text(text, modifier, color = color, fontFamily = Sans, fontWeight = FontWeight(weight), fontSize = size.sp, lineHeight = line.sp, letterSpacing = (tracking * size).sp,
+    textAlign = align, maxLines = maxLines, overflow = TextOverflow.Ellipsis, textDecoration = if (strike) TextDecoration.LineThrough else null)
+
+@Composable fun T(text: AnnotatedString, size: Int = 15, color: Color = LocalContentColor.current, modifier: Modifier = Modifier) =
+    Text(text, modifier, color = color, fontFamily = Sans, fontSize = size.sp, lineHeight = (size + size / 3 + 1).sp)
+
+@Composable fun Lbl(text: String, color: Color = ink(3), modifier: Modifier = Modifier, size: Int = 11, maxLines: Int = 1, align: TextAlign? = null) =
+    Text(text.uppercase(), modifier, color = color, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = size.sp, lineHeight = (size + 4).sp,
+        letterSpacing = (size * 0.08f).sp, maxLines = maxLines, overflow = TextOverflow.Ellipsis, textAlign = align)
+
+@Composable fun MonoText(text: String, size: Int = 13, color: Color = LocalContentColor.current, modifier: Modifier = Modifier, maxLines: Int = Int.MAX_VALUE) =
+    Text(text, modifier, color = color, fontFamily = Mono, fontSize = size.sp, lineHeight = (size + 7).sp, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+
+@Composable fun Dm(text: String, size: Int, color: Color = LocalContentColor.current, modifier: Modifier = Modifier, glow: Boolean = false) =
+    Text(text, modifier, color = color, fontFamily = Dot, fontWeight = FontWeight.Black, fontSize = size.sp, lineHeight = size.sp, letterSpacing = (size * 0.03f).sp, maxLines = 1,
+        style = if (glow) TextStyle(shadow = Shadow(color.copy(alpha = 0.55f), blurRadius = size * 0.4f)) else TextStyle.Default)
+
+@Composable fun Ser(text: String, size: Int, color: Color = LocalContentColor.current, modifier: Modifier = Modifier) =
+    Text(text, modifier, color = color, fontFamily = Serif, fontStyle = FontStyle.Italic, fontSize = size.sp, lineHeight = (size * 1.05f).sp)
+
+/** A screen title: Sans, with an optional serif aside after it. */
+@Composable fun Title(main: String, aside: String? = null, size: Int = 34, modifier: Modifier = Modifier) {
+    val color = LocalContentColor.current
+    Text(buildAnnotatedString {
+        append(main)
+        if (aside != null) { append(" "); withStyle(SpanStyle(fontFamily = Serif, fontStyle = FontStyle.Italic, fontWeight = FontWeight.Normal, fontSize = (size * 1.15f).sp, letterSpacing = 0.sp)) { append(aside) } }
+    }, modifier.semantics { heading() }, color = color, fontFamily = Sans, fontWeight = FontWeight.SemiBold, fontSize = size.sp, lineHeight = (size * 1.08f).sp, letterSpacing = (-0.035f * size).sp)
+}
+
+/** Plain text with **strong** spans. */
+@Composable fun strong(text: String): AnnotatedString {
+    val c = ink(1)
+    return buildAnnotatedString {
+        text.split("**").forEachIndexed { i, part -> if (i % 2 == 1) withStyle(SpanStyle(color = c, fontWeight = FontWeight.SemiBold)) { append(part) } else append(part) }
+    }
+}
+
+// ------------------------------------------------------------------ glyphs
+
+@Composable fun Glyph(name: String, description: String? = null, color: Color = LocalContentColor.current, size: Int = 20, stroke: Float = 1.9f) {
     val paths = remember(name) { GLYPHS[name].orEmpty().map { PathParser().parsePathString(it).toPath() } }
     Canvas(Modifier.size(size.dp).then(if (description != null) Modifier.semantics { contentDescription = description } else Modifier.clearAndSetSemantics { })) {
         val s = this.size.width / 24f
         withTransform({ scale(s, s, Offset.Zero) }) { paths.forEach { drawPath(it, color, style = Stroke(stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)) } }
+    }
+}
+
+/** A file's format as an engraved plate: PDF, ZIP, PNG… tinted by kind. */
+@Composable fun Plate(fileName: String) {
+    val r = relay()
+    val ext = fileName.substringAfterLast('.', "").uppercase().take(4).ifBlank { "FILE" }
+    val color = when (iconFor(fileName)) {
+        "file-pdf" -> if (LocalOnCarbon.current) r.bad else r.badInk
+        "file-archive" -> if (LocalOnCarbon.current) r.warn else r.warnInk
+        "file-image" -> if (LocalOnCarbon.current) r.sig else r.sigInk
+        "file-sheet" -> if (LocalOnCarbon.current) r.live else r.liveInk
+        else -> ink(2)
+    }
+    Box(Modifier.border(1.5.dp, color, RoundedCornerShape(6.dp)).padding(horizontal = 5.dp, vertical = 1.dp)) {
+        Text(ext, color = color, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 10.sp, lineHeight = 14.sp, letterSpacing = 0.6.sp)
     }
 }
 
@@ -135,502 +234,461 @@ private val EXT = mapOf(
     "rs" to "file-code", "py" to "file-code", "kt" to "file-code", "js" to "file-code", "ts" to "file-code", "c" to "file-code", "sh" to "file-script")
 fun iconFor(name: String) = EXT[name.substringAfterLast('.', "").lowercase()] ?: "file"
 
-/** EchoFiles' 48-unit colour icon for a file, recoloured by the theme's `icon-*` slots. */
-@Composable fun FileIcon(fileName: String, size: Int = 36) {
-    val parts = COLOR_ICONS[iconFor(fileName)] ?: COLOR_ICONS.getValue("file")
-    val tokens = LocalTokens.current
-    val paths = remember(parts) { parts.map { PathParser().parsePathString(it.d).toPath() } }
-    Canvas(Modifier.size(size.dp).clearAndSetSemantics { }) {
-        val s = this.size.width / 48f
-        parts.forEachIndexed { i, p ->
-            withTransform({ scale(s, s, Offset.Zero); translate(p.tx, p.ty); scale(p.scale, p.scale, Offset.Zero) }) {
-                p.fill?.let { drawPath(paths[i], tokens.color(it), alpha = p.alpha) }
-                p.stroke?.let { drawPath(paths[i], tokens.color(it), alpha = p.alpha, style = Stroke(p.width, cap = StrokeCap.Round, join = StrokeJoin.Round)) }
+// ------------------------------------------------------------------ haptics
+
+/** Every mechanical part answers in the hand. */
+object Haptics {
+    fun key(v: View) = v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+    fun tick(v: View) = v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+    fun confirm(v: View) = v.performHapticFeedback(if (Build.VERSION.SDK_INT >= 30) HapticFeedbackConstants.CONFIRM else HapticFeedbackConstants.VIRTUAL_KEY)
+    fun reject(v: View) = v.performHapticFeedback(if (Build.VERSION.SDK_INT >= 30) HapticFeedbackConstants.REJECT else HapticFeedbackConstants.LONG_PRESS)
+    fun heavy(v: View) = v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+}
+
+// ------------------------------------------------------------------ surfaces
+
+/** The laptop's half: carbon, with chalk text. */
+@Composable fun Carbon(modifier: Modifier = Modifier, color: Color? = null, content: @Composable () -> Unit) {
+    val r = relay()
+    CompositionLocalProvider(LocalOnCarbon provides true, LocalContentColor provides r.chalk) {
+        Box(modifier.background(color ?: r.carbon)) { content() }
+    }
+}
+
+/** Back to paper inside a carbon surface. */
+@Composable fun Paper(modifier: Modifier = Modifier, color: Color? = null, content: @Composable () -> Unit) {
+    val r = relay()
+    CompositionLocalProvider(LocalOnCarbon provides false, LocalContentColor provides r.ink) {
+        Box(modifier.then(if (color != null) Modifier.background(color) else Modifier)) { content() }
+    }
+}
+
+/** The carbon header every screen opens with: status-bar inset, optional Back, then content. */
+@Composable fun Head(back: (() -> Unit)? = null, trailing: (@Composable RowScope.() -> Unit)? = null, content: @Composable ColumnScope.() -> Unit) {
+    Carbon(Modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars).padding(start = 16.dp, end = 16.dp, top = if (back != null || trailing != null) 4.dp else 20.dp, bottom = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            if (back != null || trailing != null) Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (back != null) Box(Modifier.offset(x = (-12).dp).size(48.dp).clickable(onClickLabel = "Back", role = Role.Button, onClick = back).semantics { contentDescription = "Back" }, contentAlignment = Alignment.Center) {
+                    Glyph("arrow-left", size = 22)
+                }
+                Spacer(Modifier.weight(1f))
+                trailing?.invoke(this)
+            }
+            content()
+        }
+    }
+}
+
+/** The 8dp signal stripe under a header: the edge where the laptop ends. */
+@Composable fun SigBar() = Box(Modifier.fillMaxWidth().height(8.dp).background(relay().sig))
+
+/** A recessed paper plate that groups rows. */
+@Composable fun PlateGroup(title: String? = null, right: (@Composable () -> Unit)? = null, content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.fillMaxWidth().background(relay().paper2, RoundedCornerShape(20.dp)).padding(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (title != null) Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Lbl(title, ink(2), Modifier.weight(1f).semantics { heading() }); right?.invoke()
+        }
+        content()
+    }
+}
+
+/** One row on a plate: a raised key-coloured strip. */
+@Composable fun PlateRow(title: String, sub: String? = null, subColor: Color? = null, onClick: (() -> Unit)? = null, trailing: (@Composable RowScope.() -> Unit)? = null) {
+    val r = relay()
+    Row(Modifier.fillMaxWidth().heightIn(min = 60.dp).clip(RoundedCornerShape(14.dp)).background(r.cap).then(if (onClick != null) Modifier.clickable(role = Role.Button, onClick = onClick) else Modifier)
+        .padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            T(title, 15, 600, maxLines = 1)
+            if (sub != null) T(sub, 13, color = subColor ?: ink(2), maxLines = 2)
+        }
+        trailing?.invoke(this)
+    }
+}
+
+/** A dashed box for side notes. */
+@Composable fun Note(title: String, body: String, modifier: Modifier = Modifier) {
+    val r = relay()
+    Column(modifier.fillMaxWidth().drawBehind {
+        drawRoundRect(r.paper3, cornerRadius = CornerRadius(16.dp.toPx()), style = Stroke(1.5.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 5.dp.toPx()))))
+    }.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Lbl(title, ink(1)); T(body, 13, color = ink(2))
+    }
+}
+
+// ------------------------------------------------------------------ keys
+
+enum class Tone { Paper, Carbon, Signal, Live, Cut }
+
+/**
+ * A keycap: a face over a 3dp lip. It travels the whole lip in 60 ms when pressed, and answers
+ * with a key haptic. Busy keys keep their size and show three blinking dots.
+ */
+@Composable fun Key(
+    label: String, modifier: Modifier = Modifier, tone: Tone = Tone.Paper, icon: String? = null, trailingIcon: String? = null, height: Dp = 52.dp,
+    enabled: Boolean = true, busy: Boolean = false, size: Int = 15, radius: Dp = 16.dp, note: String? = null, start: Boolean = false, onClick: () -> Unit,
+) {
+    val r = relay()
+    val (face, lip, fg) = when (tone) {
+        Tone.Paper -> Triple(r.cap, r.edge, r.ink)
+        Tone.Carbon -> Triple(r.capd, r.edged, r.chalk)
+        Tone.Signal -> Triple(r.sig, lerp(r.sig, Color.Black, 0.45f), r.onSig)
+        Tone.Live -> Triple(r.live, lerp(r.live, Color.Black, 0.4f), Color(0xFF04170C))
+        Tone.Cut -> Triple(Color(0xFF3A1012), Color(0xFF1C0607), Color(0xFFFFD9DA))
+    }
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    val down by animateDpAsState(if (!enabled || pressed) 3.dp else 0.dp, tween(60, easing = LinearEasing), label = "key")
+    val view = LocalView.current
+    val shape = RoundedCornerShape(radius)
+    Row(modifier.padding(bottom = 3.dp).height(height).alpha(if (enabled) 1f else 0.4f)
+        .clickable(source, null, enabled && !busy, label, Role.Button) { Haptics.key(view); onClick() }
+        .offset(y = down)
+        .drawBehind { drawRoundRect(lip, Offset(0f, (3.dp - down).toPx()), this.size, CornerRadius(radius.toPx())) }
+        .background(face, shape).padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = if (start) Arrangement.spacedBy(12.dp) else Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
+        if (busy) DotLoader(fg) else {
+            if (icon != null) Glyph(icon, color = fg, size = if (height > 56.dp) 22 else 18, stroke = 2.1f)
+            Text(label, color = fg, fontFamily = Sans, fontWeight = FontWeight.SemiBold, fontSize = size.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = if (start) Modifier.weight(1f) else Modifier)
+            if (note != null) Lbl(note, fg.copy(alpha = 0.7f))
+            if (trailingIcon != null) Glyph(trailingIcon, color = fg, size = 18, stroke = 2.1f)
+        }
+    }
+}
+
+/** A small engraved keycap, for paths written as the keys you'd press. */
+@Composable fun Kc(text: String, hot: Boolean = false) {
+    val r = relay()
+    Box(Modifier.drawBehind { drawRoundRect(if (hot) lerp(r.sig, Color.Black, 0.45f) else r.edge, Offset(0f, 2.dp.toPx()), size, CornerRadius(7.dp.toPx())) }
+        .background(if (hot) r.sig else r.cap, RoundedCornerShape(7.dp)).padding(horizontal = 8.dp, vertical = 5.dp)) {
+        Text(text, color = if (hot) r.onSig else r.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 11.sp, lineHeight = 15.sp)
+    }
+}
+
+/** Three square dots blinking in turn: something is on its way. */
+@Composable fun DotLoader(color: Color = relay().sig) {
+    val t = rememberInfiniteTransition(label = "loader")
+    val p by t.animateFloat(0f, 3f, infiniteRepeatable(tween(1200, easing = LinearEasing)), label = "p")
+    Row(Modifier.semantics { contentDescription = "Working" }, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        repeat(3) { i -> Box(Modifier.size(7.dp).alpha(if (p.toInt() == i) 1f else 0.25f).background(color, RoundedCornerShape(2.dp))) }
+    }
+}
+
+// ------------------------------------------------------------------ switches and lights
+
+/**
+ * The slide switch: a square-ish thumb that springs across and overshoots before it settles,
+ * with a tick. "Needs" glows amber: on, but Android hasn't allowed it yet.
+ */
+@Composable fun Slide(checked: Boolean, label: String, needs: Boolean = false, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
+    val r = relay()
+    val view = LocalView.current
+    val x by animateDpAsState(if (checked) 27.dp else 3.dp, spring(dampingRatio = 0.55f, stiffness = 700f), label = "thumb")
+    val track by animateColorAsState(when { needs && checked -> r.warn; checked -> r.sig; LocalOnCarbon.current -> r.carbon3; else -> r.paper3 }, tween(180), label = "track")
+    Box(Modifier.size(60.dp, 48.dp).alpha(if (enabled) 1f else 0.4f)
+        .toggleable(checked, remember { MutableInteractionSource() }, null, enabled, Role.Switch) { Haptics.tick(view); onChange(it) }
+        .semantics { contentDescription = label }, contentAlignment = Alignment.Center) {
+        Box(Modifier.size(56.dp, 30.dp).background(track, RoundedCornerShape(9.dp))) {
+            Box(Modifier.offset(x = x, y = 3.dp).size(26.dp, 24.dp).drawBehind { drawRoundRect(r.edge, Offset(0f, 2.dp.toPx()), size, CornerRadius(7.dp.toPx())) }.background(r.cap, RoundedCornerShape(7.dp)))
+        }
+    }
+}
+
+enum class LedState { Off, Live, Signal, Warn, Bad }
+
+/** A status light: lit ones glow; Warn blinks once a second. */
+@Composable fun Led(state: LedState, size: Dp = 8.dp, blink: Boolean = state == LedState.Warn) {
+    val r = relay()
+    val color = when (state) { LedState.Off -> if (LocalOnCarbon.current) r.carbon3 else r.paper3; LedState.Live -> r.live; LedState.Signal -> r.sig; LedState.Warn -> r.warn; LedState.Bad -> r.bad }
+    val lit by animateFloatAsState(if (state == LedState.Off) 0f else 1f, tween(200, delayMillis = 80), label = "lit")
+    val b = if (blink) rememberInfiniteTransition(label = "blink").animateFloat(1f, 0.3f, infiniteRepeatable(tween(1000, easing = { if (it < 0.5f) 0f else 1f })), label = "b").value else 1f
+    Canvas(Modifier.size(size).alpha(b).clearAndSetSemantics { }) {
+        if (lit > 0f) drawCircle(color.copy(alpha = 0.28f * lit), radius = this.size.minDimension * 0.95f)
+        drawCircle(color, radius = this.size.minDimension / 2)
+    }
+}
+
+// ------------------------------------------------------------------ the seam
+
+enum class SeamMode { Live, Moving, Flat, Voice }
+
+/**
+ * The link between the two halves. Live: a slow trace. Moving: faster, taller, with packets
+ * rising through it. Flat: a line with one search ping crossing. Voice: bars, during a call.
+ */
+@Composable fun Seam(mode: SeamMode, modifier: Modifier = Modifier, height: Dp = 64.dp, left: String? = null, right: String? = null, rightColor: Color? = null, description: String) {
+    val r = relay()
+    val t = rememberInfiniteTransition(label = "seam")
+    val phase by t.animateFloat(0f, 1f, infiniteRepeatable(tween(if (mode == SeamMode.Moving) 500 else 1100, easing = LinearEasing)), label = "phase")
+    val slow by t.animateFloat(0f, 1f, infiniteRepeatable(tween(if (mode == SeamMode.Flat) 3000 else 1600, easing = FastOutSlowInEasing)), label = "slow")
+    val voice by t.animateFloat(0f, (2 * PI).toFloat(), infiniteRepeatable(tween(1000, easing = LinearEasing)), label = "voice")
+    val line = if (mode == SeamMode.Voice) r.live else r.sig
+    Carbon(modifier.fillMaxWidth().height(height)) {
+        Canvas(Modifier.fillMaxSize().clipToBounds().semantics { contentDescription = description }) {
+            drawRect(r.carbon3, size = Size(size.width, 1.dp.toPx()))
+            val mid = size.height / 2
+            when (mode) {
+                SeamMode.Live, SeamMode.Moving -> {
+                    val wl = 40.dp.toPx(); val amp = size.height * if (mode == SeamMode.Moving) 0.26f else 0.17f
+                    val p = Path(); var x = -wl
+                    p.moveTo(x, mid)
+                    while (x <= size.width + wl) { p.lineTo(x, mid - amp * sin(2 * PI * (x / wl - phase)).toFloat()); x += 3f }
+                    drawPath(p, line, style = Stroke(2.dp.toPx(), cap = StrokeCap.Round))
+                    if (mode == SeamMode.Moving) listOf(0.47f to 0f, 0.58f to 0.35f).forEach { (fx, delay) ->
+                        val k = (slow + delay) % 1f
+                        val y = size.height + 10.dp.toPx() - k * (size.height + 40.dp.toPx())
+                        val a = when { k < 0.2f -> k / 0.2f; k > 0.8f -> (1 - k) / 0.2f; else -> 1f }
+                        val w = 10.dp.toPx(); val h = 18.dp.toPx()
+                        drawRoundRect(r.sig.copy(alpha = 0.3f * a), Offset(size.width * fx - w, y - 4.dp.toPx()), Size(w * 2, h + 8.dp.toPx()), CornerRadius(w))
+                        drawRoundRect(r.sig.copy(alpha = a), Offset(size.width * fx - w / 2, y), Size(w, h), CornerRadius(w / 2))
+                    }
+                }
+                SeamMode.Flat -> {
+                    drawRect(r.carbon3, Offset(0f, mid - 1.dp.toPx()), Size(size.width, 2.dp.toPx()))
+                    val a = when { slow < 0.15f -> slow / 0.15f; slow > 0.85f -> (1 - slow) / 0.15f; else -> 1f }
+                    drawCircle(r.chalk3.copy(alpha = a), 4.dp.toPx(), Offset(slow * size.width, mid))
+                }
+                SeamMode.Voice -> {
+                    val step = 7.dp.toPx(); val w = 4.dp.toPx(); val n = ((size.width - 32.dp.toPx()) / step).toInt()
+                    val x0 = (size.width - n * step) / 2
+                    for (i in 0 until n) {
+                        val base = 0.35f + 0.65f * abs(sin(i * 1.7f))
+                        val h = size.height * 0.8f * base * (0.25f + 0.75f * abs(sin(voice + i * 0.6f)))
+                        drawRoundRect(line, Offset(x0 + i * step, mid - h / 2), Size(w, h), CornerRadius(w / 2))
+                    }
+                }
+            }
+        }
+        if (left != null || right != null) Row(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (left != null) Box(Modifier.background(r.carbon, RoundedCornerShape(7.dp)).padding(horizontal = 7.dp, vertical = 4.dp)) { Lbl(left, r.chalk2) }
+            Spacer(Modifier.weight(1f))
+            if (right != null) Box(Modifier.background(r.carbon, RoundedCornerShape(7.dp)).padding(horizontal = 7.dp, vertical = 4.dp)) { Dm(right, 20, rightColor ?: r.chalk) }
+        }
+    }
+}
+
+// ------------------------------------------------------------------ the dial
+
+val DIAL = listOf("Home", "Clip", "Files", "Panel")
+
+/** Navigation as a four-position slide switch: the thumb springs between detents with a tick. */
+@Composable fun Dial(active: Int, badge: Int = 0, modifier: Modifier = Modifier, onChange: (Int) -> Unit) {
+    val r = relay()
+    val view = LocalView.current
+    BoxWithConstraints(modifier.fillMaxWidth().height(66.dp).shadow(18.dp, CircleShape).background(Color(0xFF121211), CircleShape).padding(6.dp)) {
+        val gap = 4.dp
+        val w = (maxWidth - gap * 3) / 4
+        val x by animateDpAsState((w + gap) * active, spring(dampingRatio = 0.7f, stiffness = 500f), label = "dial")
+        Box(Modifier.offset(x = x).width(w).fillMaxHeight().padding(bottom = 2.dp).drawBehind { drawRoundRect(Color(0xFFC4BBAB), Offset(0f, 2.dp.toPx()), size, CornerRadius(size.height / 2)) }.background(Color(0xFFF9F7F2), CircleShape))
+        Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(gap)) {
+            DIAL.forEachIndexed { i, name ->
+                val on = i == active
+                Column(Modifier.weight(1f).fillMaxHeight().clip(CircleShape).selectable(on, role = Role.Tab) { if (!on) { Haptics.tick(view); onChange(i) } },
+                    horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically)) {
+                    Box(Modifier.size(4.dp).background(if (on) r.sig else Color(0xFF2D2D2A), CircleShape))
+                    Lbl(if (i == 2 && badge > 0) "$name $badge" else name, if (on) Color(0xFF161512) else Color(0xFF97938B))
+                }
             }
         }
     }
 }
 
-// ------------------------------------------------------------------ interaction
+// ------------------------------------------------------------------ tickets and slips
 
-/** Click with the flat `state-press` layer (no ripple), drawn under the content. */
-@Composable fun Modifier.tap(enabled: Boolean = true, role: Role? = Role.Button, label: String? = null, radius: Dp = 0.dp, onClick: () -> Unit): Modifier {
-    val source = remember { MutableInteractionSource() }
-    val pressed by source.collectIsPressedAsState()
-    val press = token("state-press")
-    return clickable(source, null, enabled, label, role, onClick).drawBehind { if (pressed) drawRoundRect(press, cornerRadius = CornerRadius(radius.toPx())) }
+/** A ticket: rounded, with two notches at the perforation and a dashed tear line before the stub. */
+class TicketShape(private val stub: Dp, private val radius: Dp = 16.dp, private val notch: Dp = 7.dp) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline = with(density) {
+        val x = size.width - stub.toPx(); val n = notch.toPx()
+        val body = Path().apply { addRoundRect(RoundRect(0f, 0f, size.width, size.height, CornerRadius(radius.toPx()))) }
+        val holes = Path().apply { addOval(Rect(Offset(x, 0f), n)); addOval(Rect(Offset(x, size.height), n)) }
+        Outline.Generic(Path.combine(PathOperation.Difference, body, holes))
+    }
 }
 
-/** Disabled things keep their label at `opacity-disabled`. */
-fun Modifier.disabled(off: Boolean) = if (off) alpha(0.45f) else this
-
-// ------------------------------------------------------------------ controls
-
-enum class Variant { Default, Primary, Danger, Ghost }
-enum class BtnSize(val height: Int, val text: Int, val pad: Int, val icon: Int) { Sm(32, 13, 12, 16), Md(40, 14, 16, 18), Lg(48, 15, 16, 18) }
-
-/** A button whose label says exactly what happens. The hit area is never under 48dp. */
-@Composable fun Button(label: String, variant: Variant = Variant.Default, size: BtnSize = BtnSize.Md, icon: String? = null, block: Boolean = false, enabled: Boolean = true, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val source = remember { MutableInteractionSource() }
-    val pressed by source.collectIsPressedAsState()
-    val (bg, edge, ink) = when (variant) {
-        Variant.Primary -> Triple(token("accent"), token("accent"), token("on-accent"))
-        Variant.Danger -> Triple(token("danger"), token("danger"), token("on-danger"))
-        Variant.Ghost -> Triple(Color.Transparent, Color.Transparent, token("accent-ink"))
-        Variant.Default -> Triple(Color.Transparent, token("line-strong"), token("ink"))
+/** A tear-off slip: scalloped along the top. */
+object SlipShape : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline = with(density) {
+        val top = 3.dp.toPx(); val bottom = 18.dp.toPx(); val r = 4.dp.toPx(); val step = 12.dp.toPx()
+        val body = Path().apply { addRoundRect(RoundRect(0f, 0f, size.width, size.height, CornerRadius(top), CornerRadius(top), CornerRadius(bottom), CornerRadius(bottom))) }
+        val holes = Path(); var cx = step / 2
+        while (cx < size.width) { holes.addOval(Rect(Offset(cx, 0f), r)); cx += step }
+        Outline.Generic(Path.combine(PathOperation.Difference, body, holes))
     }
-    val press = token("state-press")
-    val shape = RoundedCornerShape(4.dp)
-    Box(modifier.then(if (block) Modifier.fillMaxWidth() else Modifier).heightIn(min = 48.dp).disabled(!enabled)
-        .clickable(source, null, enabled, role = Role.Button, onClick = onClick), contentAlignment = Alignment.Center) {
-        Row(Modifier.then(if (block) Modifier.fillMaxWidth() else Modifier).height(size.height.dp).background(bg, shape).border(1.dp, edge, shape)
-            .drawBehind { if (pressed) drawRoundRect(press, cornerRadius = CornerRadius(4.dp.toPx())) }.padding(horizontal = size.pad.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
-            if (icon != null) Glyph(icon, color = ink, size = size.icon)
-            Text(label, color = ink, fontFamily = Mono, fontSize = size.text.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+}
+
+/** Material is origin: [carbon] for things from the laptop, paper for things from this phone. */
+@Composable fun Ticket(carbon: Boolean, modifier: Modifier = Modifier, faded: Boolean = false, stubWidth: Dp = 84.dp, description: String? = null,
+                       body: @Composable ColumnScope.() -> Unit, stub: @Composable ColumnScope.() -> Unit) {
+    val r = relay()
+    val content = @Composable {
+        Row(modifier.fillMaxWidth().height(IntrinsicSize.Min).alpha(if (faded) 0.55f else 1f).clip(TicketShape(stubWidth))
+            .background(if (carbon) r.carbon else r.cap).then(if (description != null) Modifier.semantics(mergeDescendants = true) { contentDescription = description } else Modifier)) {
+            Column(Modifier.weight(1f).padding(start = 16.dp, end = 12.dp, top = 13.dp, bottom = 13.dp), verticalArrangement = Arrangement.spacedBy(8.dp), content = body)
+            val tear = if (carbon) r.carbon3 else r.paper3
+            Column(Modifier.width(stubWidth).fillMaxHeight().drawBehind {
+                drawLine(tear, Offset(1.dp.toPx(), 9.dp.toPx()), Offset(1.dp.toPx(), size.height - 9.dp.toPx()), 2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(5.dp.toPx(), 4.dp.toPx())))
+            }.padding(horizontal = 6.dp, vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically), content = stub)
         }
     }
+    if (carbon) Carbon { content() } else Paper { content() }
 }
 
-/** A 48dp icon-only button; TalkBack reads [label]. */
-@Composable fun IconButton(icon: String, label: String, size: Int = 22, pressed: Boolean = false, enabled: Boolean = true, onClick: () -> Unit) {
-    Box(Modifier.size(48.dp).disabled(!enabled).background(if (pressed) token("state-active") else Color.Transparent, RoundedCornerShape(4.dp))
-        .tap(enabled, label = label, radius = 4.dp, onClick = onClick).semantics { contentDescription = label }, contentAlignment = Alignment.Center) {
-        Glyph(icon, color = token(if (pressed) "accent-ink" else "ink-muted"), size = size)
-    }
+@Composable fun Slip(carbon: Boolean, modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    val r = relay()
+    val inner = @Composable { Column(modifier.fillMaxWidth().clip(SlipShape).background(if (carbon) r.carbon else r.cap).padding(start = 16.dp, end = 12.dp, top = 14.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = content) }
+    if (carbon) Carbon { inner() } else Paper { inner() }
 }
 
-/** On/off that applies at once: 44 × 24, accent when on, knob slides in `dur-base`. */
-@Composable fun Switch(checked: Boolean, label: String, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
-    val knob by animateDpAsState(if (checked) 23.dp else 3.dp, tween(140), label = "knob")
-    val track = token(if (checked) "accent" else "bg-deep")
-    val edge = token(if (checked) "accent" else "line-strong")
-    val dot = token(if (checked) "on-accent" else "ink-muted")
-    Box(Modifier.size(48.dp).disabled(!enabled).toggleable(checked, remember { MutableInteractionSource() }, null, enabled, Role.Switch, onChange).semantics { contentDescription = label }, contentAlignment = Alignment.Center) {
-        Box(Modifier.size(44.dp, 24.dp).background(track, CircleShape).border(1.dp, edge, CircleShape)) {
-            Box(Modifier.offset(x = knob - 1.dp, y = 3.dp).size(16.dp).background(dot, CircleShape))
-        }
-    }
-}
-
-/** Two to four exclusive options in one 40dp well. Selected lifts to `bg-raised` with `accent-ink`. */
-@Composable fun Segmented(options: List<Pair<String, String>>, value: String, label: String, onChange: (String) -> Unit) {
-    Row(Modifier.fillMaxWidth().height(40.dp).background(token("bg-deep"), RoundedCornerShape(4.dp)).border(1.dp, token("line-strong"), RoundedCornerShape(4.dp)).padding(3.dp)
-        .semantics { contentDescription = label }, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-        options.forEach { (key, text) ->
-            val on = key == value
-            Box(Modifier.weight(1f).fillMaxHeight().then(if (on) Modifier.background(token("bg-raised"), RoundedCornerShape(2.dp)).border(1.dp, token("line"), RoundedCornerShape(2.dp)) else Modifier)
-                .selectable(on, role = Role.RadioButton) { onChange(key) }, contentAlignment = Alignment.Center) {
-                Txt(text, size = 13, line = 18, color = token(if (on) "accent-ink" else "ink-muted"), bold = on, maxLines = 1)
+/** Progress as a row of dots, lit one by one; the leading dot blinks. */
+@Composable fun DotBar(fraction: Float?, modifier: Modifier = Modifier, count: Int = 22) {
+    val r = relay()
+    val off = if (LocalOnCarbon.current) r.carbon3 else r.paper3
+    val blink by rememberInfiniteTransition(label = "lead").animateFloat(1f, 0.25f, infiniteRepeatable(tween(800, easing = { if (it < 0.5f) 0f else 1f })), label = "b")
+    val sweep by rememberInfiniteTransition(label = "sweep").animateFloat(0f, 1f, infiniteRepeatable(tween(1400, easing = LinearEasing)), label = "s")
+    Canvas(modifier.fillMaxWidth().height(8.dp).semantics { if (fraction != null) progressBarRangeInfo = ProgressBarRangeInfo(fraction.coerceIn(0f, 1f), 0f..1f) }) {
+        val gap = 3.dp.toPx(); val d = ((size.width - gap * (count - 1)) / count).coerceAtMost(size.height)
+        val lit = fraction?.let { (it.coerceIn(0f, 1f) * count).toInt() }
+        for (i in 0 until count) {
+            val c = Offset(i * (d + gap) + d / 2, size.height / 2)
+            val color = when {
+                lit == null -> if (i == (sweep * count).toInt()) r.sig else off
+                i < lit -> r.sig
+                i == lit -> r.sig.copy(alpha = blink)
+                else -> off
             }
+            drawCircle(color, d / 2, c)
         }
     }
 }
 
-/** A labelled 48dp field on `bg-deep`; errors name the problem and the fix. */
-@Composable fun TextField(value: String, label: String, placeholder: String = "", hint: String? = null, error: String? = null, icon: String? = null, keyboard: KeyboardOptions = KeyboardOptions.Default, onChange: (String) -> Unit) {
+// ------------------------------------------------------------------ fields
+
+/** A mono field on black, outlined in signal while focused and in bad when wrong. */
+@Composable fun Field(value: String, label: String, placeholder: String = "", error: String? = null, tag: String? = null, keyboard: KeyboardOptions = KeyboardOptions.Default, onChange: (String) -> Unit) {
+    val r = relay()
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
-    val edge = token(when { error != null -> "danger"; focused -> "focus-ring"; else -> "line-strong" })
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Txt(label, muted = true, size = 13, line = 18)
-        BasicTextField(value, onChange, Modifier.fillMaxWidth().semantics { contentDescription = label }, singleLine = true, interactionSource = source, keyboardOptions = keyboard,
-            textStyle = TextStyle(fontFamily = Mono, fontSize = 15.sp, color = token("ink")), cursorBrush = SolidColor(token("accent")),
-            decorationBox = { inner ->
-                Row(Modifier.fillMaxWidth().height(48.dp).background(token("bg-deep"), RoundedCornerShape(4.dp)).border(if (focused || error != null) 2.dp else 1.dp, edge, RoundedCornerShape(4.dp)).padding(horizontal = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (icon != null) Glyph(icon, size = 18)
-                    Box(Modifier.weight(1f)) { if (value.isEmpty()) Txt(placeholder, muted = true); inner() }
+    val edge = when { error != null -> r.bad; focused -> r.sig; else -> Color(0xFF2D2D2A) }
+    BasicTextField(value, onChange, Modifier.fillMaxWidth().semantics { contentDescription = label }, interactionSource = source, keyboardOptions = keyboard,
+        textStyle = TextStyle(fontFamily = Mono, fontSize = 16.sp, lineHeight = 23.sp, color = Color(0xFFF2EFE8)), cursorBrush = SolidColor(r.sig),
+        decorationBox = { inner ->
+            Column(Modifier.fillMaxWidth().background(Color.Black, RoundedCornerShape(18.dp)).border(1.5.dp, edge, RoundedCornerShape(18.dp)).padding(horizontal = 16.dp, vertical = 13.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Lbl(error ?: label, if (error != null) r.bad else if (focused) r.sig else Color(0xFF97938B), Modifier.weight(1f))
+                    if (tag != null) Box(Modifier.background(Color(0xFF1E1E1C), RoundedCornerShape(5.dp)).padding(horizontal = 6.dp, vertical = 2.dp)) { Lbl(tag, Color(0xFF97938B)) }
                 }
-            })
-        if (error != null) Txt(error, size = 13, line = 18, color = token("danger-ink")) else if (hint != null) Txt(hint, muted = true, size = 13, line = 18)
-    }
+                Box { if (value.isEmpty()) MonoText(placeholder, 16, Color(0xFF6E6A62)); inner() }
+            }
+        })
 }
 
 // ------------------------------------------------------------------ feedback
 
-/** A state in a word with a 6dp square mark (or an icon). Never colour alone. */
-@Composable fun StatePill(text: String, tone: String? = null, icon: String? = null, small: Boolean = false) {
-    val ink = token(if (tone == null) "ink-muted" else "$tone-ink")
-    val ground = token(if (tone == null) "state-hover" else "$tone-soft")
-    Row(Modifier.height(if (small) 18.dp else 22.dp).background(ground, RoundedCornerShape(2.dp)).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        if (icon != null) Glyph(icon, color = ink, size = 13, stroke = 2.4f) else Box(Modifier.size(6.dp).background(ink))
-        Text(text, color = ink, fontFamily = Mono, fontSize = if (small) 11.sp else 12.sp, lineHeight = 16.sp, maxLines = 1)
+data class Snack(val text: String, val tone: String? = null, val icon: String? = null, val action: String? = null, val id: Long = System.nanoTime(), val onAction: (() -> Unit)? = null)
+
+/** A carbon strip that rises over the dial: an LED, one line, and at most one key. */
+@Composable fun SnackbarHost(snack: Snack?, onDone: () -> Unit) {
+    if (snack == null) return
+    val view = LocalView.current
+    LaunchedEffect(snack.id) {
+        if (snack.tone == "danger") Haptics.reject(view)
+        kotlinx.coroutines.delay(if (snack.action != null) 8000 else 4000); onDone()
+    }
+    val rise = remember(snack.id) { Animatable(20f) }
+    LaunchedEffect(snack.id) { rise.animateTo(0f, spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMediumLow)) }
+    Carbon(Modifier.padding(horizontal = 12.dp, vertical = 10.dp).offset(y = rise.value.dp).fillMaxWidth().shadow(16.dp, RoundedCornerShape(16.dp)).clip(RoundedCornerShape(16.dp)), Color(0xFF121211)) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp).semantics { liveRegion = LiveRegionMode.Polite },
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Led(when (snack.tone) { "danger" -> LedState.Bad; "warning" -> LedState.Warn; null -> LedState.Signal; else -> LedState.Live }, blink = false)
+            T(snack.text, 14, 500, Color(0xFFF2EFE8), Modifier.weight(1f), maxLines = 2)
+            if (snack.action != null) Key(snack.action, tone = Tone.Carbon, height = 38.dp, size = 13, radius = 11.dp) { snack.onAction?.invoke(); onDone() }
+        }
     }
 }
 
-/** A 4dp bar from real bytes; `success` when done, a sweep when the size isn't known. */
-@Composable fun ProgressBar(fraction: Float?, done: Boolean = false, modifier: Modifier = Modifier) {
-    val fill = token(if (done) "success" else "accent")
-    val sweep = if (fraction == null) rememberInfiniteTransition(label = "sweep").animateFloat(-0.3f, 1f, infiniteRepeatable(tween(1400, easing = FastOutSlowInEasing)), label = "x").value else 0f
-    val width by animateFloatAsState(fraction ?: 0f, tween(140, easing = LinearEasing), label = "progress")
-    Box(modifier.fillMaxWidth().padding(top = 6.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(token("line")).drawBehind {
-        if (fraction == null) drawRect(fill, Offset(size.width * sweep, 0f), Size(size.width * .3f, size.height))
-        else drawRect(fill, size = Size(size.width * width.coerceIn(0f, 1f), size.height))
-    }.semantics { if (fraction != null) progressBarRangeInfo = ProgressBarRangeInfo(fraction, 0f..1f) })
-}
-
-@Composable fun Spinner(size: Int = 16) {
-    CircularProgressIndicator(Modifier.size(size.dp).semantics { contentDescription = "Working" }, color = token("accent"), trackColor = token("line"), strokeWidth = 2.dp)
-}
-
-/** A colour block that explains something, with an optional action. */
-@Composable fun Banner(title: String?, body: String, tone: String = "info", icon: String? = null, action: (@Composable () -> Unit)? = null) {
-    val ink = token("ink-strong")
-    Row(Modifier.fillMaxWidth().background(token("$tone-soft"), RoundedCornerShape(4.dp)).padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Box(Modifier.padding(top = 1.dp)) { Glyph(icon ?: mapOf("warning" to "alert", "danger" to "error", "success" to "check").getOrDefault(tone, "info"), color = token("$tone-ink"), size = 18) }
+/** A banner on paper: an LED, a title, a body and an optional key. */
+@Composable fun Banner(title: String, body: String, state: LedState = LedState.Warn, action: (@Composable () -> Unit)? = null) {
+    val r = relay()
+    Row(Modifier.fillMaxWidth().background(if (state == LedState.Bad) r.bad.copy(alpha = 0.12f) else if (state == LedState.Warn) r.warn.copy(alpha = 0.14f) else r.paper2, RoundedCornerShape(18.dp)).padding(14.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Box(Modifier.padding(top = 6.dp)) { Led(state) }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(buildAnnotatedString { if (title != null) { withStyle(SpanStyle(color = ink, fontWeight = FontWeight.Bold)) { append(title) }; append(" ") }; append(body) },
-                color = token("ink"), fontFamily = Mono, fontSize = 13.sp, lineHeight = 19.sp)
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) { T(title, 15, 600); T(body, 13, color = ink(2)) }
             action?.invoke()
         }
     }
 }
 
-data class Snack(val text: String, val tone: String? = null, val icon: String? = null, val action: String? = null, val id: Long = System.nanoTime(), val onAction: (() -> Unit)? = null)
+// ------------------------------------------------------------------ overlays
 
-/** A short result with at most one action: the 2dp accent edge EchoFiles' toasts use. Leaves after 4 s, or 8 with an action. */
-@Composable fun SnackbarHost(snack: Snack?, onDone: () -> Unit) {
-    if (snack == null) return
-    LaunchedEffect(snack.id) { kotlinx.coroutines.delay(if (snack.action != null) 8000 else 4000); onDone() }
-    val rise = remember(snack.id) { Animatable(12f) }
-    LaunchedEffect(snack.id) { rise.animateTo(0f, spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMediumLow)) }
-    val edge = token(snack.tone ?: "accent")
-    Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp).offset(y = rise.value.dp).fillMaxWidth().heightIn(min = 48.dp)
-        .shadow(12.dp, RectangleShape).background(token("bg-raised")).border(2.dp, edge).padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp)
-        .semantics { liveRegion = LiveRegionMode.Polite }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        snack.icon?.let { Glyph(it, color = token(if (snack.tone != null) "${snack.tone}-ink" else "accent-ink"), size = 18) }
-        Txt(snack.text, size = 14, line = 20, color = token("ink-strong"), modifier = Modifier.weight(1f))
-        if (snack.action != null) Box(Modifier.height(40.dp).tap(radius = 4.dp) { snack.onAction?.invoke(); onDone() }.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
-            Txt(snack.action, size = 14, bold = true, color = token("accent-ink"))
-        }
-    }
-}
-
-// ------------------------------------------------------------------ structure
-
-data class BarAction(val icon: String, val label: String, val enabled: Boolean = true, val onClick: () -> Unit)
-
-/** The 56dp top bar: Back or nothing, the title, up to two icon buttons. */
-@Composable fun AppBar(title: String, back: (() -> Unit)? = null, sub: String? = null, actions: List<BarAction> = emptyList()) {
-    Row(Modifier.fillMaxWidth().height(56.dp).background(token("bg")).hairline(bottom = true).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        if (back != null) IconButton("arrow-left", "Back", onClick = back)
-        Column(Modifier.weight(1f).padding(start = if (back == null) 12.dp else 0.dp).semantics { heading() }) {
-            Text(title, color = token("ink-strong"), fontFamily = Mono, fontSize = 20.sp, lineHeight = 26.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.2).sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (sub != null) Txt(sub, muted = true, size = 12, line = 16)
-        }
-        actions.forEach { IconButton(it.icon, it.label, enabled = it.enabled, onClick = it.onClick) }
-    }
-}
-
-/** A 1dp `line` hairline on the top or bottom edge. */
-@Composable fun Modifier.hairline(bottom: Boolean = false): Modifier {
-    val line = token("line")
-    return drawBehind { val y = if (bottom) size.height - 1.dp.toPx() else 0f; drawRect(line, Offset(0f, y), Size(size.width, 1.dp.toPx())) }
-}
-
-val NAV = listOf("home" to "Home", "clipboard" to "Clipboard", "swap" to "Transfers", "settings" to "Settings")
-
-/** Four destinations on a 64dp `bg-deep` bar; the current one gets `bg`, a 2dp accent top edge and `accent-ink`. */
-@Composable fun BottomNav(active: Int, badges: Map<Int, Int> = emptyMap(), onChange: (Int) -> Unit) {
-    Row(Modifier.fillMaxWidth().height(64.dp).background(token("bg-deep")).hairline()) {
-        NAV.forEachIndexed { i, (icon, title) ->
-            val on = i == active
-            val ink = token(if (on) "accent-ink" else "ink-muted")
-            val accent = token("accent")
-            Column(Modifier.weight(1f).fillMaxHeight().background(if (on) token("bg") else Color.Transparent)
-                .drawBehind { if (on) drawRect(accent, size = Size(size.width, 2.dp.toPx())) }
-                .selectable(on, role = Role.Tab) { onChange(i) }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically)) {
-                Box {
-                    Glyph(icon, color = ink, size = 22)
-                    badges[i]?.takeIf { it > 0 }?.let { n ->
-                        Box(Modifier.align(Alignment.TopEnd).offset(x = 10.dp, y = (-4).dp).heightIn(min = 16.dp).widthIn(min = 16.dp).background(token("accent"), CircleShape).padding(horizontal = 4.dp), contentAlignment = Alignment.Center) {
-                            Text("$n", color = token("on-accent"), fontFamily = Mono, fontSize = 10.sp, lineHeight = 16.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-                Text(title, color = ink, fontFamily = Mono, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Normal)
-            }
-        }
-    }
-}
-
-/** Uppercase label header with an optional action link ("See all"). */
-@Composable fun SectionHeader(title: String, action: String? = null, onAction: (() -> Unit)? = null) {
-    Row(Modifier.fillMaxWidth().heightIn(min = 24.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(title.uppercase(), Modifier.weight(1f).semantics { heading() }, color = token("ink-muted"), fontFamily = Mono, fontSize = 11.sp, lineHeight = 16.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.88.sp)
-        if (action != null && onAction != null) Box(Modifier.heightIn(min = 32.dp).tap(radius = 4.dp, onClick = onAction).padding(horizontal = 4.dp), contentAlignment = Alignment.Center) {
-            Txt(action, size = 13, bold = true, color = token("accent-ink"))
-        }
-    }
-}
-
-/** A titled `bg-raised` box of rows with hairlines between them, and an optional muted foot. */
-@Composable fun ListGroup(title: String? = null, action: String? = null, onAction: (() -> Unit)? = null, foot: String? = null, edge: Color? = null, content: @Composable () -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        if (title != null) SectionHeader(title, action, onAction)
-        Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).background(token("bg-raised")).border(1.dp, edge ?: token("line"), RoundedCornerShape(4.dp))) { Divided(content) }
-        if (foot != null) Txt(foot, muted = true, size = 12, line = 17)
-    }
-}
-
-/** A column that puts a 1dp `line` between its children. */
-@Composable fun Divided(content: @Composable () -> Unit) {
-    val line = token("line")
-    val cuts = remember { IntArray(64) }
-    var count by remember { mutableIntStateOf(0) }
-    Layout(content, Modifier.drawWithContent {
-        drawContent()
-        for (i in 0 until minOf(count, cuts.size)) drawRect(line, Offset(0f, cuts[i].toFloat()), Size(size.width, 1.dp.toPx()))
-    }) { measurables, constraints ->
-        val gap = 1.dp.roundToPx()
-        val items = measurables.map { it.measure(constraints.copy(minHeight = 0)) }
-        val height = items.sumOf { it.height } + gap * (items.size - 1).coerceAtLeast(0)
-        layout(constraints.maxWidth, height.coerceIn(constraints.minHeight, constraints.maxHeight)) {
-            var y = 0
-            items.forEachIndexed { i, p ->
-                if (i > 0) { if (i - 1 < cuts.size) cuts[i - 1] = y; y += gap }
-                p.place(0, y); y += p.height
-            }
-            count = (items.size - 1).coerceAtLeast(0)
-        }
-    }
-}
-
-/** One row: lead, title, up to two lines of subtitle, trailing control or chevron. 56dp, 72 with a subtitle. */
-@Composable fun ListRow(
-    title: String, sub: String? = null, icon: String? = null, ok: Boolean = false, lead: (@Composable () -> Unit)? = null,
-    trailing: (@Composable () -> Unit)? = null, chevron: Boolean = false, subColor: Color? = null, disabled: Boolean = false,
-    below: (@Composable ColumnScope.() -> Unit)? = null, onClick: (() -> Unit)? = null,
-) {
-    Row(Modifier.fillMaxWidth().heightIn(min = if (sub != null) 72.dp else 56.dp).disabled(disabled).then(if (onClick != null) Modifier.tap(!disabled, onClick = onClick) else Modifier)
-        .padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        if (icon != null) Box(Modifier.size(36.dp).background(token(if (ok) "success-soft" else "state-hover"), RoundedCornerShape(4.dp)), contentAlignment = Alignment.Center) {
-            Glyph(icon, color = token(if (ok) "success-ink" else "ink-muted"))
-        } else lead?.invoke()
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Txt(title, color = token("ink-strong"), maxLines = 1)
-            if (sub != null) Txt(sub, size = 13, line = 18, color = subColor ?: token("ink-muted"), maxLines = 2)
-            below?.invoke(this)
-        }
-        if (trailing != null) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) { trailing() }
-        if (chevron) Glyph("chevron-right", color = token("ink-faint"), size = 18)
-    }
-}
-
-/** A decision that blocks: square, 2dp accent (or danger) border, buttons on the right that name the outcome. */
-@Composable fun EchoDialog(title: String, onDismiss: () -> Unit, danger: Boolean = false, body: String? = null, content: (@Composable ColumnScope.() -> Unit)? = null, actions: @Composable RowScope.() -> Unit) {
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        val scale = remember { Animatable(0.98f) }
-        LaunchedEffect(Unit) { scale.animateTo(1f, tween(220)) }
-        Column(Modifier.padding(24.dp).widthIn(max = 360.dp).fillMaxWidth().scale(scale.value).shadow(12.dp, RectangleShape).background(token("bg-raised"))
-            .border(2.dp, token(if (danger) "danger" else "accent")).padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 8.dp)) {
-            Text(title, Modifier.padding(bottom = 8.dp).semantics { heading() }, color = token("ink-strong"), fontFamily = Mono, fontSize = 17.sp, lineHeight = 24.sp, fontWeight = FontWeight.Bold)
-            if (body != null) Txt(body, muted = true, size = 14, line = 21, modifier = Modifier.padding(bottom = 8.dp))
-            content?.invoke(this)
-            Row(Modifier.fillMaxWidth().offset(x = 8.dp).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End), content = actions)
-        }
-    }
-}
-
-/** A task over the screen: scrim, square `bg-raised` sheet with a 2dp accent top edge, rising 24dp. */
-@Composable fun BottomSheet(title: String, icon: String? = null, onDismiss: () -> Unit, footer: @Composable RowScope.() -> Unit, content: @Composable ColumnScope.() -> Unit) {
-    BackHandler(onBack = onDismiss)
+/**
+ * A sheet. Where it enters says who's asking: [fromTop] for the laptop (pair requests), from the
+ * bottom for this phone. Scrim fades in 200 ms; the sheet slides with a slight overshoot.
+ */
+@Composable fun Sheet(onDismiss: () -> Unit, fromTop: Boolean = false, carbon: Boolean = true, dismissable: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
+    val r = relay()
+    BackHandler(enabled = dismissable, onBack = onDismiss)
     val shown = remember { Animatable(0f) }
-    LaunchedEffect(Unit) { shown.animateTo(1f, tween(220)) }
-    val accent = token("accent")
+    LaunchedEffect(Unit) { shown.animateTo(1f, tween(450, easing = CubicBezierEasing(0.2f, 0.9f, 0.25f, 1.06f))) }
     Box(Modifier.fillMaxSize()) {
-        Box(Modifier.fillMaxSize().alpha(shown.value).background(token("scrim")).clickable(remember { MutableInteractionSource() }, null, onClickLabel = "Cancel", onClick = onDismiss))
-        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().fillMaxHeight(0.85f).wrapContentHeight(Alignment.Bottom).offset(y = (24 * (1 - shown.value)).dp)
-            .shadow(12.dp, RectangleShape).background(token("bg-raised")).drawBehind { drawRect(accent, size = Size(size.width, 2.dp.toPx())) }.clickable(remember { MutableInteractionSource() }, null) {}) {
-            Box(Modifier.padding(top = 8.dp).size(32.dp, 4.dp).background(token("line-strong"), CircleShape).align(Alignment.CenterHorizontally))
-            Row(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (icon != null) Glyph(icon, color = token("accent-ink"))
-                Text(title, Modifier.semantics { heading() }, color = token("ink-strong"), fontFamily = Mono, fontSize = 17.sp, lineHeight = 24.sp, fontWeight = FontWeight.Bold)
-            }
-            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(start = 6.dp, end = 6.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp), content = content)
-            Row(Modifier.fillMaxWidth().background(token("bg")).hairline().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)).padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End), verticalAlignment = Alignment.CenterVertically, content = footer)
-        }
-    }
-}
-
-// ------------------------------------------------------------------ the laptop
-
-/** The laptop's battery: `success` when charging (with a bolt), `warning` at 20% and below, `danger` at 10%. */
-@Composable fun BatteryMeter(level: Int, charging: Boolean, label: Boolean = true) {
-    val lv = level.coerceIn(0, 100)
-    val ink = token("ink-muted")
-    val fill = when { charging -> token("success"); lv <= 10 -> token("danger"); lv <= 20 -> token("warning"); else -> ink }
-    Row(Modifier.semantics(mergeDescendants = true) { contentDescription = "Laptop battery $lv%" + if (charging) ", charging" else "" }, verticalAlignment = Alignment.CenterVertically) {
-        Canvas(Modifier.size(25.dp, 11.dp)) {
-            val w = 22.dp.toPx(); val r = 3.dp.toPx(); val px = 1.dp.toPx()
-            drawRoundRect(ink, size = Size(w, size.height), cornerRadius = CornerRadius(r), style = Stroke(px))
-            drawRoundRect(fill, Offset(2 * px, 2 * px), Size((w - 4 * px) * lv / 100f, size.height - 4 * px), CornerRadius(px))
-            drawRect(ink, Offset(w, size.height / 2 - 1.5f * px), Size(2 * px, 3 * px))
-        }
-        if (charging) Glyph("bolt", color = token("success-ink"), size = 12)
-        if (label) Txt("$lv%", muted = true, size = 12, line = 16, modifier = Modifier.padding(start = 5.dp))
-    }
-}
-
-/** How the phone reaches the laptop now: Wi-Fi (everything) and Bluetooth (calls and clipboard). */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable fun LinkPills(wifi: Boolean, bluetooth: Boolean) {
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        LinkPill("wifi", if (wifi) "Wi-Fi" else "No Wi-Fi", wifi)
-        LinkPill("bluetooth", if (bluetooth) "Bluetooth" else "Bluetooth off", bluetooth)
-    }
-}
-@Composable private fun LinkPill(icon: String, text: String, on: Boolean) {
-    val edge = token("line-strong")
-    Row(Modifier.height(26.dp).drawBehind {
-        val px = 1.dp.toPx()
-        drawRoundRect(edge, Offset(px / 2, px / 2), Size(size.width - px, size.height - px), CornerRadius(2.dp.toPx()), style = Stroke(px, pathEffect = if (on) null else PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 3.dp.toPx()))))
-    }.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Glyph(icon, color = token(if (on) "accent-ink" else "ink-faint"), size = 14)
-        Txt(text, size = 12, line = 16, color = token(if (on) "ink" else "ink-muted"))
-    }
-}
-
-/** The 6dp `world-linux` square: the laptop's colour in EchoFiles' sidebar. */
-@Composable fun WorldMark(world: String = "linux") = Box(Modifier.size(6.dp).background(token("world-$world")))
-
-/** A call running through the laptop's mic and speakers: who, how long, and Use phone. */
-@Composable fun CallBar(who: String, time: String, onLaptop: Boolean, onUsePhone: () -> Unit) {
-    Row(Modifier.fillMaxWidth().background(token("success-soft"), RoundedCornerShape(4.dp)).padding(start = 12.dp, end = 8.dp, top = 8.dp, bottom = 8.dp).semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Box(Modifier.size(36.dp).background(token("success"), CircleShape), contentAlignment = Alignment.Center) { Glyph("call", color = token("on-success"), size = 18) }
-        Column(Modifier.weight(1f)) {
-            Txt("$who · $time", bold = true, color = token("ink-strong"), line = 21, maxLines = 1)
-            Txt(if (onLaptop) "On laptop mic and speakers · Bluetooth" else "On this phone", muted = true, size = 12, line = 17)
-        }
-        if (onLaptop) Button("Use phone", size = BtnSize.Sm, onClick = onUsePhone)
-    }
-}
-
-// ------------------------------------------------------------------ clipboard
-
-/** One thing that crossed the clipboard: direction, text (or image), where and when, Copy again. */
-@Composable fun ClipItem(c: Clip, onCopy: (() -> Unit)?) {
-    val when_ = relativeTime(c.at)
-    Row(Modifier.fillMaxWidth().heightIn(min = 72.dp).padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Box(Modifier.size(28.dp).background(token("state-hover"), RoundedCornerShape(4.dp)).semantics { contentDescription = if (c.toLaptop) "Phone to laptop" else "Laptop to phone" }, contentAlignment = Alignment.Center) {
-            Glyph(if (c.toLaptop) "arrow-up" else "arrow-down", color = token(if (c.toLaptop) "world-linux" else "world-phone"), size = 16)
-        }
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            when {
-                c.sensitive -> Text("•••• •••• ••••", color = token("ink-muted"), fontFamily = Mono, fontSize = 14.sp, lineHeight = 20.sp, letterSpacing = 1.1.sp, maxLines = 1)
-                c.image -> Txt("Image", size = 14, line = 20, color = token("ink-strong"), maxLines = 1)
-                else -> Txt(c.text.replace('\n', ' '), size = 14, line = 20, color = token("ink-strong"), maxLines = 1)
-            }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Txt((if (c.toLaptop) "To laptop" else "From laptop") + " · " + when_ + if (c.bluetooth) " · Bluetooth" else "", muted = true, size = 12, line = 16, maxLines = 1, modifier = Modifier.weight(1f, fill = false))
-                if (c.sensitive) StatePill("Hidden", icon = "eye-off", small = true)
+        Box(Modifier.fillMaxSize().alpha(shown.value.coerceIn(0f, 1f)).background(Color.Black.copy(alpha = 0.55f))
+            .clickable(remember { MutableInteractionSource() }, null, enabled = dismissable, onClickLabel = "Close", onClick = onDismiss))
+        val shape = if (fromTop) RoundedCornerShape(bottomStart = 30.dp, bottomEnd = 30.dp) else RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp)
+        val body = @Composable {
+            Column(Modifier.fillMaxWidth().graphicsLayer { translationY = (1f - shown.value) * size.height * (if (fromTop) -1f else 1f) }
+                .shadow(24.dp, shape).clip(shape).background(if (carbon) r.carbon else r.paper)
+                .clickable(remember { MutableInteractionSource() }, null) {}
+                .then(if (fromTop) Modifier.windowInsetsPadding(WindowInsets.statusBars) else Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)).imePadding())
+                .padding(start = 16.dp, end = 16.dp, top = if (fromTop) 18.dp else 12.dp, bottom = if (fromTop) 12.dp else 22.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                if (!fromTop) Box(Modifier.size(40.dp, 5.dp).background(if (carbon) r.carbon3 else r.paper3, CircleShape).align(Alignment.CenterHorizontally))
+                content()
+                if (fromTop) Box(Modifier.size(40.dp, 5.dp).background(r.carbon3, CircleShape).align(Alignment.CenterHorizontally))
             }
         }
-        if (onCopy != null) IconButton("copy", "Copy again", size = 18, onClick = onCopy)
+        Box(Modifier.align(if (fromTop) Alignment.TopCenter else Alignment.BottomCenter)) { if (carbon) Carbon { body() } else Paper { body() } }
     }
 }
 
-enum class ClipMode { Auto, Paused, Manual }
-
-/** How phone → laptop clipboard works here; the foot says laptop → phone is always automatic. */
-@Composable fun ClipModeCard(mode: ClipMode, body: String, action: String?, onAction: () -> Unit) {
-    Column(Modifier.fillMaxWidth().background(token("bg-raised"), RoundedCornerShape(4.dp)).border(1.dp, token(if (mode == ClipMode.Paused) "warning" else "line"), RoundedCornerShape(4.dp)).padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Glyph("clipboard", color = token("accent-ink"))
-            Txt("Phone → laptop", bold = true, color = token("ink-strong"), modifier = Modifier.weight(1f))
-            when (mode) { ClipMode.Auto -> StatePill("Automatic", "success"); ClipMode.Paused -> StatePill("Paused", "warning"); ClipMode.Manual -> StatePill("Tap to send") }
-        }
-        Txt(body, muted = true, size = 13, line = 19)
-        if (action != null) Button(action, if (mode == ClipMode.Paused) Variant.Primary else Variant.Default, icon = if (mode == ClipMode.Paused) "refresh" else "bolt", block = true, onClick = onAction)
-        Row(Modifier.fillMaxWidth().hairline().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Glyph("check", color = token("success-ink"), size = 14); Txt("Laptop → phone is always automatic.", muted = true, size = 12, line = 16)
-        }
+/**
+ * A key you hold to confirm something you can't take back: it fills left to right over [millis],
+ * the haptics tighten as it fills, and it fires when full. TalkBack gets a plain action.
+ */
+@Composable fun HoldKey(label: String, millis: Int = 1000, modifier: Modifier = Modifier, onDone: () -> Unit) {
+    val r = relay()
+    val view = LocalView.current
+    val scope = rememberCoroutineScope()
+    val fill = remember { Animatable(0f) }
+    var holding by remember { mutableStateOf(false) }
+    val down by animateDpAsState(if (holding) 3.dp else 0.dp, tween(60), label = "down")
+    LaunchedEffect(holding) {
+        var last = 0
+        while (holding) { val step = (fill.value * 5).toInt(); if (step > last) { Haptics.tick(view); last = step }; kotlinx.coroutines.delay(30) }
     }
-}
-
-// ------------------------------------------------------------------ setup
-
-/** One Android permission: what it unlocks in plain words, and Allowed or the button that grants it. */
-@Composable fun PermissionRow(icon: String, title: String, why: String, granted: Boolean, action: String = "Allow", optional: Boolean = false, onClick: () -> Unit) {
-    ListRow(title, why, icon = icon, ok = granted, trailing = {
-        if (granted) StatePill("Allowed", "success") else Button(action, if (optional) Variant.Default else Variant.Primary, BtnSize.Sm, onClick = onClick)
-    })
-}
-
-class Step(val title: String, val done: String? = null, val body: @Composable ColumnScope.() -> Unit = {})
-
-/** Steps down the screen: done ones collapse to a `success` line, the current one opens, later ones wait. */
-@Composable fun StepList(steps: List<Step>, current: Int) {
-    val line = token("line"); val success = token("success")
-    Column {
-        steps.forEachIndexed { i, s ->
-            val state = if (i < current) 0 else if (i == current) 1 else 2
-            val last = i == steps.lastIndex
-            Row(Modifier.fillMaxWidth().drawBehind { if (!last) drawRect(if (state == 0) success else line, Offset(13.dp.toPx(), 30.dp.toPx()), Size(2.dp.toPx(), size.height - 32.dp.toPx())) }
-                .padding(bottom = if (last) 0.dp else 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                val (ground, edge, ink) = when (state) { 0 -> Triple("success", "success", "on-success"); 1 -> Triple("accent", "accent", "on-accent"); else -> Triple("bg", "line-strong", "ink-muted") }
-                Box(Modifier.size(28.dp).background(token(ground), CircleShape).border(1.dp, token(edge), CircleShape), contentAlignment = Alignment.Center) {
-                    if (state == 0) Glyph("check", "Done", token(ink), 13, 3f) else Txt("${i + 1}", size = 13, bold = true, color = token(ink))
+    Box(modifier.fillMaxWidth().padding(bottom = 3.dp).height(64.dp).offset(y = down)
+        .drawBehind { drawRoundRect(Color(0xFF1C0607), Offset(0f, (3.dp - down).toPx()), size, CornerRadius(16.dp.toPx())) }
+        .clip(RoundedCornerShape(16.dp)).background(Color(0xFF3A1012))
+        .semantics { contentDescription = label; onClick(label) { onDone(); true } }
+        .pointerInput(Unit) {
+            detectTapGestures(onPress = {
+                holding = true
+                val job = scope.launch {
+                    fill.animateTo(1f, tween((millis * (1 - fill.value)).toInt(), easing = LinearEasing))
+                    Haptics.heavy(view); holding = false; onDone()
                 }
-                Column(Modifier.weight(1f).padding(top = 3.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Txt(s.title, bold = true, color = token(when (state) { 0 -> "ink"; 1 -> "ink-strong"; else -> "ink-muted" }))
-                    if (state == 1) Column(Modifier.padding(top = 4.dp).fillMaxWidth().background(token("bg-raised"), RoundedCornerShape(4.dp)).border(1.dp, token("line"), RoundedCornerShape(4.dp)).padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp), content = s.body)
-                    if (state == 0 && s.done != null) Txt(s.done, size = 12, line = 16, color = token("success-ink"))
-                }
-            }
-        }
+                tryAwaitRelease()
+                if (fill.value < 1f) { job.cancel(); holding = false; scope.launch { fill.animateTo(0f, tween(200)) } }
+            })
+        }, contentAlignment = Alignment.Center) {
+        Box(Modifier.align(Alignment.CenterStart).fillMaxHeight().fillMaxWidth(fill.value).background(r.bad))
+        T(label, 16, 600, Color(0xFFFFD9DA))
     }
 }
 
-/** Progress through a flow: one bar per step, like the EchoFiles stepper. */
-@Composable fun Stepper(current: Int, count: Int, label: String, modifier: Modifier = Modifier) {
-    Column(modifier.semantics(mergeDescendants = true) { contentDescription = "Step ${current + 1} of $count, $label" }, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            repeat(count) { i -> Box(Modifier.weight(1f).height(3.dp).background(token(if (i < current) "success" else if (i == current) "accent" else "line"))) }
-        }
-        Txt(if (current >= count) "Done" else "Step ${current + 1} of $count · $label", muted = true, size = 12, line = 16)
-    }
-}
-
-/** The four-pair code both screens show while pairing, identical to EchoFiles'. */
-@Composable fun PairCode(code: String) {
-    val accent = token("accent")
-    val pairs = code.chunked(2)
-    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp).semantics(mergeDescendants = true) { contentDescription = "Pairing code " + pairs.joinToString(" ") }, horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
-        pairs.forEach { p ->
-            Box(Modifier.widthIn(min = 60.dp).background(token("bg-deep"), RoundedCornerShape(4.dp)).border(1.dp, token("line-strong"), RoundedCornerShape(4.dp))
-                .drawBehind { drawRect(accent, Offset(0f, size.height - 2.dp.toPx()), Size(size.width, 2.dp.toPx())) }.padding(vertical = 8.dp, horizontal = 6.dp), contentAlignment = Alignment.Center) {
-                Text(p, color = token("ink-strong"), fontFamily = Mono, fontSize = 28.sp, lineHeight = 34.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.1.sp)
-            }
-        }
-    }
-}
-
-/** A choice card: 2dp accent edge when selected. */
-@Composable fun ChoiceCard(icon: String, title: String, body: String, selected: Boolean, pill: (@Composable () -> Unit)? = null, onClick: () -> Unit) {
-    Column(Modifier.fillMaxWidth().background(token("bg-raised"), RoundedCornerShape(4.dp)).border(if (selected) 2.dp else 1.dp, token(if (selected) "accent" else "line-strong"), RoundedCornerShape(4.dp))
-        .selectable(selected, role = Role.RadioButton, onClick = onClick).padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Glyph(icon, color = token("accent-ink"), size = 18); Txt(title, bold = true, color = token("ink-strong"), modifier = Modifier.weight(1f)); pill?.invoke()
-        }
-        Txt(body, muted = true, size = 13, line = 19)
-    }
-}
-
-/** A line with a success tick. */
-@Composable fun Note(text: String, icon: String = "check", tone: String = "success") {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) { Glyph(icon, color = token("$tone-ink"), size = 14); Txt(text, muted = true, size = 13, line = 18) }
-}
-
-/** Something EchoConnect is waiting for, with a spinner or a pill. */
-@Composable fun Wait(text: String, lead: @Composable () -> Unit = { Spinner() }) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { lead(); Txt(text, muted = true, size = 13, line = 18) }
-}
+// ------------------------------------------------------------------ small helpers
 
 /** "12 min ago" within a day, then "Yesterday 18:22", then the date. */
 fun relativeTime(at: Long, now: Long = System.currentTimeMillis()): String {
@@ -638,14 +696,14 @@ fun relativeTime(at: Long, now: Long = System.currentTimeMillis()): String {
     val time = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(at))
     return when {
         mins < 1 -> "now"
-        mins < 60 -> "$mins min ago"
+        mins < 60 -> "${mins}m ago"
         android.text.format.DateUtils.isToday(at) -> time
         android.text.format.DateUtils.isToday(at + 86_400_000) -> "Yesterday $time"
         else -> java.text.SimpleDateFormat("d MMM HH:mm", java.util.Locale.getDefault()).format(java.util.Date(at))
     }
 }
 
-/** Base-1024 sizes, as the design system writes them: "4.1 MB". */
+/** Base-1024 sizes: "4.1 MB". */
 fun bytes(n: Long): String {
     if (n < 1024) return "$n B"
     val units = listOf("KB", "MB", "GB", "TB")
@@ -654,3 +712,5 @@ fun bytes(n: Long): String {
     return if (v >= 100 || i == 0) "${v.toLong()} ${units[i]}" else String.format(java.util.Locale.US, "%.1f %s", v, units[i])
 }
 
+/** Seconds as mm:ss. */
+fun clock(secs: Long) = "%02d:%02d".format(secs / 60, secs % 60)

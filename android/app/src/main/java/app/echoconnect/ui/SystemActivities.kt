@@ -13,16 +13,21 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -30,27 +35,38 @@ import app.echoconnect.*
 import app.echoconnect.ring.Ring
 import org.json.JSONObject
 
-/** Full screen while the laptop rings this phone: big Stop ringing, two flat outlines pulsing. */
+/**
+ * Full screen while the laptop rings this phone: the screen swaps signal and black every 1.2 s
+ * and rows of HERE scroll in opposite directions. One big key; any volume key stops it too.
+ */
 class RingActivity : ComponentActivity() {
     override fun onCreate(saved: Bundle?) {
         super.onCreate(saved); enableEdgeToEdge(); setShowWhenLocked(true); setTurnScreenOn(true)
         setContent { AppTheme {
-            val laptop = Connect.state.collectAsStateWithLifecycle().value.laptop?.name ?: "Your laptop"
-            val pulse = rememberInfiniteTransition(label = "pulse")
-            val outer by pulse.animateFloat(0.05f, 0.25f, infiniteRepeatable(tween(1400, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "outer")
-            val inner by pulse.animateFloat(0.5f, 0.15f, infiniteRepeatable(tween(1400, 350, FastOutSlowInEasing), RepeatMode.Reverse), label = "inner")
-            Column(Modifier.fillMaxSize().background(token("bg-deep")).safeDrawingPadding().padding(start = 24.dp, end = 24.dp, top = 32.dp, bottom = 24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Box(Modifier.padding(top = 24.dp, bottom = 12.dp).size(168.dp), contentAlignment = Alignment.Center) {
-                    Box(Modifier.fillMaxSize().alpha(outer).border(2.dp, token("accent"), RoundedCornerShape(4.dp)))
-                    Box(Modifier.padding(22.dp).fillMaxSize().alpha(inner).border(2.dp, token("accent"), RoundedCornerShape(4.dp)))
-                    Box(Modifier.size(88.dp).background(token("accent"), RoundedCornerShape(4.dp)), contentAlignment = Alignment.Center) { Glyph("phone-ring", "Ringing", token("on-accent"), 40) }
+            val r = relay()
+            val laptop = Connect.state.collectAsStateWithLifecycle().value.laptop?.name ?: "your laptop"
+            val t = rememberInfiniteTransition(label = "ring")
+            val invert by t.animateFloat(0f, 1f, infiniteRepeatable(tween(2400, easing = LinearEasing)), label = "inv")
+            val run by t.animateFloat(0f, 1f, infiniteRepeatable(tween(6000, easing = LinearEasing)), label = "run")
+            val dark = invert >= 0.5f
+            val bg = if (dark) Color.Black else r.sig
+            val fg = if (dark) r.sig else Color.Black
+            Column(Modifier.fillMaxSize().background(bg).safeDrawingPadding()) {
+                Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 16.dp)) { Lbl("Ringing · full volume", fg, Modifier.weight(1f)); Lbl("From $laptop", fg) }
+                SrOnly("Ringing. $laptop is looking for this phone.", Modifier.semantics { heading() })
+                Column(Modifier.weight(1f).fillMaxWidth().clipToBounds(), verticalArrangement = Arrangement.Center) {
+                    repeat(4) { row ->
+                        val words = if (row % 2 == 0) "HERE  HERE  HERE  HERE  HERE  HERE" else "I'M HERE  I'M HERE  I'M HERE  I'M HERE"
+                        val shift = (if (row % 2 == 0) -run else run - 1f) * 600f
+                        Box(Modifier.fillMaxWidth().height(108.dp)) {
+                            Box(Modifier.wrapContentWidth(unbounded = true, align = Alignment.Start).offset(x = shift.dp)) { Dm(words, 110, fg) }
+                        }
+                    }
                 }
-                Display("Ringing", align = TextAlign.Center)
-                Lede("$laptop is looking for this phone. Full volume, even on silent; the flashlight blinks too.", Modifier.widthIn(max = 280.dp), TextAlign.Center)
-                Spacer(Modifier.weight(1f))
-                Button("Stop ringing", Variant.Primary, BtnSize.Lg, "close", block = true) { stop() }
-                Txt("Any volume key stops it too.", muted = true, size = 12, line = 16)
+                Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Paper { Key("Found it", Modifier.fillMaxWidth(), height = 80.dp, size = 22, radius = 24.dp) { stop() } }
+                    Lbl("Any volume key stops it · the flashlight blinks along", fg, Modifier.fillMaxWidth(), align = TextAlign.Center, maxLines = 2)
+                }
             }
         } }
     }
@@ -61,18 +77,21 @@ class RingActivity : ComponentActivity() {
     }
 }
 
+/** A screen-reader-only line. */
+@Composable private fun SrOnly(text: String, modifier: Modifier) = Box(modifier.size(1.dp).semantics { contentDescription = text })
+
 /** "Send to laptop" in the text-selection menu. */
 class ProcessTextActivity : Activity() {
     override fun onCreate(saved: Bundle?) {
         super.onCreate(saved)
         val text = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString()
         val ok = !text.isNullOrBlank() && Connect.sendClipboard(text)
-        android.widget.Toast.makeText(this, if (ok) "Sent to ${Connect.state.value.laptop?.name ?: "laptop"}" else "Laptop not connected", android.widget.Toast.LENGTH_SHORT).show()
+        android.widget.Toast.makeText(this, if (ok) "Sent up to ${Connect.state.value.laptop?.name ?: "laptop"}" else "No link to the laptop", android.widget.Toast.LENGTH_SHORT).show()
         finish()
     }
 }
 
-/** Share → EchoConnect from any app: what goes, where it lands, Send. */
+/** Share → EchoConnect from any app: a paper sheet (it's leaving this phone) under a carbon destination plate. */
 class ShareActivity : ComponentActivity() {
     private class Item(val uri: Uri, val name: String, val size: Long, val image: Boolean)
 
@@ -82,41 +101,58 @@ class ShareActivity : ComponentActivity() {
         val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.takeIf { uris.isEmpty() && it.isNotBlank() }
         val isLink = text != null && (text.startsWith("https://") || text.startsWith("http://")) && !text.trim().contains(' ')
         setContent { AppTheme {
+            val r = relay()
             val s by Connect.state.collectAsStateWithLifecycle()
             var items by remember { mutableStateOf<List<Item>>(emptyList()) }
-            var thumbs by remember { mutableStateOf<Map<Uri, Bitmap>>(emptyMap()) }
+            var thumbs by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
             LaunchedEffect(Unit) {
                 items = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { uris.map { describe(it) } }
-                items.filter { it.image }.take(4).forEach { item ->
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { contentResolver.loadThumbnail(item.uri, android.util.Size(240, 240), null) }.getOrNull() }?.let { thumbs = thumbs + (item.uri to it) }
+                items.filter { it.image }.take(3).forEach { item ->
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { contentResolver.loadThumbnail(item.uri, android.util.Size(320, 320), null) }.getOrNull() }?.let { thumbs = thumbs + it }
                 }
             }
             val laptop = s.laptop
             val ready = laptop?.lan == true && (text != null || Prefs.on(this, "files"))
             val images = items.isNotEmpty() && items.all { it.image }
             val label = when {
-                text != null -> if (isLink) "Open on laptop" else "Send text"
-                uris.size == 1 -> if (images) "Send photo" else "Send file"
-                images -> "Send ${uris.size} photos"
-                else -> "Send ${uris.size} files"
+                text != null -> if (isLink) "Open there" else "Send text up"
+                uris.size == 1 -> if (images) "Send photo up" else "Send file up"
+                images -> "Send ${uris.size} up"
+                else -> "Send ${uris.size} up"
             }
-            BottomSheet("Send to ${laptop?.name ?: "laptop"}", "laptop", { finish() }, footer = {
-                Button("Cancel", Variant.Ghost) { finish() }
-                Button(label, Variant.Primary, icon = "send", enabled = ready) { send(uris, text, isLink); finish() }
-            }) {
-                if (thumbs.isNotEmpty()) Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    thumbs.values.forEach { Image(it.asImageBitmap(), null, Modifier.size(72.dp).clip(RoundedCornerShape(6.dp)), contentScale = ContentScale.Crop) }
+            Sheet({ finish() }, carbon = false) {
+                Carbon(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp))) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) { Lbl("Up to"); T(laptop?.name ?: "No laptop", 20, 600, maxLines = 1) }
+                            Led(if (laptop?.lan == true) LedState.Live else LedState.Off); Spacer(Modifier.width(8.dp)); Lbl(if (laptop?.lan == true) "Wi‑Fi" else "No Wi‑Fi", ink(2))
+                        }
+                        MonoText(if (text != null) (if (isLink) "→ the laptop's browser" else "→ the laptop's clipboard") else "→ ~/Downloads/Phone", 12, ink(2))
+                    }
                 }
                 when {
-                    laptop == null -> Banner("No laptop paired.", "Open EchoConnect and pair with EchoFiles first.", "warning")
-                    !laptop.lan -> Banner("${laptop.name} is not on this Wi-Fi.", "Files and links cross over Wi-Fi. Open the laptop on the same network and try again.", "warning")
-                    text == null && !Prefs.on(this@ShareActivity, "files") -> Banner("File sharing is off.", "Turn on Files in EchoConnect → Settings.", "warning")
+                    laptop == null -> Banner("No laptop paired", "Open EchoConnect and do the handshake with EchoFiles first.")
+                    !laptop.lan -> Banner("${laptop.name} isn't on this Wi‑Fi", "Files and links cross over Wi‑Fi. Open the laptop on the same network and try again.")
+                    text == null && !Prefs.on(this@ShareActivity, "files") -> Banner("File sharing is off", "Turn on Files on the EchoConnect Panel.")
                 }
-                if (text != null) ListRow(if (isLink) "Opens in the laptop's browser" else "Arrives on the laptop's clipboard", text.take(200), icon = if (isLink) "external" else "clipboard")
-                else {
-                    if (items.size == 1 && thumbs.isEmpty()) ListRow(items[0].name, bytes(items[0].size), lead = { FileIcon(items[0].name) })
-                    val total = items.sumOf { it.size }
-                    ListRow("Lands in ~/Downloads/Phone", (if (items.isEmpty()) "" else "${bytes(total)} · ") + "over Wi-Fi", icon = "folder")
+                if (text != null) Slip(false) { Lbl(if (isLink) "Link" else "Text"); T(text.take(240), 16, maxLines = 5) }
+                else if (thumbs.isNotEmpty()) Box(Modifier.fillMaxWidth().height(190.dp)) {
+                    thumbs.forEachIndexed { i, b ->
+                        Box(Modifier.offset(x = (40 + i * 52).dp, y = (24 - i * 4).dp).rotate(listOf(-10f, -3f, 6f)[i]).size(130.dp, 158.dp).background(r.cap, RoundedCornerShape(10.dp)).padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 26.dp)) {
+                            Image(b.asImageBitmap(), null, Modifier.fillMaxSize().clip(RoundedCornerShape(4.dp)), contentScale = ContentScale.Crop)
+                        }
+                    }
+                    if (uris.size > 1) Dm("×${uris.size}", 60, r.sigInk, Modifier.align(Alignment.CenterEnd).padding(end = 12.dp))
+                } else items.firstOrNull()?.let { first ->
+                    Ticket(false, body = {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) { Plate(first.name); T(first.name, 15, 600, maxLines = 1) }
+                        if (items.size > 1) Lbl("and ${items.size - 1} more")
+                    }, stub = { Dm(bytes(items.sumOf { it.size }).substringBefore(' '), 22); Lbl(bytes(items.sumOf { it.size }).substringAfter(' ')) })
+                }
+                if (text == null && items.isNotEmpty()) Row { Lbl("${items.size} ${if (images) "photos" else "files"}".replace("1 photos", "1 photo").replace("1 files", "1 file"), modifier = Modifier.weight(1f)); Lbl(bytes(items.sumOf { it.size })) }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Key("Cancel", Modifier.weight(1f), height = 58.dp) { finish() }
+                    Key(label, Modifier.weight(2f), Tone.Signal, trailingIcon = "arrow-up", height = 58.dp, size = 16, enabled = ready) { send(uris, text, isLink); finish() }
                 }
             }
         } }
@@ -136,6 +172,6 @@ class ShareActivity : ComponentActivity() {
             }
             uris.forEach { Connect.sendUri(it, count = uris.size) }
         }
-        android.widget.Toast.makeText(app, if (text != null) (if (isLink) "Opening on laptop" else "Sent to the laptop's clipboard") else "Sending to laptop", android.widget.Toast.LENGTH_SHORT).show()
+        android.widget.Toast.makeText(app, if (text != null) (if (isLink) "Opening on the laptop" else "Sent to the laptop's clipboard") else "Sending up to the laptop", android.widget.Toast.LENGTH_SHORT).show()
     }
 }
