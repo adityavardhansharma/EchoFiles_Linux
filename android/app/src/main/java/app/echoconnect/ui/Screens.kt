@@ -36,6 +36,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.echoconnect.*
 import app.echoconnect.clipboard.ClipboardSync
 import app.echoconnect.share.Share
@@ -178,7 +179,7 @@ fun dayLabel(at: Long): String = when {
 
 /** The paper half of a screen: 16dp gutter, 10dp between blocks. */
 @Composable fun PaperBody(top: Dp = 18.dp, content: @Composable ColumnScope.() -> Unit) =
-    Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = top), verticalArrangement = Arrangement.spacedBy(10.dp), content = content)
+    Column(Modifier.fillMaxWidth().sideSafe().padding(start = 16.dp, end = 16.dp, top = top), verticalArrangement = Arrangement.spacedBy(10.dp), content = content)
 
 private fun moving(t: Transfer) = !t.finished && t.error == null && !Share.waiting().containsKey(t.id)
 
@@ -290,6 +291,12 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
                     Dm(clock(((now - call.since) / 1000).coerceAtLeast(0)), 52, r.live, glow = true)
                     Spacer(Modifier.weight(1f)); Lbl(if (call.onLaptop) "Audio via Bluetooth" else "", ink(3))
                 }
+                if (l != null) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Key("Lock screen", Modifier.weight(1f), Tone.Carbon, icon = "lock", height = 46.dp, size = 14, enabled = lan) {
+                        if (Connect.send("echofiles.lock")) host.snack(Snack("Locked ${l.name}", "success")) else host.snack(Snack("No link to ${l.name}", "danger"))
+                    }
+                    Key("Open a link", Modifier.weight(1f), Tone.Carbon, icon = "external", height = 46.dp, size = 14, enabled = lan, onClick = openLink)
+                }
             }
             Seam(SeamMode.Voice, height = 96.dp, description = "Call in progress")
             PaperBody {
@@ -400,12 +407,7 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
     }
     val valid = Uri.parse(link.trim()).let { it.scheme in listOf("http", "https") && !it.host.isNullOrBlank() }
     val name = s.laptop?.name ?: "laptop"
-    Sheet(onDone) {
-        Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.Bottom) {
-            Title("Open on the laptop", size = 24, modifier = Modifier.weight(1f)); Lbl("Its browser")
-        }
-        Field(link, "Address", "https://", error = if (link.isNotBlank() && !valid) "Start with https:// or http://" else null, tag = if (fromClip) "From clipboard" else null,
-            keyboard = KeyboardOptions(keyboardType = KeyboardType.Uri)) { link = it; fromClip = false }
+    Sheet(onDone, footer = {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Key("Cancel", Modifier.weight(1f), Tone.Carbon, height = 56.dp, onClick = onDone)
             Key("Open there", Modifier.weight(2f), Tone.Signal, trailingIcon = "arrow-up", height = 56.dp, enabled = valid && s.laptop?.lan == true) {
@@ -413,6 +415,12 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
                 else host.snack(Snack("No link to $name", "danger"))
             }
         }
+    }) {
+        Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.Bottom) {
+            Title("Open on the laptop", size = 24, modifier = Modifier.weight(1f)); Lbl("Its browser")
+        }
+        Field(link, "Address", "https://", error = if (link.isNotBlank() && !valid) "Start with https:// or http://" else null, tag = if (fromClip) "From clipboard" else null,
+            keyboard = KeyboardOptions(keyboardType = KeyboardType.Uri)) { link = it; fromClip = false }
     }
 }
 
@@ -564,7 +572,7 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
             }
         }
         SigBar()
-        Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Column(Modifier.fillMaxWidth().sideSafe().padding(start = 12.dp, end = 12.dp, top = 18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             val onCount = FEATURES.count { Prefs.on(ctx, it.key, it.default) }
             PlateGroup("Channels · shared with the laptop", right = { Dm("$onCount/${FEATURES.size}", 16, r.sigInk) }) {
                 FEATURES.chunked(2).forEachIndexed { row, pair ->
@@ -682,7 +690,11 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
     val r = relay()
     host.revision
     val pm = ctx.packageManager
-    val apps = remember(host.revision) {
+    // Meters follow new alerts as they arrive, and a minute tick lets old ones age out of the hour.
+    val posted by app.echoconnect.notifications.Notifications.version.collectAsStateWithLifecycle()
+    var minute by remember { mutableIntStateOf(0) }
+    LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(60_000); minute++ } }
+    val apps = remember(host.revision, posted, minute) {
         (app.echoconnect.notifications.Notifications.listener?.activeNotifications.orEmpty().map { it.packageName } + app.echoconnect.notifications.Notifications.recentApps()).distinct().filter { it != ctx.packageName }
             .map { pkg -> pkg to runCatching { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg) }.sortedBy { it.second.lowercase() }
     }
@@ -755,7 +767,7 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
             T("Each one unlocks one channel. Switch a channel off on the Panel and EchoConnect stops using its permission.", 14, color = ink(2))
         }
         SigBar()
-        Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.fillMaxWidth().sideSafe().padding(start = 12.dp, end = 12.dp, top = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             val missing = perms.filter { !it.granted }
             if (missing.isNotEmpty()) {
                 Lbl("● Waiting on you · ${missing.size}", r.warnInk, Modifier.padding(horizontal = 4.dp))
@@ -832,7 +844,7 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
             Lbl("On this phone", ink(3))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) { Kc("Wireless debugging"); Kc("Pair device with QR code", hot = true) }
             Row(Modifier.fillMaxWidth().background(Color.Black, RoundedCornerShape(12.dp)).padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                DotLoader(); Lbl("Waiting for $laptop", ink(2))
+                DotLoader(); Lbl("Waiting for $laptop", OnBlack2)
             }
         },
         St("Allow Display over other apps", "Allowed", "Opens a hidden window for a moment") {
@@ -854,7 +866,7 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
             T("EchoConnect watches each step and ticks it off by itself.", 14, color = ink(2))
         }
         SigBar()
-        Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 22.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        Column(Modifier.fillMaxWidth().sideSafe().padding(start = 16.dp, end = 16.dp, top = 22.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             steps.forEachIndexed { i, st ->
                 val state = if (i < current) 0 else if (i == current) 1 else 2
                 Row(Modifier.alpha(if (state == 2) 0.55f else 1f), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -937,7 +949,7 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
 
 /** The bottom bar of a flow screen: keys sit above the navigation bar. */
 @Composable private fun FlowFoot(content: @Composable ColumnScope.() -> Unit) =
-    Column(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars).padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 22.dp), verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
+    Column(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars).sideSafe().padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 22.dp), verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
 
 @Composable private fun Welcome(onStart: () -> Unit) {
     val r = relay()
@@ -952,16 +964,16 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
             Row { Lbl("EchoConnect", modifier = Modifier.weight(1f)); Lbl("Relay") }
             Column(Modifier.fillMaxWidth().background(Color.Black, RoundedCornerShape(18.dp)).padding(horizontal = 16.dp, vertical = 18.dp).semantics(mergeDescendants = true) { contentDescription = "Files, clipboard, texts, calls, photos and alerts cross between them" },
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Lbl("Now crossing ↑↓")
+                Lbl("Now crossing ↑↓", OnBlack3)
                 Box(Modifier.fillMaxWidth().height(64.dp).clipToBounds()) {
                     Dm(words[idx], 52, r.sig, Modifier.align(Alignment.CenterStart).offset(y = (-64 * roll).dp), glow = true)
                     Dm(words[(idx + 1) % words.size], 52, r.sig, Modifier.align(Alignment.CenterStart).offset(y = (64 * (1 - roll)).dp), glow = true)
                 }
-                Row { Lbl("From · this phone", modifier = Modifier.weight(1f)); Lbl("To · your laptop") }
+                Row { Lbl("From · this phone", OnBlack3, Modifier.weight(1f)); Lbl("To · your laptop", OnBlack3) }
             }
         }
         Seam(SeamMode.Live, height = 56.dp, description = "")
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(start = 22.dp, end = 22.dp, top = 26.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).sideSafe().padding(start = 22.dp, end = 22.dp, top = 26.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Title("Your phone and your laptop,", "on one line.", size = 38)
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 listOf("Stays on your own network", "Encrypted · paired once", "Open source, every line").forEach {
@@ -990,7 +1002,7 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
                     Canvas(Modifier.fillMaxSize().semantics { contentDescription = if (found.isEmpty()) "Scanning this Wi-Fi" else "Found ${found.joinToString { it.name }}" }) {
                         val pad = 12.dp.toPx(); val bottom = size.height - 40.dp.toPx(); val w = size.width - 2 * pad
                         var x = pad; var i = 0
-                        while (x <= size.width - pad) { val major = i % 5 == 0; drawRect(if (major) r.chalk2 else r.chalk3.copy(alpha = 0.5f), Offset(x, bottom - if (major) 34.dp.toPx() else 14.dp.toPx()), Size(if (major) 2.dp.toPx() else 1.dp.toPx(), if (major) 34.dp.toPx() else 14.dp.toPx())); x += 8.dp.toPx(); i++ }
+                        while (x <= size.width - pad) { val major = i % 5 == 0; drawRect(if (major) OnBlack2 else OnBlack3.copy(alpha = 0.5f), Offset(x, bottom - if (major) 34.dp.toPx() else 14.dp.toPx()), Size(if (major) 2.dp.toPx() else 1.dp.toPx(), if (major) 34.dp.toPx() else 14.dp.toPx())); x += 8.dp.toPx(); i++ }
                         found.forEachIndexed { j, _ ->
                             val sx = pad + w * (0.3f + 0.4f * ((j * 0.37f + 0.25f) % 1f))
                             drawCircle(r.live.copy(alpha = 0.3f), 10.dp.toPx(), Offset(sx, 40.dp.toPx())); drawCircle(r.live, 6.dp.toPx(), Offset(sx, 40.dp.toPx()))
@@ -999,8 +1011,8 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
                         drawRect(r.sig.copy(alpha = 0.3f), Offset(nx - 3.dp.toPx(), 14.dp.toPx()), Size(8.dp.toPx(), bottom - 14.dp.toPx()))
                         drawRect(r.sig, Offset(nx, 14.dp.toPx()), Size(2.dp.toPx(), bottom - 14.dp.toPx()))
                     }
-                    Row(Modifier.fillMaxWidth().padding(14.dp)) { Lbl("Scanning this Wi‑Fi", modifier = Modifier.weight(1f)); Dm(if (found.isEmpty()) "…" else "${found.size} FOUND", 18, r.live) }
-                    Row(Modifier.fillMaxSize().padding(14.dp), verticalAlignment = Alignment.Bottom) { Lbl("LAN", modifier = Modifier.weight(1f)); Lbl("EchoFiles · Connect phone") }
+                    Row(Modifier.fillMaxWidth().padding(14.dp)) { Lbl("Scanning this Wi‑Fi", OnBlack3, Modifier.weight(1f)); Dm(if (found.isEmpty()) "…" else "${found.size} FOUND", 18, r.live) }
+                    Row(Modifier.fillMaxSize().padding(14.dp), verticalAlignment = Alignment.Bottom) { Lbl("LAN", OnBlack3, Modifier.weight(1f)); Lbl("EchoFiles · Connect phone", OnBlack3) }
                 }
             }
             SigBar()
@@ -1053,7 +1065,7 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
                 if (p != null) CodePanel("On ${p.name}", p.code, carbon = true)
                 else Column(Modifier.fillMaxWidth().background(Color.Black, RoundedCornerShape(20.dp)).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     if (paired != null) { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Led(LedState.Live); Lbl("Paired with ${paired.name}", r.live) } }
-                    else { DotLoader(); Lbl("Waiting for the laptop") }
+                    else { DotLoader(); Lbl("Waiting for the laptop", OnBlack3) }
                 }
             }
             Carbon(Modifier.fillMaxWidth().height(56.dp)) {
@@ -1091,7 +1103,7 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
     val pairs = code.chunked(2)
     Column(Modifier.fillMaxWidth().background(if (carbon) Color.Black else if (r.night) Color(0xFF2E2C27) else Color(0xFFD9D3C5), RoundedCornerShape(20.dp)).padding(horizontal = 16.dp, vertical = 18.dp)
         .semantics(mergeDescendants = true) { contentDescription = "$label: " + pairs.joinToString(" ") }, verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Lbl(label, if (carbon) r.chalk3 else r.ink3)
+        Lbl(label, if (carbon) OnBlack3 else r.ink3)
         Row(Modifier.fillMaxWidth().alpha(on.value), horizontalArrangement = Arrangement.SpaceBetween) {
             pairs.forEach { Dm(it, if (pairs.size > 3) 50 else 64, if (carbon) r.sig else r.ink, glow = carbon) }
         }
@@ -1113,7 +1125,7 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
                 T("Flip up what the laptop may see. Skip any; they're all on the Panel later.", 14, color = ink(2))
             }
             SigBar()
-            Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(Modifier.fillMaxWidth().sideSafe().padding(start = 12.dp, end = 12.dp, top = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 perms.forEach { p -> Flip(p) { if (!p.granted) p.request(host) } }
             }
         }
@@ -1151,7 +1163,7 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
                 Lbl("Laptop → phone is always automatic")
             }
             SigBar()
-            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 22.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(Modifier.fillMaxWidth().sideSafe().padding(start = 16.dp, end = 16.dp, top = 22.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 Box(Modifier.size(104.dp, 356.dp).background(Color(0xFF121211), RoundedCornerShape(30.dp))
                     .toggleableLever(auto, pick).semantics { contentDescription = "Automatic clipboard"; stateDescription = if (auto) "Automatic" else "Tap to send" }) {
                     Box(Modifier.offset(x = 46.dp, y = 30.dp).size(12.dp, 296.dp).background(Color.Black, RoundedCornerShape(6.dp)))
@@ -1198,7 +1210,7 @@ private fun Modifier.toggleableLever(auto: Boolean, onChange: (Boolean) -> Unit)
         Box(Modifier.fillMaxWidth().height(72.dp).drawWithContent { clipRect(right = size.width * draw.value) { this@drawWithContent.drawContent() } }) {
             Seam(SeamMode.Live, height = 72.dp, description = "Linked")
         }
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = 20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).sideSafe().padding(start = 16.dp, end = 16.dp, top = 20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Lbl("Channels open", modifier = Modifier.padding(bottom = 4.dp))
             channels.chunked(2).forEach { pair ->
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1221,21 +1233,26 @@ private fun Modifier.toggleableLever(auto: Boolean, onChange: (Boolean) -> Unit)
 /** Shown when a laptop asks to pair outside the first-run flow: it drops from the laptop's side. */
 @Composable fun PairDialog(p: PairPrompt) {
     val r = relay()
-    Sheet({ Connect.rejectPair() }, fromTop = true) {
-        Lbl("● Incoming handshake", r.sig)
-        Title(p.name, if (p.theyAsked) "wants in." else "is checking.", size = 28)
-        CodePanel(if (p.theyAsked) "Its screen should show" else "Accept on ${p.name}; both show", p.code, carbon = true)
+    Sheet({ Connect.rejectPair() }, fromTop = true, footer = {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Key(if (p.theyAsked) "They differ" else "Cancel pairing", Modifier.weight(1f), Tone.Carbon, height = 56.dp) { Connect.rejectPair() }
             if (p.theyAsked) Key("Codes match", Modifier.weight(1.6f), Tone.Signal, height = 56.dp) { Connect.acceptPair() }
         }
+    }) {
+        Lbl("● Incoming handshake", r.sig)
+        Title(p.name, if (p.theyAsked) "wants in." else "is checking.", size = 28)
+        CodePanel(if (p.theyAsked) "Its screen should show" else "Accept on ${p.name}; both show", p.code, carbon = true)
     }
 }
 
 /** Forget, framed as what it is: cutting the link. Hold to cut. */
 @Composable fun ForgetSheet(l: Laptop, onKeep: () -> Unit, onCut: () -> Unit) {
     val r = relay()
-    Sheet(onKeep, carbon = false) {
+    Sheet(onKeep, carbon = false, footer = {
+        HoldKey("Hold to cut", onDone = onCut)
+        Key("Keep it", Modifier.fillMaxWidth(), height = 52.dp, onClick = onKeep)
+        Lbl("Hold 1 s · it buzzes harder as it fills", modifier = Modifier.fillMaxWidth(), align = TextAlign.Center)
+    }) {
         Carbon(Modifier.fillMaxWidth().height(70.dp).clip(RoundedCornerShape(18.dp))) {
             Canvas(Modifier.fillMaxSize().clearAndSetSemantics { }) {
                 val mid = size.height / 2; val wl = 20.dp.toPx(); val cut = size.width * 0.5f
@@ -1250,9 +1267,6 @@ private fun Modifier.toggleableLever(auto: Boolean, onChange: (Boolean) -> Unit)
         }
         Title("Cut the link to", "${l.name}?", size = 28)
         T("It stops seeing this phone and forgets its saved file names. To undo, do the handshake again.", 15, color = ink(2))
-        HoldKey("Hold to cut", onDone = onCut)
-        Key("Keep it", Modifier.fillMaxWidth(), height = 52.dp, onClick = onKeep)
-        Lbl("Hold 1 s · it buzzes harder as it fills", modifier = Modifier.fillMaxWidth(), align = TextAlign.Center)
     }
 }
 
@@ -1269,7 +1283,9 @@ private fun Modifier.toggleableLever(auto: Boolean, onChange: (Boolean) -> Unit)
     val view = LocalView.current
     val active = s.laptop?.id
     val paired = s.laptops.filter { it.paired }
-    Sheet(onDone) {
+    Sheet(onDone, footer = {
+        Key("Tune in to another laptop", Modifier.fillMaxWidth(), Tone.Carbon, icon = "plus", height = 52.dp) { onDone(); host.go("pair") }
+    }) {
         Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.Bottom) {
             Title("Stations", size = 26, modifier = Modifier.weight(1f)); Lbl("${paired.size} paired")
         }
@@ -1298,6 +1314,5 @@ private fun Modifier.toggleableLever(auto: Boolean, onChange: (Boolean) -> Unit)
                 Dm(if (on && l.connected) "LIVE" else if (l.connected) "READY" else "AWAY", 20, if (on && l.connected) r.sig else r.chalk3)
             }
         }
-        Key("Tune in to another laptop", Modifier.fillMaxWidth(), Tone.Carbon, icon = "plus", height = 52.dp) { onDone(); host.go("pair") }
     }
 }

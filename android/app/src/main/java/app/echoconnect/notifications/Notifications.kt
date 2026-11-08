@@ -11,11 +11,14 @@ import org.json.JSONArray
 object Notifications : Plugin {
     @Volatile var listener: NotificationListener? = null
     private val posted = java.util.concurrent.ConcurrentHashMap<String, MutableList<Long>>()
+    /** Bumped on every noted alert, so the mixer redraws its meters. */
+    val version = kotlinx.coroutines.flow.MutableStateFlow(0)
 
     /** Notes a notification from [pkg], for the mixer's meters. */
     fun note(pkg: String) {
         val now = System.currentTimeMillis()
         posted.getOrPut(pkg) { java.util.Collections.synchronizedList(mutableListOf()) }.apply { add(now); synchronized(this) { removeAll { now - it > 3600_000 } } }
+        version.value++
     }
 
     /** How many notifications [pkg] posted in the last hour. */

@@ -56,12 +56,12 @@ class ScanActivity : ComponentActivity() {
                     else -> if (allowed == true) AndroidView({ ctx -> PreviewView(ctx).also { bind(it) } }, Modifier.fillMaxSize())
                 }
                 Brackets(Modifier.align(Alignment.Center).offset(y = (-90).dp).size(270.dp), if (found) r.live else r.sig)
-                Row(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars).padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars).sideSafe().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Carbon(Modifier.clip(RoundedCornerShape(14.dp))) { Box(Modifier.size(48.dp).clickable(onClickLabel = "Close") { finish() }.semantics { contentDescription = "Close" }, contentAlignment = Alignment.Center) { Glyph("close") } }
                     Carbon(Modifier.clip(RoundedCornerShape(12.dp)), Color(0xCC121211)) { Lbl("Point at EchoFiles › Connect phone", Color(0xFFF2EFE8), Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) }
                 }
                 Carbon(Modifier.align(Alignment.BottomCenter).fillMaxWidth().clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))) {
-                    Column(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars).padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Column(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars).sideSafe().padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         Box(Modifier.fillMaxWidth().height(4.dp).background(r.sig))
                         if (allowed == false) Banner("Camera is off for EchoConnect", "Allow the camera to read the code, or go back and type the laptop's address.") {
                             Key("Allow camera", height = 40.dp, size = 13) { permission.launch(Manifest.permission.CAMERA) }

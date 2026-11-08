@@ -31,6 +31,7 @@ class MainActivity : ComponentActivity(), Host {
 
     private val files = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isEmpty()) return@registerForActivityResult
+        if (!Prefs.on(this, "files")) { filesOff(); return@registerForActivityResult }
         Work.run { uris.forEach { Connect.sendUri(it, count = uris.size) } }
         snack(Snack(if (uris.size == 1) "Sending 1 file up to ${laptopName()}" else "Sending ${uris.size} files up to ${laptopName()}", action = "View") { go("transfers") })
     }
@@ -56,8 +57,13 @@ class MainActivity : ComponentActivity(), Host {
     private fun handle(intent: Intent?) {
         val target = intent?.getStringExtra(EXTRA_PAGE) ?: return
         intent.removeExtra(EXTRA_PAGE)
-        if (target == "pick-files") { go("home"); window.decorView.post { pickFiles() } } else go(target)
+        if (target == "pick-files") { go("home"); if (Prefs.on(this, "files")) window.decorView.post { pickFiles() } else filesOff() } else go(target)
     }
+
+    /** Files is switched off on the Panel: say so, and offer to switch it on. */
+    private fun filesOff() = snack(Snack("Files is switched off", "warning", action = "Turn on") {
+        Prefs.set(this, "files", true); Connect.send("echofiles.settings", org.json.JSONObject().put("files", true)); refresh()
+    })
     override fun onDestroy() { getSharedPreferences("echoconnect", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(prefsListener); super.onDestroy() }
     override fun onSaveInstanceState(out: Bundle) { super.onSaveInstanceState(out); out.putString("page", page); out.putString("tab", tab) }
     override fun onResume() {
@@ -109,7 +115,7 @@ class MainActivity : ComponentActivity(), Host {
                 "notify-apps" -> NotificationAppsScreen(this@MainActivity, back)
                 else -> HomeScreen(s, this@MainActivity, { stations = true }) { linkSheet = true }
             }
-            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))) {
+            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom)).sideSafe()) {
                 SnackbarHost(snackbar) { snackbar = null }
                 if (page in TABS) {
                     val moving = s.transfers.count { !it.finished && it.error == null && !Share.waiting().containsKey(it.id) }

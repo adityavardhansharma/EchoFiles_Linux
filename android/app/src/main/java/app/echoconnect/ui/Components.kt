@@ -247,6 +247,14 @@ object Haptics {
 
 // ------------------------------------------------------------------ surfaces
 
+/** Keeps content clear of a display cutout on the side; backgrounds still run edge to edge. */
+@Composable fun Modifier.sideSafe(): Modifier = windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+
+/** Text on the fixed-black LED panels: light whatever the laptop's theme, so light themes stay readable. */
+val OnBlack = Color(0xFFF2EFE8)
+val OnBlack2 = Color(0xFFBEBAB0)
+val OnBlack3 = Color(0xFF97938B)
+
 /** The laptop's half: carbon, with chalk text. */
 @Composable fun Carbon(modifier: Modifier = Modifier, color: Color? = null, content: @Composable () -> Unit) {
     val r = relay()
@@ -266,7 +274,7 @@ object Haptics {
 /** The carbon header every screen opens with: status-bar inset, optional Back, then content. */
 @Composable fun Head(back: (() -> Unit)? = null, trailing: (@Composable RowScope.() -> Unit)? = null, content: @Composable ColumnScope.() -> Unit) {
     Carbon(Modifier.fillMaxWidth()) {
-        Column(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars).padding(start = 16.dp, end = 16.dp, top = if (back != null || trailing != null) 4.dp else 20.dp, bottom = 20.dp),
+        Column(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars).sideSafe().padding(start = 16.dp, end = 16.dp, top = if (back != null || trailing != null) 4.dp else 20.dp, bottom = 20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)) {
             if (back != null || trailing != null) Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (back != null) Box(Modifier.offset(x = (-12).dp).size(48.dp).clickable(onClickLabel = "Back", role = Role.Button, onClick = back).semantics { contentDescription = "Back" }, contentAlignment = Alignment.Center) {
@@ -461,7 +469,7 @@ enum class SeamMode { Live, Moving, Flat, Voice }
                 }
             }
         }
-        if (left != null || right != null) Row(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (left != null || right != null) Row(Modifier.fillMaxSize().sideSafe().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             if (left != null) Box(Modifier.background(r.carbon, RoundedCornerShape(7.dp)).padding(horizontal = 7.dp, vertical = 4.dp)) { Lbl(left, r.chalk2) }
             Spacer(Modifier.weight(1f))
             if (right != null) Box(Modifier.background(r.carbon, RoundedCornerShape(7.dp)).padding(horizontal = 7.dp, vertical = 4.dp)) { Dm(right, 20, rightColor ?: r.chalk) }
@@ -628,7 +636,8 @@ data class Snack(val text: String, val tone: String? = null, val icon: String? =
  * A sheet. Where it enters says who's asking: [fromTop] for the laptop (pair requests), from the
  * bottom for this phone. Scrim fades in 200 ms; the sheet slides with a slight overshoot.
  */
-@Composable fun Sheet(onDismiss: () -> Unit, fromTop: Boolean = false, carbon: Boolean = true, dismissable: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
+@Composable fun Sheet(onDismiss: () -> Unit, fromTop: Boolean = false, carbon: Boolean = true, dismissable: Boolean = true,
+                      footer: (@Composable ColumnScope.() -> Unit)? = null, content: @Composable ColumnScope.() -> Unit) {
     val r = relay()
     BackHandler(enabled = dismissable, onBack = onDismiss)
     val shown = remember { Animatable(0f) }
@@ -638,14 +647,17 @@ data class Snack(val text: String, val tone: String? = null, val icon: String? =
             .clickable(remember { MutableInteractionSource() }, null, enabled = dismissable, onClickLabel = "Close", onClick = onDismiss))
         val shape = if (fromTop) RoundedCornerShape(bottomStart = 30.dp, bottomEnd = 30.dp) else RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp)
         val body = @Composable {
-            Column(Modifier.fillMaxWidth().graphicsLayer { translationY = (1f - shown.value) * size.height * (if (fromTop) -1f else 1f) }
+            Column(Modifier.fillMaxWidth().fillMaxHeight(0.94f).wrapContentHeight(if (fromTop) Alignment.Top else Alignment.Bottom)
+                .graphicsLayer { translationY = (1f - shown.value) * size.height * (if (fromTop) -1f else 1f) }
                 .shadow(24.dp, shape).clip(shape).background(if (carbon) r.carbon else r.paper)
                 .clickable(remember { MutableInteractionSource() }, null) {}
                 .then(if (fromTop) Modifier.windowInsetsPadding(WindowInsets.statusBars) else Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)).imePadding())
-                .padding(start = 16.dp, end = 16.dp, top = if (fromTop) 18.dp else 12.dp, bottom = if (fromTop) 12.dp else 22.dp),
+                .sideSafe().padding(top = if (fromTop) 18.dp else 12.dp, bottom = if (fromTop) 12.dp else 22.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 if (!fromTop) Box(Modifier.size(40.dp, 5.dp).background(if (carbon) r.carbon3 else r.paper3, CircleShape).align(Alignment.CenterHorizontally))
-                content()
+                // The body scrolls when the window is short; the footer's keys always stay on screen.
+                Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp), content = content)
+                if (footer != null) Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = footer)
                 if (fromTop) Box(Modifier.size(40.dp, 5.dp).background(r.carbon3, CircleShape).align(Alignment.CenterHorizontally))
             }
         }
@@ -663,6 +675,7 @@ data class Snack(val text: String, val tone: String? = null, val icon: String? =
     val scope = rememberCoroutineScope()
     val fill = remember { Animatable(0f) }
     var holding by remember { mutableStateOf(false) }
+    val done by rememberUpdatedState(onDone)
     val down by animateDpAsState(if (holding) 3.dp else 0.dp, tween(60), label = "down")
     LaunchedEffect(holding) {
         var last = 0
@@ -671,13 +684,13 @@ data class Snack(val text: String, val tone: String? = null, val icon: String? =
     Box(modifier.fillMaxWidth().padding(bottom = 3.dp).height(64.dp).offset(y = down)
         .drawBehind { drawRoundRect(Color(0xFF1C0607), Offset(0f, (3.dp - down).toPx()), size, CornerRadius(16.dp.toPx())) }
         .clip(RoundedCornerShape(16.dp)).background(Color(0xFF3A1012))
-        .semantics { contentDescription = label; onClick(label) { onDone(); true } }
+        .semantics { contentDescription = label; onClick(label) { done(); true } }
         .pointerInput(Unit) {
             detectTapGestures(onPress = {
                 holding = true
                 val job = scope.launch {
                     fill.animateTo(1f, tween((millis * (1 - fill.value)).toInt(), easing = LinearEasing))
-                    Haptics.heavy(view); holding = false; onDone()
+                    Haptics.heavy(view); holding = false; done()
                 }
                 tryAwaitRelease()
                 if (fill.value < 1f) { job.cancel(); holding = false; scope.launch { fill.animateTo(0f, tween(200)) } }

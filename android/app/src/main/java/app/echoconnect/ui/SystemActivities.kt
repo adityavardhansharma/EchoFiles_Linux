@@ -120,7 +120,13 @@ class ShareActivity : ComponentActivity() {
                 images -> "Send ${uris.size} up"
                 else -> "Send ${uris.size} up"
             }
-            Sheet({ finish() }, carbon = false) {
+            Sheet({ finish() }, carbon = false, footer = {
+                if (text == null && items.isNotEmpty()) Row { Lbl("${items.size} ${if (images) "photos" else "files"}".replace("1 photos", "1 photo").replace("1 files", "1 file"), modifier = Modifier.weight(1f)); Lbl(bytes(items.sumOf { it.size })) }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Key("Cancel", Modifier.weight(1f), height = 58.dp) { finish() }
+                    Key(label, Modifier.weight(2f), Tone.Signal, trailingIcon = "arrow-up", height = 58.dp, size = 16, enabled = ready) { send(uris, text, isLink); finish() }
+                }
+            }) {
                 Carbon(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp))) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -148,11 +154,6 @@ class ShareActivity : ComponentActivity() {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) { Plate(first.name); T(first.name, 15, 600, maxLines = 1) }
                         if (items.size > 1) Lbl("and ${items.size - 1} more")
                     }, stub = { Dm(bytes(items.sumOf { it.size }).substringBefore(' '), 22); Lbl(bytes(items.sumOf { it.size }).substringAfter(' ')) })
-                }
-                if (text == null && items.isNotEmpty()) Row { Lbl("${items.size} ${if (images) "photos" else "files"}".replace("1 photos", "1 photo").replace("1 files", "1 file"), modifier = Modifier.weight(1f)); Lbl(bytes(items.sumOf { it.size })) }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Key("Cancel", Modifier.weight(1f), height = 58.dp) { finish() }
-                    Key(label, Modifier.weight(2f), Tone.Signal, trailingIcon = "arrow-up", height = 58.dp, size = 16, enabled = ready) { send(uris, text, isLink); finish() }
                 }
             }
         } }
