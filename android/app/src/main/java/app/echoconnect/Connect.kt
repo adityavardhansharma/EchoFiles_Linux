@@ -61,9 +61,12 @@ data class UiState(
     val theme: Map<String, Long>? = null,
     val call: Call? = null,
     val log: List<String> = emptyList(),
+    /** The laptop picked on the Stations sheet, if any. */
+    val preferred: String? = null,
 ) {
-    /** The laptop the app works with: the connected, paired one. */
-    val laptop: Laptop? get() = laptops.firstOrNull { it.paired && it.connected } ?: laptops.firstOrNull { it.paired }
+    /** The laptop the app works with: the picked one if it's linked, else the connected, paired one. */
+    val laptop: Laptop? get() = laptops.firstOrNull { it.id == preferred && it.paired && it.connected }
+        ?: laptops.firstOrNull { it.paired && it.connected } ?: laptops.firstOrNull { it.id == preferred && it.paired } ?: laptops.firstOrNull { it.paired }
 }
 
 /** One feature: the packets it answers, and what it does when a laptop is ready. */
@@ -100,7 +103,7 @@ object Connect {
 
     fun init(ctx: Context) {
         app = ctx.applicationContext
-        _state.update { it.copy(theme = Prefs.theme(app)) }
+        _state.update { it.copy(theme = Prefs.theme(app), preferred = Prefs.preferredLaptop(app)) }
     }
 
     fun register(p: Plugin) {
@@ -173,7 +176,14 @@ object Connect {
         refreshTrusted()
     }
 
-    val laptopId: String? get() = _state.value.laptops.firstOrNull { it.paired && it.connected }?.id
+    val laptopId: String? get() = _state.value.laptop?.takeIf { it.paired && it.connected }?.id
+
+    /** Work with laptop [id] from now on, when more than one is linked. */
+    fun choose(id: String) {
+        Prefs.setPreferredLaptop(app, id)
+        _state.update { it.copy(preferred = id) }
+        ConnectService.refresh(app)
+    }
 
     /** Send a packet to the connected laptop. */
     fun send(type: String, body: JSONObject = JSONObject(), to: String? = laptopId): Boolean {

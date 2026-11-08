@@ -51,6 +51,10 @@ object Prefs {
     fun backupCursor(ctx: Context, laptop: String): Pair<Long, Long> = sp(ctx).getLong("backup.$laptop.date", 0L) to sp(ctx).getLong("backup.$laptop.id", 0L)
     fun setBackupCursor(ctx: Context, laptop: String, date: Long, id: Long) = sp(ctx).edit().putLong("backup.$laptop.date", date).putLong("backup.$laptop.id", id).commit()
 
+    /** The laptop the app works with when more than one is linked (picked on Home's Stations sheet). */
+    fun preferredLaptop(ctx: Context): String? = sp(ctx).getString("laptop.preferred", null)
+    fun setPreferredLaptop(ctx: Context, id: String?) = sp(ctx).edit().putString("laptop.preferred", id).apply()
+
     /** The laptop's Bluetooth address, from its pairing code. */
     fun laptopBluetooth(ctx: Context): String? = sp(ctx).getString("laptop.bt", null)
     fun setLaptopBluetooth(ctx: Context, mac: String?) = sp(ctx).edit().putString("laptop.bt", mac).apply()

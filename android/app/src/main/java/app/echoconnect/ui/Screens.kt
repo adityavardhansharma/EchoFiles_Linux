@@ -265,7 +265,7 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
 
 // ------------------------------------------------------------------ Home
 
-@Composable fun HomeScreen(s: UiState, host: Host, openLink: () -> Unit) {
+@Composable fun HomeScreen(s: UiState, host: Host, openStations: () -> Unit, openLink: () -> Unit) {
     val ctx = host.context
     val r = relay()
     host.revision
@@ -311,7 +311,9 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
                     l.lan -> "Linked · Wi‑Fi"
                     else -> "Linked · Bluetooth"
                 }, ink(2), Modifier.weight(1f))
-                Key("Pair", tone = Tone.Carbon, icon = "qr", height = 34.dp, size = 12, radius = 999.dp) { host.go("pair") }
+                val count = s.laptops.count { it.paired }
+                if (count == 0) Key("Pair", tone = Tone.Carbon, icon = "qr", height = 34.dp, size = 12, radius = 999.dp) { host.go("pair") }
+                else Key(if (count == 1) "1 laptop" else "$count laptops", tone = Tone.Carbon, trailingIcon = "chevron-down", height = 34.dp, size = 12, radius = 999.dp, onClick = openStations)
             }
             Title(l?.name ?: "No laptop yet", size = 36, modifier = Modifier.alpha(if (connected || l == null) 1f else 0.6f))
             if (l == null) {
@@ -509,7 +511,14 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
         Head {
             Row(verticalAlignment = Alignment.Bottom) {
                 Title("Files", size = 36, modifier = Modifier.weight(1f))
-                Key("Send", tone = Tone.Signal, icon = "arrow-up", height = 40.dp, size = 14, radius = 999.dp, enabled = s.laptop?.lan == true && Prefs.on(host.context, "files")) { host.pickFiles() }
+                val today = s.transfers.filter { it.finished && it.error == null && android.text.format.DateUtils.isToday(it.at) }
+                Counter("${today.count { it.upload }}", "↑ Today")
+                Spacer(Modifier.width(14.dp))
+                Counter("${today.count { !it.upload }}", "↓ Today")
+            }
+            Row {
+                Spacer(Modifier.weight(1f))
+                Key("Send files up", tone = Tone.Signal, icon = "arrow-up", height = 40.dp, size = 14, radius = 999.dp, enabled = s.laptop?.lan == true && Prefs.on(host.context, "files")) { host.pickFiles() }
             }
             Column(Modifier.fillMaxWidth().background(relay().carbon2, RoundedCornerShape(14.dp)).padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row { Lbl("↓ Lands here in", modifier = Modifier.weight(1f)); MonoText("Download/EchoConnect", 12) }
@@ -674,7 +683,7 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
     host.revision
     val pm = ctx.packageManager
     val apps = remember(host.revision) {
-        app.echoconnect.notifications.Notifications.listener?.activeNotifications.orEmpty().map { it.packageName }.distinct().filter { it != ctx.packageName }
+        (app.echoconnect.notifications.Notifications.listener?.activeNotifications.orEmpty().map { it.packageName } + app.echoconnect.notifications.Notifications.recentApps()).distinct().filter { it != ctx.packageName }
             .map { pkg -> pkg to runCatching { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg) }.sortedBy { it.second.lowercase() }
     }
     val muted = Prefs.mutedApps(ctx)
@@ -684,7 +693,7 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
                 Title("The", "mixer.", size = 32, modifier = Modifier.weight(1f))
                 Column(horizontalAlignment = Alignment.End) { Dm("${apps.count { it.first in muted }} M", 30, r.sig); Lbl("muted") }
             }
-            T("Every app with a notification showing gets a channel. Press M to keep it on this phone.", 14, color = ink(2))
+            T("Every app with a notification gets a channel; its meter shows the last hour. Press M to keep it on this phone.", 14, color = ink(2))
         }
         SigBar()
         PaperBody(18.dp) {
@@ -696,24 +705,27 @@ private fun rate(t: Transfer): Long = t.done / ((System.currentTimeMillis() - t.
                 Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                     apps.forEach { (pkg, name) ->
                         val off = pkg in muted
-                        Strip(name, off) { m -> Prefs.setMutedApps(ctx, muted.toMutableSet().apply { if (m) add(pkg) else remove(pkg) }); host.refresh() }
+                        Strip(name, off, app.echoconnect.notifications.Notifications.recent(pkg)) { m -> Prefs.setMutedApps(ctx, muted.toMutableSet().apply { if (m) add(pkg) else remove(pkg) }); host.refresh() }
                     }
                 }
             }
-            if (apps.isNotEmpty()) Lbl("Lit M · stays on this phone · it still rings here", ink(3), Modifier.fillMaxWidth(), maxLines = 2, align = TextAlign.Center)
+            if (apps.isNotEmpty()) Lbl("Meters · alerts in the last hour · lit M stays on this phone", ink(3), Modifier.fillMaxWidth(), maxLines = 2, align = TextAlign.Center)
         }
         Spacer(Modifier.height(32.dp).windowInsetsPadding(WindowInsets.navigationBars))
     }
 }
 
 /** One app as a channel strip: its letter, its name up the strip, and a mute key. */
-@Composable private fun Strip(name: String, muted: Boolean, onMute: (Boolean) -> Unit) {
+@Composable private fun Strip(name: String, muted: Boolean, recent: Int, onMute: (Boolean) -> Unit) {
     val r = relay()
     val view = LocalView.current
     val hue = (name.hashCode() and 0xFFFFFF).let { listOf(0xFFFF9A8A, 0xFFE8B56A, 0xFFB8BFCC, 0xFF8DB1FF, 0xFFE9A0DD, 0xFF8DC4FF, 0xFF7EE3A8)[it % 7] }
     val down by animateDpAsState(if (muted) 3.dp else 0.dp, tween(60), label = "m")
     Column(Modifier.width(48.dp).background(r.carbon2, RoundedCornerShape(14.dp)).padding(vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Box(Modifier.size(32.dp).alpha(if (muted) 0.35f else 1f).background(Color(hue), RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) { T(name.take(1).uppercase(), 14, 700, Color(0xFF121211)) }
+        Column(Modifier.alpha(if (muted) 0.35f else 1f).semantics { contentDescription = "$recent in the last hour" }, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            for (i in 9 downTo 0) Box(Modifier.size(14.dp, 6.dp).background(when { i >= recent.coerceAtMost(10) -> r.carbon3; i >= 7 -> r.warn; else -> r.live }, RoundedCornerShape(2.dp)))
+        }
         Box(Modifier.height(96.dp).width(20.dp), contentAlignment = Alignment.Center) {
             Lbl(name, r.chalk2, Modifier.requiredWidth(96.dp).rotate(-90f), maxLines = 1, align = TextAlign.Start)
         }
@@ -1241,5 +1253,51 @@ private fun Modifier.toggleableLever(auto: Boolean, onChange: (Boolean) -> Unit)
         HoldKey("Hold to cut", onDone = onCut)
         Key("Keep it", Modifier.fillMaxWidth(), height = 52.dp, onClick = onKeep)
         Lbl("Hold 1 s · it buzzes harder as it fills", modifier = Modifier.fillMaxWidth(), align = TextAlign.Center)
+    }
+}
+
+/** A dot-matrix count with its engraved label, right-aligned in a header. */
+@Composable fun Counter(value: String, label: String) {
+    Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = "$value $label" }) {
+        Dm(value, 26); Lbl(label)
+    }
+}
+
+/** Every paired laptop as a station; pick the one EchoConnect works with, or tune in to another. */
+@Composable fun StationsSheet(s: UiState, host: Host, onDone: () -> Unit) {
+    val r = relay()
+    val view = LocalView.current
+    val active = s.laptop?.id
+    val paired = s.laptops.filter { it.paired }
+    Sheet(onDone) {
+        Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.Bottom) {
+            Title("Stations", size = 26, modifier = Modifier.weight(1f)); Lbl("${paired.size} paired")
+        }
+        paired.forEach { l ->
+            val on = l.id == active
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(r.carbon2)
+                .then(if (on) Modifier.border(2.dp, r.sig, RoundedCornerShape(18.dp)) else Modifier)
+                .clickable(role = androidx.compose.ui.semantics.Role.RadioButton) {
+                    when {
+                        on -> onDone()
+                        l.connected -> { Haptics.tick(view); Connect.choose(l.id); host.snack(Snack("Working with ${l.name}", "success")); onDone() }
+                        else -> host.snack(Snack("${l.name} isn't nearby", "warning"))
+                    }
+                }
+                .semantics { selected = on }.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                Led(if (l.connected) LedState.Live else LedState.Off, 10.dp)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    T(l.name, 18, 600, if (l.connected) r.chalk else r.chalk2, maxLines = 1)
+                    Lbl(when {
+                        !l.connected -> "Not nearby"
+                        l.lan && l.bluetooth -> "Wi‑Fi + BT" + if (l.ip.isNotBlank()) " · ${l.ip}" else ""
+                        l.lan -> "Wi‑Fi" + if (l.ip.isNotBlank()) " · ${l.ip}" else ""
+                        else -> "Bluetooth"
+                    })
+                }
+                Dm(if (on && l.connected) "LIVE" else if (l.connected) "READY" else "AWAY", 20, if (on && l.connected) r.sig else r.chalk3)
+            }
+        }
+        Key("Tune in to another laptop", Modifier.fillMaxWidth(), Tone.Carbon, icon = "plus", height = 52.dp) { onDone(); host.go("pair") }
     }
 }

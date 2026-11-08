@@ -46,11 +46,18 @@ class MainActivity : ComponentActivity(), Host {
         ConnectService.start(this)
         page = saved?.getString("page") ?: if (Prefs.pairedOnce(this)) "home" else "first-run"
         tab = saved?.getString("tab") ?: "home"
-        intent?.getStringExtra(EXTRA_PAGE)?.let { go(it) }
+        handle(intent)
         getSharedPreferences("echoconnect", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(prefsListener)
         setContent { AppTheme { App() } }
     }
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); intent.getStringExtra(EXTRA_PAGE)?.let { go(it) } }
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); handle(intent) }
+
+    /** Opens the page an intent names; "pick-files" (the widget and the notification) goes straight to the picker. */
+    private fun handle(intent: Intent?) {
+        val target = intent?.getStringExtra(EXTRA_PAGE) ?: return
+        intent.removeExtra(EXTRA_PAGE)
+        if (target == "pick-files") { go("home"); window.decorView.post { pickFiles() } } else go(target)
+    }
     override fun onDestroy() { getSharedPreferences("echoconnect", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(prefsListener); super.onDestroy() }
     override fun onSaveInstanceState(out: Bundle) { super.onSaveInstanceState(out); out.putString("page", page); out.putString("tab", tab) }
     override fun onResume() {
@@ -87,6 +94,7 @@ class MainActivity : ComponentActivity(), Host {
         val s by Connect.state.collectAsStateWithLifecycle()
         var linkSheet by remember { mutableStateOf(false) }
         var forget by remember { mutableStateOf(false) }
+        var stations by remember { mutableStateOf(false) }
         val back = { page = tab }
         BackHandler(page !in TABS && page != "first-run") { back() }
         BackHandler(page in TABS && page != "home") { go("home") }
@@ -99,7 +107,7 @@ class MainActivity : ComponentActivity(), Host {
                 "permissions" -> PermissionsScreen(this@MainActivity, back)
                 "clip-setup" -> ClipboardSetupScreen(s, this@MainActivity, back)
                 "notify-apps" -> NotificationAppsScreen(this@MainActivity, back)
-                else -> HomeScreen(s, this@MainActivity) { linkSheet = true }
+                else -> HomeScreen(s, this@MainActivity, { stations = true }) { linkSheet = true }
             }
             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))) {
                 SnackbarHost(snackbar) { snackbar = null }
@@ -108,6 +116,7 @@ class MainActivity : ComponentActivity(), Host {
                     Dial(TABS.indexOf(page), moving, Modifier.padding(start = 12.dp, end = 12.dp, bottom = 14.dp)) { go(TABS[it]) }
                 }
             }
+            if (stations) StationsSheet(s, this@MainActivity) { stations = false }
             if (linkSheet) OpenLinkSheet(s, this@MainActivity) { linkSheet = false }
             if (forget) s.laptop?.let { l ->
                 ForgetSheet(l, onKeep = { forget = false }) { Connect.forget(l.id); forget = false; snack(Snack("Cut the link to ${l.name}", "success")) }
