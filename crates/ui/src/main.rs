@@ -34,6 +34,7 @@ mod connect;
 mod phone_view;
 mod preview;
 mod remote;
+mod scribe;
 mod search;
 mod settings;
 mod style;
