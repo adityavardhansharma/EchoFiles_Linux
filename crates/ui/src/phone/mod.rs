@@ -411,11 +411,18 @@ pub fn start() {
         let t2 = tx.clone();
         // On failure `Event::Failed` has already said why.
         match Service::start(move |e| {
+            // EchoScribe hears about phones coming and going.
+            crate::scribe::observe(&e);
+            // EchoConnect's dictation packets never reach the window.
+            if crate::scribe::claim(&e) {
+                return;
+            }
             let _ = t2.unbounded_send(PhoneMsg::Event(e));
         }) {
             Ok(s) => {
                 crate::connect::bluetooth(s.clone());
                 let _ = SERVICE.set(s);
+                crate::scribe::start();
             }
             Err(e) => {
                 let _ = tx.unbounded_send(PhoneMsg::Event(Event::Failed(e.to_string())));

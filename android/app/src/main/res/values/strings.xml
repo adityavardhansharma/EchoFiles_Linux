@@ -6,4 +6,5 @@
     <string name="tile_label">Send clipboard</string>
     <string name="widget_label">EchoConnect link</string>
     <string name="widget_description">The laptop\'s link and battery, with Files and Clipboard sends.</string>
+    <string name="dictate_tile_label">Dictate on laptop</string>
 </resources>
