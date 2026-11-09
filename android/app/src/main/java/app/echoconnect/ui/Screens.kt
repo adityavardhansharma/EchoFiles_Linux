@@ -66,6 +66,7 @@ val FEATURES = listOf(
     Feature("capture", "camera", "Camera and scanning", "Take a photo or scan into a laptop folder"),
     Feature("media", "music", "Media controls", "Play, pause and skip from the laptop"),
     Feature("signal", "network", "Mobile signal", "Signal and network type on the laptop"),
+    Feature("dictation", "mic", "Dictation", "Talk here, it types on the laptop (EchoScribe)"),
 )
 
 fun granted(ctx: Context, vararg p: String) = p.all { Work.allowed(ctx, it) }
@@ -81,6 +82,7 @@ fun featureReady(ctx: Context, key: String): Boolean = when (key) {
     "backup" -> app.echoconnect.photos.Photos.fullAccess(ctx)
     "dnd" -> ctx.getSystemService(NotificationManager::class.java).isNotificationPolicyAccessGranted
     "capture" -> granted(ctx, Manifest.permission.CAMERA)
+    "dictation" -> granted(ctx, Manifest.permission.RECORD_AUDIO)
     else -> true
 }
 
@@ -94,6 +96,7 @@ fun allowFeature(host: Host, key: String) = when (key) {
     "photos", "backup" -> host.requestPhotos()
     "dnd" -> host.settings(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
     "capture" -> host.request(Manifest.permission.CAMERA)
+    "dictation" -> host.request(Manifest.permission.RECORD_AUDIO)
     else -> Unit
 }
 
@@ -113,6 +116,7 @@ fun permissions(ctx: Context): List<Perm> {
         Perm("folder", "All files access", "Browse the phone from EchoFiles", featureReady(ctx, "files"), "Open setting") { allowFeature(it, "files") },
         Perm("image", "Photos and videos", if (photosFull || !featureReady(ctx, "photos")) "Your camera roll in EchoFiles" else "Only allowed photos and videos", photosFull, if (featureReady(ctx, "photos")) "Allow all" else "Allow") { it.requestPhotos() },
         Perm("camera", "Camera", "Scan the laptop's code; take photos for it", featureReady(ctx, "capture"), optional = true) { allowFeature(it, "capture") },
+        Perm("mic", "Microphone", "Dictate on the laptop; only while you hold the mic or allow the laptop", featureReady(ctx, "dictation"), optional = true) { allowFeature(it, "dictation") },
         Perm("clipboard", "Display over other apps", "Lets automatic clipboard read what you copy", Settings.canDrawOverlays(ctx), "Open setting", true) { it.settings(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, true) },
         Perm("moon", "Do Not Disturb access", "Ring through silent; match the laptop's Do Not Disturb", featureReady(ctx, "dnd"), "Open setting", true) { allowFeature(it, "dnd") },
         if (Build.VERSION.SDK_INT >= 34) Perm("phone-ring", "Full-screen notifications", "Shows Ringing over the lock screen", ctx.getSystemService(NotificationManager::class.java).canUseFullScreenIntent(), "Open setting", true) { it.settings(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, true) } else null,
@@ -208,6 +212,7 @@ class ActionItem(val icon: String, val label: String, val sub: String, val enabl
         ScreenBody {
             s.error?.let { Banner("Needs attention.", it, "danger") { Button("Reconnect", size = BtnSize.Sm) { Connect.start(); Connect.announce() } } }
             LaptopCard(l) { host.go("pair") }
+            if (l != null && Prefs.on(ctx, "dictation")) DictateCard(l, host)
             s.call?.let { c ->
                 val secs = ((now - c.since) / 1000).coerceAtLeast(0)
                 CallBar(c.who.ifBlank { c.number.ifBlank { "Call" } }, "%02d:%02d".format(secs / 60, secs % 60), c.onLaptop) { app.echoconnect.calls.Calls.usePhone(ctx) }

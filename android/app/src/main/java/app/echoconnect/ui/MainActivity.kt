@@ -99,6 +99,7 @@ class MainActivity : ComponentActivity(), Host {
                         "permissions" -> PermissionsScreen(this@MainActivity, back)
                         "clip-setup" -> ClipboardSetupScreen(s, this@MainActivity, back)
                         "notify-apps" -> NotificationAppsScreen(this@MainActivity, back)
+                        "dictate" -> DictateScreen(s, this@MainActivity, back)
                         else -> HomeScreen(s, this@MainActivity) { linkSheet = true }
                     }
                     Box(Modifier.align(Alignment.BottomCenter)) { SnackbarHost(snackbar) { snackbar = null } }

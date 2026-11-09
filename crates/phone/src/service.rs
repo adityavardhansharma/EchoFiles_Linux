@@ -40,6 +40,7 @@ const MAX_LINE: usize = 8 << 20;
 /// other lists its packets). `echofiles.*` are EchoConnect's own; stock KDE Connect ignores them.
 const LAPTOP_SENDS: &[&str] = &[
     "echofiles.clipboard.image.inline", "echofiles.clipboard.image", "echofiles.files.list", "echofiles.files.read", "echofiles.files.write", "echofiles.settings", "echofiles.call", "echofiles.backup", "echofiles.backup.ack", "echofiles.photos.read", "kdeconnect.mpris.request",
+    "echofiles.scribe",
     "kdeconnect.battery",
     "kdeconnect.battery.request",
     "kdeconnect.clipboard",
@@ -93,6 +94,8 @@ const PHONE_SENDS: &[&str] = &[
     "echofiles.photos.thumb",
     "echofiles.photos.file",
     "echofiles.photos.error",
+    "echofiles.scribe",
+    "echofiles.scribe.audio",
 ];
 
 /// Which end of the pair this service is.
@@ -121,6 +124,8 @@ impl Role {
 fn bluetooth_ok(kind: &str) -> bool {
     matches!(kind, "kdeconnect.identity" | "kdeconnect.pair" | "kdeconnect.ping" | "kdeconnect.clipboard" | "kdeconnect.clipboard.connect" | "kdeconnect.telephony" | "kdeconnect.telephony.request_mute")
         || kind.starts_with("echofiles.call") || kind == "echofiles.clipboard.image.inline"
+        // Dictation through EchoScribe: small control packets and 16 kHz speech (~43 KB/s).
+        || kind.starts_with("echofiles.scribe")
 }
 
 type Tracer = Box<dyn Fn(&str) + Send + Sync>;
@@ -133,6 +138,10 @@ pub fn trace_to(f: impl Fn(&str) + Send + Sync + 'static) {
 }
 
 fn trace(what: &str) {
+    // Streamed dictation audio is five packets a second; it would bury everything else.
+    if what.ends_with("echofiles.scribe.audio") {
+        return;
+    }
     let t = TRACE.get_or_init(|| std::env::var_os("EF_PHONE_LOG").map(|_| Box::new(|l: &str| eprintln!("phone: {l}")) as Tracer));
     if let Some(f) = t {
         f(what);
