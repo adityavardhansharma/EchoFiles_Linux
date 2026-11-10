@@ -562,7 +562,7 @@ pub fn main(flavor: Flavor, argv: &[String], ctx: &Ctx) -> u8 {
     // Unsorted plain output (fd's way) streams; so does counting.
     let streams = sort == Sort::None
         && (flavor == Flavor::Fd || plan.roots.len() == 1)
-        && !(plan.everywhere && ctx.settings.phone.phone_index)
+        && !(plan.everywhere && (ctx.settings.phone.phone_index || agent::ef_searches_drive(&ctx.settings)))
         && !a.json
         && !a.list_details
         && !a.details
@@ -612,6 +612,16 @@ pub fn main(flavor: Flavor, argv: &[String], ctx: &Ctx) -> u8 {
     }
     if flavor == Flavor::Ef && ran.everywhere && ctx.settings.phone.phone_index {
         agent::add_phone_hits(&a, &mut ran);
+    }
+    if flavor == Flavor::Ef && ran.everywhere && agent::ef_searches_drive(&ctx.settings) {
+        agent::add_drive_hits(&a, &mut ran);
+        if a.drive_live
+            && let Some(note) = agent::add_live_drive_hits(&a, &mut ran)
+        {
+            errln!(ctx, "ef: {note}");
+        }
+    } else if a.drive_live {
+        errln!(ctx, "ef: --drive-live needs both Settings → Google Drive → Include Google Drive in search index and Settings → AI agents → Let ef search Google Drive");
     }
     if flavor == Flavor::Ef {
         ran.outcome.hits.sort_unstable_by(|x, y| x.path.cmp(&y.path));

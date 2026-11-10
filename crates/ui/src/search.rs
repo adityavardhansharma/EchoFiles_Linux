@@ -31,6 +31,10 @@ pub struct Hit {
     pub location: String,
     pub size: u64,
     pub mtime: i64,
+    /// A Google Doc (no size; opens in the browser).
+    pub google: Option<ef_cloud::drive::GoogleKind>,
+    /// A saved Drive result that live search found gone; kept only while selected.
+    pub gone: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -51,10 +55,29 @@ impl Results {
     }
 }
 
+/// "Google Drive › Work", or "Google Drive · offline" for a Drive result that isn't mounted.
+pub fn drive_location(settings: &Settings, path: &std::path::Path) -> Option<String> {
+    let text = path.to_string_lossy();
+    let (uri, mounted) = match ef_cloud::DriveUri::from_mount_path(path) {
+        Some(u) => (u, true),
+        None => (ef_cloud::DriveUri::parse(&text)?, false),
+    };
+    let name = settings.cloud.accounts.iter().find(|a| a.id == uri.account).map_or("Google Drive", |a| a.name.as_str());
+    let parent = uri.parent().map(|p| p.path).unwrap_or_default();
+    let mut s = name.to_string();
+    if !mounted {
+        s.push_str(" · offline");
+    } else if !parent.is_empty() {
+        s.push_str(" › ");
+        s.push_str(&parent.replace('/', " › "));
+    }
+    Some(s)
+}
+
 fn hit(path: PathBuf, is_dir: bool) -> Hit {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let location = path.parent().map(config::tilde).unwrap_or_default();
-    Hit { path, name, is_dir, location, size: 0, mtime: 0 }
+    Hit { path, name, is_dir, location, size: 0, mtime: 0, google: None, gone: false }
 }
 
 /// Sizes and dates for hits the search didn't stat (read live, ≤ LIMIT `statx` calls).
@@ -68,6 +91,32 @@ fn fill_details(hits: &mut [Hit]) {
             h.mtime = m.mtime();
         }
     }
+}
+
+/// What Google Drive's live search can be asked for this search-box text.
+pub fn live_plan(text: &str, hidden: bool) -> Result<(ef_cloud::live::Ask, agent::LiveFilter), ef_cloud::live::Skip> {
+    let a = query_args(text, hidden).map_err(|_| ef_cloud::live::Skip::Pattern)?;
+    if !a.paths.is_empty() {
+        // `in:` somewhere specific: Drive isn't part of it.
+        return Err(ef_cloud::live::Skip::TooShort);
+    }
+    agent::live_filter(&a)
+}
+
+/// A Drive hit for the results list.
+pub fn drive_hit(settings: &Settings, path: PathBuf, is_dir: bool, size: i64, mtime: i64, google: Option<ef_cloud::drive::GoogleKind>) -> Hit {
+    let mut h = hit(path, is_dir);
+    h.size = size.max(0) as u64;
+    h.mtime = mtime;
+    h.google = google;
+    if let Some(loc) = drive_location(settings, &h.path) {
+        h.location = loc;
+    }
+    if let Some(stem) = h.name.strip_suffix(ef_cloud::drive::LINK_SUFFIX) {
+        h.name = stem.to_string();
+        h.google.get_or_insert(ef_cloud::drive::GoogleKind::Other);
+    }
+    h
 }
 
 /// The search-box text as `ef find` options with the app's defaults.
@@ -126,6 +175,10 @@ fn run_with(settings: &Settings, indexes: Arc<find::Indexes>, text: &str, hidden
     if ran.everywhere && settings.phone.phone_index {
         agent::add_phone_hits(&a, &mut ran);
     }
+    // Your own search: Drive's index switch alone decides (ef's Drive switch is for agents).
+    if ran.everywhere && settings.cloud.index {
+        agent::add_drive_hits(&a, &mut ran);
+    }
     let hits = &mut ran.outcome.hits;
     hits.sort_unstable_by(|x, y| x.path.cmp(&y.path));
     hits.dedup_by(|x, y| x.path == y.path);
@@ -139,6 +192,12 @@ fn run_with(settings: &Settings, indexes: Arc<find::Indexes>, text: &str, hidden
             let mut out = hit(path, h.ftype == FType::Dir);
             if h.path.starts_with(b"phone://") {
                 out.location = "Phone · cached; reconnect to open".into();
+            } else if let Some(loc) = drive_location(settings, &out.path) {
+                out.location = loc;
+                if let Some(stem) = out.name.strip_suffix(ef_cloud::drive::LINK_SUFFIX) {
+                    out.name = stem.to_string();
+                    out.google = Some(ef_cloud::drive::GoogleKind::Other);
+                }
             }
             if let Some(m) = &h.meta {
                 out.size = if out.is_dir { 0 } else { m.size };

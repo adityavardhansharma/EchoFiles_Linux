@@ -6,39 +6,134 @@ use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::time::SystemTime;
 
+use crate::config::{self, Settings};
 #[allow(unused_imports)]
 use super::find::Indexes as _Indexes;
-use crate::config::{self, Settings};
 use crate::filter::{FType, Hit};
 use crate::find::{Search, Source};
 use crate::pattern::Syntax;
 use crate::units;
 
-use super::Ctx;
 use super::args::{FindArgs, Flavor};
+use super::Ctx;
 use super::find::{Indexes, Ran, build_search, run};
 use super::output::{self, json_str};
 
 /// Phone files (cached while the phone is away) for searches of "everywhere".
 pub fn add_phone_hits(a: &FindArgs, ran: &mut Ran) {
-    let plain = matches!(a.syntax, None | Some(Syntax::Words))
-        && a.sizes.is_empty()
-        && a.newer.is_none()
-        && a.older.is_none()
-        && a.owner.is_none()
-        && !a.full_path;
-    let Some(text) = a.pattern.as_deref().filter(|_| plain) else { return };
-    let kind = if a.types.dir && !a.types.file {
-        crate::KindFilter::Dirs
-    } else if a.types.file || a.types.not_dir {
-        crate::KindFilter::Files
-    } else {
-        crate::KindFilter::Any
+    add_cached_hits(a, ran, crate::phone::entries);
+}
+
+/// Google Drive files from the Drive index, for searches of "everywhere". The UI asks
+/// when Drive's index is on; `ef` also needs "Let ef search Google Drive".
+pub fn add_drive_hits(a: &FindArgs, ran: &mut Ran) {
+    add_cached_hits(a, ran, crate::drive::entries);
+}
+
+/// `--drive-live`: ask Google Drive itself through EchoFiles' rclone (it listens on its own
+/// socket while EchoFiles runs) and add matches the Drive index doesn't have yet. Waits up
+/// to 10 s. Returns a note for stderr when it couldn't.
+pub fn add_live_drive_hits(a: &FindArgs, ran: &mut Ran) -> Option<String> {
+    let (ask, filter) = match live_filter(a) {
+        Ok(x) => x,
+        Err(_) => return Some("--drive-live skipped: Google Drive can only be searched by plain words".into()),
     };
+    let q = ef_cloud::live::translate(&ask).ok()?;
+    let rc = ef_cloud::Rc::new(ef_cloud::paths::socket());
+    if rc.ping().is_err() {
+        return Some("--drive-live needs EchoFiles running with Google Drive connected; showing indexed results".into());
+    }
+    let have: std::collections::HashSet<Vec<u8>> = ran.outcome.hits.iter().map(|h| h.path.clone()).collect();
+    let ranker = crate::Ranker::new(a.pattern.as_deref().unwrap_or(""));
+    let mut failed = None;
+    for account in crate::drive::accounts() {
+        let mut folders = ef_cloud::catalog::load(&account).folder_paths();
+        if let Ok(Some(root)) = ef_cloud::live::root_id(&rc, &account) {
+            folders.insert(root, String::new());
+        }
+        let found = match ef_cloud::live::query(&rc, &account, &q) {
+            Ok(f) => f,
+            Err(e) => {
+                failed = Some(e.explain());
+                continue;
+            }
+        };
+        for f in found {
+            let name = f.mount_name();
+            if filter.rank(&name, f.is_dir()).is_none() {
+                continue;
+            }
+            let Some(path) = f.path_in(&folders) else { continue };
+            let full = crate::drive::location(&account, &path);
+            let bytes = full.as_os_str().as_bytes().to_vec();
+            if have.contains(&bytes) {
+                continue;
+            }
+            let shown = name.strip_suffix(ef_cloud::drive::LINK_SUFFIX).unwrap_or(&name);
+            let ftype = if f.is_dir() { FType::Dir } else { FType::File };
+            ran.outcome.hits.push(Hit {
+                rank: ranker.rank(shown.as_bytes()),
+                path: bytes,
+                root: u16::MAX,
+                depth: 0,
+                ftype,
+                meta: Some(Box::new(crate::filter::Meta { ftype, size: f.size.max(0) as u64, mtime: units::from_unix(f.modified), mode: 0o644, uid: 0, gid: 0, nlink: 1, dev: 0, ino: 0 })),
+            });
+        }
+    }
+    failed.map(|e| format!("Google Drive live search: {e}"))
+}
+
+/// `ef` reaches Drive only with both switches on (they never turn each other on).
+pub fn ef_searches_drive(settings: &Settings) -> bool {
+    settings.agents.gdrive && settings.cloud.index
+}
+
+/// The part of a search that Google Drive's live search can serve: plain words, with
+/// type, extension and hidden-file rules applied by our own matcher afterwards.
+#[derive(Clone, Debug)]
+pub struct LiveFilter {
+    text: String,
+    kind: crate::KindFilter,
+    ext: Option<String>,
+    hidden: bool,
+}
+
+impl LiveFilter {
+    /// Rank of a Drive name (Google Docs by their real name), or `None` if our rules say no.
+    pub fn rank(&self, name: &str, dir: bool) -> Option<u64> {
+        let q = crate::Query { text: &self.text, within: crate::ROOT, kind: self.kind, ext: self.ext.as_deref(), hidden: self.hidden, limit: None };
+        let m = crate::matcher::Matcher::new(&q)?;
+        let shown = name.strip_suffix(ef_cloud::drive::LINK_SUFFIX).unwrap_or(name);
+        if !self.hidden && shown.starts_with('.') {
+            return None;
+        }
+        let folded = crate::fold::fold(shown);
+        m.accepts(&folded, if dir { crate::Kind::Dir } else { crate::Kind::File }).then(|| m.rank(&folded))
+    }
+}
+
+/// What to ask Drive for this search, and how to judge its answers.
+pub fn live_filter(a: &FindArgs) -> Result<(ef_cloud::live::Ask, LiveFilter), ef_cloud::live::Skip> {
+    use ef_cloud::live::{Ask, Skip};
+    if !matches!(a.syntax, None | Some(Syntax::Words)) || !a.sizes.is_empty() || a.newer.is_some() || a.older.is_some() || a.owner.is_some() || a.full_path {
+        return Err(Skip::Pattern);
+    }
+    let text = a.pattern.clone().ok_or(Skip::TooShort)?;
+    let kind = if a.types.dir && !a.types.file { crate::KindFilter::Dirs } else if a.types.file || a.types.not_dir { crate::KindFilter::Files } else { crate::KindFilter::Any };
+    let ask = Ask { words: text.split_whitespace().map(str::to_string).collect(), dirs_only: kind == crate::KindFilter::Dirs, files_only: kind == crate::KindFilter::Files, modified_after: None, fulltext: false };
+    ef_cloud::live::translate(&ask)?;
+    Ok((ask, LiveFilter { text, kind, ext: a.exts.first().cloned(), hidden: a.hidden }))
+}
+
+fn add_cached_hits(a: &FindArgs, ran: &mut Ran, entries: fn(&crate::Query<'_>) -> Vec<crate::phone::Entry>) {
+    let plain = matches!(a.syntax, None | Some(Syntax::Words)) && a.sizes.is_empty() && a.newer.is_none() && a.older.is_none() && a.owner.is_none() && !a.full_path;
+    let Some(text) = a.pattern.as_deref().filter(|_| plain) else { return };
+    let kind = if a.types.dir && !a.types.file { crate::KindFilter::Dirs } else if a.types.file || a.types.not_dir { crate::KindFilter::Files } else { crate::KindFilter::Any };
     let ext = a.exts.first().map(String::as_str);
     let q = crate::Query { text, within: crate::ROOT, kind, ext, hidden: a.hidden, limit: None };
     let ranker = crate::Ranker::new(text);
-    for e in crate::phone::entries(&q) {
+    for e in entries(&q) {
         let path = e.uri.as_os_str().as_bytes().to_vec();
         let name = e.uri.file_name().map(|n| n.as_bytes().to_vec()).unwrap_or_default();
         ran.outcome.hits.push(Hit {
@@ -104,6 +199,13 @@ pub fn notes(a: &FindArgs, ctx: &Ctx, s: &Search, ran: &Ran, shown: usize) {
     if total == 0 && !a.count && a.flavor == Flavor::Ef {
         lines.push(format!("no matches in {}", source_text(settings, ran)));
         lines.extend(why_nothing(a, ctx, s));
+        if ran.everywhere && !settings.cloud.accounts.is_empty() {
+            match (settings.agents.gdrive, settings.cloud.index) {
+                (false, _) => lines.push("Google Drive wasn't searched: it's off for ef (Settings → AI agents → Let ef search Google Drive)".into()),
+                (true, false) => lines.push("Google Drive wasn't searched: it isn't indexed (Settings → Google Drive → Include Google Drive in search index)".into()),
+                _ => {}
+            }
+        }
     }
     for l in lines {
         errln!(ctx, "ef: {l}");
@@ -126,9 +228,7 @@ pub fn why_nothing(a: &FindArgs, ctx: &Ctx, _s: &Search) -> Vec<String> {
         let s = build_search(&b).ok()?;
         run(&b, ctx, &s).ok().map(|r| r.total)
     };
-    // (what was relaxed, how to relax it)
-    type Try = (String, Box<dyn Fn(&mut FindArgs)>);
-    let mut tries: Vec<Try> = Vec::new();
+    let mut tries: Vec<(String, Box<dyn Fn(&mut FindArgs)>)> = Vec::new();
     if !a.hidden {
         tries.push(("include hidden files (-H)".into(), Box::new(|b: &mut FindArgs| b.hidden = true)));
     }
@@ -136,13 +236,10 @@ pub fn why_nothing(a: &FindArgs, ctx: &Ctx, _s: &Search) -> Vec<String> {
         tries.push(("include files hidden by .gitignore/.ignore (-I)".into(), Box::new(|b: &mut FindArgs| b.no_ignore = true)));
     }
     if !a.hidden || !a.no_ignore {
-        tries.push((
-            "include both (-u)".into(),
-            Box::new(|b: &mut FindArgs| {
-                b.hidden = true;
-                b.no_ignore = true;
-            }),
-        ));
+        tries.push(("include both (-u)".into(), Box::new(|b: &mut FindArgs| {
+            b.hidden = true;
+            b.no_ignore = true;
+        })));
     }
     if !a.exts.is_empty() {
         tries.push(("drop the extension filter".into(), Box::new(|b: &mut FindArgs| b.exts.clear())));
@@ -151,24 +248,18 @@ pub fn why_nothing(a: &FindArgs, ctx: &Ctx, _s: &Search) -> Vec<String> {
         tries.push(("drop the type filter".into(), Box::new(|b: &mut FindArgs| b.types = Default::default())));
     }
     if !a.sizes.is_empty() || a.newer.is_some() || a.older.is_some() || a.owner.is_some() {
-        tries.push((
-            "drop the size/date/owner filters".into(),
-            Box::new(|b: &mut FindArgs| {
-                b.sizes.clear();
-                b.newer = None;
-                b.older = None;
-                b.owner = None;
-            }),
-        ));
+        tries.push(("drop the size/date/owner filters".into(), Box::new(|b: &mut FindArgs| {
+            b.sizes.clear();
+            b.newer = None;
+            b.older = None;
+            b.owner = None;
+        })));
     }
     if a.max_depth.is_some() || a.min_depth.is_some() {
-        tries.push((
-            "drop the depth limits".into(),
-            Box::new(|b: &mut FindArgs| {
-                b.max_depth = None;
-                b.min_depth = None;
-            }),
-        ));
+        tries.push(("drop the depth limits".into(), Box::new(|b: &mut FindArgs| {
+            b.max_depth = None;
+            b.min_depth = None;
+        })));
     }
     if matches!(a.syntax, Some(Syntax::Regex | Syntax::Glob | Syntax::Fixed)) {
         tries.push(("search the words instead (no --regex/--glob/-F)".into(), Box::new(|b: &mut FindArgs| b.syntax = Some(Syntax::Words))));
@@ -178,14 +269,11 @@ pub fn why_nothing(a: &FindArgs, ctx: &Ctx, _s: &Search) -> Vec<String> {
         tries.push(("read the pattern as a regex (--regex)".into(), Box::new(|b: &mut FindArgs| b.syntax = Some(Syntax::Regex))));
     }
     if !a.paths.is_empty() || a.here || a.project {
-        tries.push((
-            "search everywhere that's indexed (no path)".into(),
-            Box::new(|b: &mut FindArgs| {
-                b.paths.clear();
-                b.here = false;
-                b.project = false;
-            }),
-        ));
+        tries.push(("search everywhere that's indexed (no path)".into(), Box::new(|b: &mut FindArgs| {
+            b.paths.clear();
+            b.here = false;
+            b.project = false;
+        })));
     }
     for (what, f) in &tries {
         if let Some(n) = count(f.as_ref())
@@ -202,13 +290,7 @@ pub fn why_nothing(a: &FindArgs, ctx: &Ctx, _s: &Search) -> Vec<String> {
         let mut names: Vec<(String, usize)> = Vec::new();
         let mut covered = false;
         for (root, m) in &idx {
-            let within = if a.paths.is_empty() && !a.here && !a.project {
-                Some(0)
-            } else {
-                a.paths
-                    .iter()
-                    .find_map(|t| std::fs::canonicalize(ctx.abs(t)).ok().filter(|c| c.starts_with(root)).and_then(|c| m.lookup(&c)))
-            };
+            let within = if a.paths.is_empty() && !a.here && !a.project { Some(0) } else { a.paths.iter().find_map(|t| std::fs::canonicalize(ctx.abs(t)).ok().filter(|c| c.starts_with(root)).and_then(|c| m.lookup(&c))) };
             if let Some(w) = within {
                 covered = true;
                 names.extend(crate::suggest::similar(m, w, p, 5));
@@ -271,6 +353,13 @@ pub fn write_json(a: &FindArgs, ran: &Ran, ctx: &Ctx, out: &mut Vec<u8>) {
         }
         let p = output::display(h, &ran.views, false);
         let _ = write!(out, "{{\"path\":{},\"type\":\"{}\"", json_str(&p), h.ftype.name());
+        // Drive results say so, with their stable URI (the mount path moves).
+        let raw = std::path::Path::new(std::ffi::OsStr::from_bytes(&h.path));
+        if h.path.starts_with(ef_cloud::uri::SCHEME.as_bytes()) {
+            let _ = write!(out, ",\"source\":\"gdrive\",\"uri\":{}", json_str(&h.path));
+        } else if let Some(u) = ef_cloud::DriveUri::from_mount_path(raw) {
+            let _ = write!(out, ",\"source\":\"gdrive\",\"uri\":{}", json_str(u.to_string().as_bytes()));
+        }
         if let Some(m) = &h.meta {
             if h.ftype != FType::Dir {
                 let _ = write!(out, ",\"size\":{}", m.size);
@@ -299,13 +388,7 @@ pub fn write_json(a: &FindArgs, ran: &Ran, ctx: &Ctx, out: &mut Vec<u8>) {
     let _ = write!(out, "],\"shown\":{shown}");
     if shown < ran.total {
         let (dirs, exts) = ran.breakdown.clone().unwrap_or_else(|| output::summary(hits, &ran.views));
-        let j = |v: &[(String, usize)]| {
-            v.iter()
-                .take(10)
-                .map(|(k, n)| format!("{{\"{}\":{n}}}", k.replace('\\', "\\\\").replace('"', "\\\"")))
-                .collect::<Vec<_>>()
-                .join(",")
-        };
+        let j = |v: &[(String, usize)]| v.iter().take(10).map(|(k, n)| format!("{{\"{}\":{n}}}", k.replace('\\', "\\\\").replace('"', "\\\""))).collect::<Vec<_>>().join(",");
         let _ = write!(out, ",\"by_folder\":[{}],\"by_type\":[{}]", j(&dirs), j(&exts));
     }
     if !ran.outcome.errors.is_empty() {

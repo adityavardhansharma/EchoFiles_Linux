@@ -18,23 +18,25 @@ use iced::advanced::mouse::click::{self, Click};
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::svg::Svg;
 use iced::advanced::text::{self, Text};
-use iced::advanced::widget::{Operation, Tree, Widget, tree};
+use iced::advanced::widget::{tree, Operation, Tree, Widget};
 use iced::advanced::{Clipboard, Shell};
 use iced::alignment::Vertical;
-use iced::keyboard::{self, Key, key::Named};
+use iced::keyboard::{self, key::Named, Key};
 use iced::mouse;
 use iced::{Background, Border, Color, Element, Event, Length, Pixels, Point, Rectangle, Size, Vector};
 
 use crate::kinds;
-use crate::style::{self, Icons, color};
+use crate::style::{self, color, Icons};
 
 /// Rows drawn above and below the viewport so fast flicks never show a gap.
 const OVERSCAN: usize = 3;
 const SCROLLBAR: f32 = 6.0;
-/// Grid cell (design system `FileGrid`): 104px wide; 88px picture + two lines of name.
-const TILE_W: f32 = 104.0;
-const TILE_H: f32 = 132.0;
-const THUMB: f32 = 88.0;
+/// Grid cell (design system `FileGrid`) around a picture of `folders::ZOOMS[zoom]`: 104px
+/// wide at the default 88px picture, with two lines of name under it.
+const TILE_PAD_W: f32 = 16.0;
+const TILE_PAD_H: f32 = 44.0;
+/// List icon sizes per zoom step (the row height caps them).
+const ROW_ICONS: [f32; 5] = [14.0, 16.0, 18.0, 22.0, 26.0];
 /// Widest the grid's rename field grows for a long name.
 const GRID_EDITOR_MAX: f32 = 320.0;
 /// Pointer travel before a press becomes a drag.
@@ -43,23 +45,20 @@ const DRAG_START: f32 = 6.0;
 const SPRING: Duration = Duration::from_millis(700);
 /// Hover this long over a cut-off name to see all of it.
 const TIP_DELAY: Duration = Duration::from_millis(500);
+/// Hover this long over a folder to peek inside it.
+const PEEK_DELAY: Duration = Duration::from_millis(650);
+/// Width of the chevron that marks folders in a compact (column) list.
+const CHEVRON: f32 = 16.0;
 
 /// What the list reports to the app. Positions index `order` (display order).
 #[derive(Debug, Clone)]
 pub enum Action {
-    Cursor {
-        pos: usize,
-        extend: bool,
-        toggle: bool,
-    },
+    Cursor { pos: usize, extend: bool, toggle: bool },
     Open(usize),
     SelectAll,
     Sort(SortBy),
     /// Right-click: on an item (already selected by a `Cursor` before this) or empty space.
-    Context {
-        pos: Option<usize>,
-        at: Point,
-    },
+    Context { pos: Option<usize>, at: Point },
     /// Middle-click: open a folder in a new tab.
     Middle(usize),
     /// Click on empty space.
@@ -69,20 +68,19 @@ pub enum Action {
     /// A press moved far enough to be a drag of the selection.
     DragStart,
     /// The drag ended over this list: on a folder item, or on the folder itself.
-    Drop {
-        pos: Option<usize>,
-    },
+    Drop { pos: Option<usize> },
     /// A dragged-over folder has waited long enough: open it.
     Spring(usize),
     /// Clicked outside the rename field.
     EditorBlur,
     /// Visible items changed (grid thumbnails load for these).
-    Visible {
-        first: usize,
-        last: usize,
-    },
+    Visible { first: usize, last: usize },
     /// Any press inside: this pane becomes the active one.
     Focus,
+    /// The pointer rested on a folder (its position and where it's drawn), or left it.
+    Peek(Option<(usize, Rectangle)>),
+    /// Ctrl+wheel: bigger (+1) or smaller (-1) icons.
+    Zoom(i8),
 }
 
 /// Everything the list needs to draw one frame; owned by the app.
@@ -111,12 +109,20 @@ pub struct Model<'a> {
     pub dragging: bool,
     /// Position being renamed; the editor child sits over its name.
     pub renaming: Option<usize>,
-    /// Characters in the name being typed, so the grid's field grows with it.
+    /// How many characters are in the rename field (grid editor grows with the name).
     pub rename_chars: usize,
-    /// Decoded thumbnail for an entry, if ready.
-    pub thumb: Box<dyn Fn(usize) -> Option<aimage::Handle> + 'a>,
     /// The search box's filter text: where it matches, a name is highlighted.
     pub highlight: &'a str,
+    /// Decoded thumbnail for an entry, if ready.
+    pub thumb: Box<dyn Fn(usize) -> Option<aimage::Handle> + 'a>,
+    /// Icon size step, an index into `folders::ZOOMS`.
+    pub zoom: u8,
+    /// A narrow column (Miller columns): no header, no details, a chevron on folders.
+    pub compact: bool,
+    /// A folder's own icon (a colour or icon chosen for it), by entry.
+    pub decor: Box<dyn Fn(usize) -> Option<iced::advanced::svg::Handle> + 'a>,
+    /// Resting on a folder reports [`Action::Peek`].
+    pub peek: bool,
 }
 
 /// JetBrains Mono advances every glyph by 0.6 em.
@@ -177,14 +183,10 @@ fn two_lines(name: &str, max: usize) -> (String, String, bool) {
         return (a, rest, false);
     }
     // Keep the end of the name (the extension) visible: "…d report.pdf".
-    let tail: Vec<char> = rest
-        .chars()
-        .rev()
-        .take_while(|c| {
-            used += cols_of(*c);
-            used < max
-        })
-        .collect();
+    let tail: Vec<char> = rest.chars().rev().take_while(|c| {
+        used += cols_of(*c);
+        used < max
+    }).collect();
     b.push('…');
     b.extend(tail.into_iter().rev());
     (a, b, true)
@@ -201,7 +203,7 @@ pub fn set_bit(bits: &mut [u64], i: usize, on: bool) {
 }
 
 /// A folder, or a link to one: something you can drop into and open in place.
-fn is_folder(l: &Listing, i: usize) -> bool {
+pub(crate) fn is_folder(l: &Listing, i: usize) -> bool {
     l.is_dir(i) || (l.kind[i] == Kind::Symlink && l.flags[i] & flags::LINK_DIR != 0)
 }
 
@@ -234,9 +236,9 @@ struct State {
     sprung: Option<usize>,
     /// Item under the pointer, and since when (for the full-name tooltip).
     hover: Option<(usize, Instant)>,
-    /// The range last reported with [`Action::Visible`], and whether it was a grid then:
-    /// switching a list to a grid shows the same items but now needs their thumbnails.
-    visible: (usize, usize, bool),
+    visible: (usize, usize),
+    /// The folder a peek was reported for.
+    peeked: Option<usize>,
 }
 
 /// Anchor and endpoint are content coordinates, so wheel scrolling keeps the anchor fixed.
@@ -258,13 +260,7 @@ impl Marquee {
 }
 
 impl<'a, Message> FileList<'a, Message> {
-    pub fn new(
-        model: Model<'a>,
-        palette: &'a Palette,
-        icons: &'a Icons,
-        dates: &'a DateFormatter,
-        on_action: impl Fn(Action) -> Message + 'a,
-    ) -> Self {
+    pub fn new(model: Model<'a>, palette: &'a Palette, icons: &'a Icons, dates: &'a DateFormatter, on_action: impl Fn(Action) -> Message + 'a) -> Self {
         Self { model, palette, icons, dates, on_action: Box::new(on_action), editor: None }
     }
 
@@ -274,12 +270,29 @@ impl<'a, Message> FileList<'a, Message> {
         self
     }
 
+    fn thumb(&self) -> f32 {
+        crate::folders::ZOOMS[(self.model.zoom as usize).min(crate::folders::ZOOMS.len() - 1)]
+    }
+
+    fn tile_w(&self) -> f32 {
+        self.thumb() + TILE_PAD_W
+    }
+
+    fn row_icon(&self) -> f32 {
+        ROW_ICONS[(self.model.zoom as usize).min(ROW_ICONS.len() - 1)].min(self.model.row_h - 4.0)
+    }
+
     fn cols(&self, body: Rectangle) -> usize {
-        if self.model.grid { (((body.width - style::SPACE_4 - SCROLLBAR) / TILE_W).floor() as usize).max(1) } else { 1 }
+        if self.model.grid { (((body.width - style::SPACE_4 - SCROLLBAR) / self.tile_w()).floor() as usize).max(1) } else { 1 }
     }
 
     fn item_h(&self) -> f32 {
-        if self.model.grid { TILE_H } else { self.model.row_h }
+        if self.model.grid { self.thumb() + TILE_PAD_H } else { self.model.row_h }
+    }
+
+    /// No header row: the grid and compact columns.
+    fn headless(&self) -> bool {
+        self.model.grid || self.model.compact
     }
 
     fn lines(&self, cols: usize) -> usize {
@@ -300,19 +313,9 @@ impl<'a, Message> FileList<'a, Message> {
         let h = self.item_h();
         if self.model.grid {
             let (r, c) = (pos / cols, pos % cols);
-            Rectangle {
-                x: body.x + style::SPACE_4 / 2.0 + c as f32 * TILE_W,
-                y: body.y + style::SPACE_4 / 2.0 + r as f32 * h - state.offset,
-                width: TILE_W - 4.0,
-                height: h - 4.0,
-            }
+            Rectangle { x: body.x + style::SPACE_4 / 2.0 + c as f32 * self.tile_w(), y: body.y + style::SPACE_4 / 2.0 + r as f32 * h - state.offset, width: self.tile_w() - 4.0, height: h - 4.0 }
         } else {
-            Rectangle {
-                x: body.x + style::SPACE_1,
-                y: body.y + pos as f32 * h - state.offset,
-                width: body.width - style::SPACE_1 * 2.0 - SCROLLBAR,
-                height: h,
-            }
+            Rectangle { x: body.x + style::SPACE_1, y: body.y + pos as f32 * h - state.offset, width: body.width - style::SPACE_1 * 2.0 - SCROLLBAR, height: h }
         }
     }
 
@@ -328,7 +331,7 @@ impl<'a, Message> FileList<'a, Message> {
             if x < 0.0 || y < 0.0 {
                 return None;
             }
-            let c = (x / TILE_W) as usize;
+            let c = (x / self.tile_w()) as usize;
             if c >= cols {
                 return None;
             }
@@ -352,7 +355,8 @@ impl<'a, Message> FileList<'a, Message> {
         // Only visit rows covered by the rectangle, including those scrolled out of view.
         let cols = self.cols(body);
         let first = ((rect.y / self.item_h()) as usize).saturating_sub(1) * cols;
-        let last = (((rect.y + rect.height) / self.item_h()) as usize + 1).saturating_mul(cols).min(self.model.order.len());
+        let last = (((rect.y + rect.height) / self.item_h()) as usize + 1)
+            .saturating_mul(cols).min(self.model.order.len());
         for pos in first..last {
             let item = self.item_rect(state, body, pos);
             let item = Rectangle { x: item.x - body.x, y: item.y - body.y + state.offset, ..item };
@@ -368,18 +372,16 @@ impl<'a, Message> FileList<'a, Message> {
     fn editor_rect(&self, state: &State, body: Rectangle, bounds: Rectangle, pos: usize) -> Rectangle {
         let r = self.item_rect(state, body, pos);
         if self.model.grid {
-            // Sized to the name (as the label is drawn), centred under the picture and kept
-            // inside the pane; wider than the tile only when the name needs it, floating over
-            // the neighbours' labels rather than crossing the tile's own frame.
+            // Sized to the name, centred under the picture and kept inside the pane.
             let name = self.model.order.get(pos).map(|&i| self.model.listing.name_bytes(i as usize)).unwrap_or_default();
             let cells = String::from_utf8_lossy(name).chars().count().max(self.model.rename_chars) + 2;
             let lo = body.x + 2.0;
             let hi = body.x + body.width - SCROLLBAR - 2.0;
             let width = (cells as f32 * style::META * 0.6 + 14.0).min(GRID_EDITOR_MAX).min(hi - lo).max(r.width);
             let x = (r.center_x() - width / 2.0).min(hi - width).max(lo);
-            Rectangle { x, y: r.y + THUMB + 7.0, width, height: 24.0 }
+            Rectangle { x, y: r.y + self.thumb() + 7.0, width, height: 24.0 }
         } else {
-            let cols = columns(bounds);
+            let cols = self.columns_for(bounds);
             Rectangle { x: cols.name - 6.0, y: r.y + (r.height - 24.0) / 2.0, width: cols.name_w + 12.0, height: 24.0 }
         }
     }
@@ -417,6 +419,15 @@ fn columns(b: Rectangle) -> Columns {
     let name = icon + style::ICON_ROW + style::SPACE_3;
     let name_w = (size_right - style::COL_SIZE - style::SPACE_4 - name).max(40.0);
     Columns { icon, name, name_w, size_right, kind, date, show_kind, show_date }
+}
+
+/// The name takes the whole row in a compact column, short of a folder chevron.
+fn compact_columns(b: Rectangle, icon: f32) -> Columns {
+    let pad = style::SPACE_3;
+    let right = b.x + b.width - pad - SCROLLBAR;
+    let icon_x = b.x + pad;
+    let name = icon_x + icon + style::SPACE_3;
+    Columns { icon: icon_x, name, name_w: (right - CHEVRON - name).max(24.0), size_right: right, kind: right, date: right, show_kind: false, show_date: false }
 }
 
 /// Which column header is under `x`.
@@ -459,7 +470,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
     fn layout(&mut self, tree: &mut Tree, renderer: &iced::Renderer, limits: &layout::Limits) -> layout::Node {
         let size = limits.max();
         let bounds = Rectangle::new(Point::ORIGIN, size);
-        let (_, body) = areas(bounds, self.model.grid);
+        let (_, body) = areas(bounds, self.headless());
         let cols = self.cols(body);
         let h = self.item_h();
         let max = self.max_offset(body);
@@ -520,24 +531,26 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                 return;
             }
             if let Event::Mouse(mouse::Event::ButtonPressed(_)) = event
-                && cursor.is_over(layout.bounds())
-                && !cursor.is_over(child.bounds())
-            {
-                shell.publish((self.on_action)(Action::EditorBlur));
-            }
-        }
-        // A focused text field (the search box, the path bar) already handled this key:
-        // Ctrl+A there selects its text, not every file in the list.
-        if matches!(event, Event::Keyboard(keyboard::Event::KeyPressed { .. })) && shell.is_event_captured() {
-            return;
+                && cursor.is_over(layout.bounds()) && !cursor.is_over(child.bounds()) {
+                    shell.publish((self.on_action)(Action::EditorBlur));
+                }
         }
         let bounds = layout.bounds();
-        let (header, body) = areas(bounds, self.model.grid);
+        let (header, body) = areas(bounds, self.headless());
         let n = self.model.order.len();
         let max = self.max_offset(body);
         let state = tree.state.downcast_mut::<State>();
         let publish = |shell: &mut Shell<'_, Message>, a: Action| shell.publish((self.on_action)(a));
         let l = self.model.listing;
+        // Any press, scroll or focus change ends a peek.
+        let unpeek = |state: &mut State, shell: &mut Shell<'_, Message>| {
+            if state.peeked.take().is_some() {
+                shell.publish((self.on_action)(Action::Peek(None)));
+            }
+        };
+        if matches!(event, Event::Mouse(mouse::Event::ButtonPressed(_) | mouse::Event::WheelScrolled { .. } | mouse::Event::CursorLeft) | Event::Window(iced::window::Event::Unfocused) | Event::Keyboard(keyboard::Event::KeyPressed { .. })) {
+            unpeek(state, shell);
+        }
 
         match event {
             Event::Window(iced::window::Event::Unfocused) => {
@@ -560,27 +573,45 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                 let h = self.item_h();
                 let first = (state.offset / h) as usize * cols;
                 let last = (((state.offset + body.height) / h).ceil() as usize * cols).min(n);
-                if (first, last, self.model.grid) != state.visible {
-                    state.visible = (first, last, self.model.grid);
+                if (first, last) != state.visible {
+                    state.visible = (first, last);
                     publish(shell, Action::Visible { first, last });
                 }
                 // Spring-loading and the name tooltip wake up on their own.
                 if let Some((pos, since)) = state.drop_hover
-                    && self.model.dragging
-                    && state.sprung != Some(pos)
+                    && self.model.dragging && state.sprung != Some(pos) {
+                        if *now >= since + SPRING {
+                            state.sprung = Some(pos);
+                            publish(shell, Action::Spring(pos));
+                        } else {
+                            shell.request_redraw();
+                        }
+                    }
+                if let Some((_, since)) = state.hover
+                    && *now < since + TIP_DELAY {
+                        shell.request_redraw_at(since + TIP_DELAY);
+                    }
+                if self.model.peek && !self.model.dragging && state.marquee.is_none() && state.press.is_none()
+                    && let Some((pos, since)) = state.hover
+                    && state.peeked != Some(pos) && pos < n && is_folder(l, self.model.order[pos] as usize)
                 {
-                    if *now >= since + SPRING {
-                        state.sprung = Some(pos);
-                        publish(shell, Action::Spring(pos));
+                    if *now >= since + PEEK_DELAY {
+                        state.peeked = Some(pos);
+                        let at = self.item_rect(state, body, pos);
+                        publish(shell, Action::Peek(Some((pos, at))));
                     } else {
-                        shell.request_redraw();
+                        shell.request_redraw_at(since + PEEK_DELAY);
                     }
                 }
-                if let Some((_, since)) = state.hover
-                    && *now < since + TIP_DELAY
-                {
-                    shell.request_redraw_at(since + TIP_DELAY);
+            }
+            Event::Mouse(mouse::Event::WheelScrolled { delta }) if cursor.is_over(body) && state.modifiers.control() => {
+                let y = match delta {
+                    mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => *y,
+                };
+                if y != 0.0 {
+                    publish(shell, Action::Zoom(if y > 0.0 { 1 } else { -1 }));
                 }
+                shell.capture_event();
             }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) if cursor.is_over(body) => {
                 let dy = match delta {
@@ -681,12 +712,10 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                     return;
                 }
                 if let Some((start, _, _)) = state.press
-                    && !state.drag_started
-                    && start.distance(*position) > DRAG_START
-                {
-                    state.drag_started = true;
-                    publish(shell, Action::DragStart);
-                }
+                    && !state.drag_started && start.distance(*position) > DRAG_START {
+                        state.drag_started = true;
+                        publish(shell, Action::DragStart);
+                    }
                 let over = cursor.is_over(bounds);
                 let hit = if over { self.item_at(state, body, *position) } else { None };
                 if self.model.dragging {
@@ -704,6 +733,9 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                 }
                 if hit != state.hover.map(|h| h.0) {
                     state.hover = hit.map(|pos| (pos, Instant::now()));
+                    if state.peeked.is_some() && state.peeked != hit {
+                        unpeek(state, shell);
+                    }
                     shell.request_redraw();
                 } else if over {
                     // Header hover follows the pointer too.
@@ -722,14 +754,10 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                 }
                 state.dragging_thumb = None;
                 if let Some((_, pos, deferred)) = state.press.take()
-                    && deferred
-                    && !state.drag_started
-                {
-                    publish(shell, Action::Cursor { pos, extend: false, toggle: false });
-                }
-                if self.model.dragging
-                    && let Some(p) = cursor.position_over(body)
-                {
+                    && deferred && !state.drag_started {
+                        publish(shell, Action::Cursor { pos, extend: false, toggle: false });
+                    }
+                if self.model.dragging && let Some(p) = cursor.position_over(body) {
                     let target = self.item_at(state, body, p).filter(|&pos| {
                         let i = self.model.order[pos] as usize;
                         is_folder(l, i) && !is_selected(self.model.selected, i)
@@ -741,9 +769,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                 state.sprung = None;
             }
             // Alt+arrows are history and parent-folder keys for the app, not list movement.
-            Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(named), modifiers, .. })
-                if n > 0 && self.model.keys && !modifiers.alt() =>
-            {
+            Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(named), modifiers, .. }) if n > 0 && self.model.keys && !modifiers.alt() => {
                 let cur = self.model.cursor.unwrap_or(0);
                 let cols = state.columns.max(1);
                 let page = state.viewport_rows.saturating_sub(1).max(1) * cols;
@@ -769,9 +795,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
                     shell.capture_event();
                 }
             }
-            Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Character(c), modifiers, .. })
-                if self.model.keys && modifiers.control() && c.as_str() == "a" =>
-            {
+            Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Character(c), modifiers, .. }) if self.model.keys && modifiers.control() && c.as_str() == "a" => {
                 publish(shell, Action::SelectAll);
                 shell.capture_event();
             }
@@ -779,20 +803,12 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
         }
     }
 
-    fn mouse_interaction(
-        &self,
-        tree: &Tree,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-        renderer: &iced::Renderer,
-    ) -> mouse::Interaction {
+    fn mouse_interaction(&self, tree: &Tree, layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle, renderer: &iced::Renderer) -> mouse::Interaction {
         if let (Some(editor), Some(child)) = (self.editor.as_ref(), layout.children().next())
-            && cursor.is_over(child.bounds())
-        {
-            return editor.as_widget().mouse_interaction(&tree.children[0], child, cursor, viewport, renderer);
-        }
-        let (header, _) = areas(layout.bounds(), self.model.grid);
+            && cursor.is_over(child.bounds()) {
+                return editor.as_widget().mouse_interaction(&tree.children[0], child, cursor, viewport, renderer);
+            }
+        let (header, _) = areas(layout.bounds(), self.headless());
         if cursor.is_over(header) {
             mouse::Interaction::Pointer
         } else if self.model.dragging && cursor.is_over(layout.bounds()) {
@@ -802,25 +818,16 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
         }
     }
 
-    fn draw(
-        &self,
-        tree: &Tree,
-        renderer: &mut iced::Renderer,
-        theme: &iced::Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-    ) {
+    fn draw(&self, tree: &Tree, renderer: &mut iced::Renderer, theme: &iced::Theme, style: &renderer::Style, layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle) {
         use iced::advanced::Renderer as _;
 
         let state = tree.state.downcast_ref::<State>();
         let bounds = layout.bounds();
-        let (header, body) = areas(bounds, self.model.grid);
+        let (header, body) = areas(bounds, self.headless());
         let p = self.palette;
 
         renderer.fill_quad(Quad { bounds, ..Quad::default() }, color(p.bg));
-        if !self.model.grid {
+        if !self.headless() {
             self.draw_header(renderer, bounds, header, cursor);
         }
 
@@ -856,10 +863,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
             renderer.with_layer(body, |renderer| {
                 let mut fill = color(p.accent);
                 fill.a = 0.16;
-                renderer.fill_quad(
-                    Quad { bounds: rect, border: Border { color: color(p.accent), width: 1.0, ..Border::default() }, ..Quad::default() },
-                    fill,
-                );
+                renderer.fill_quad(Quad { bounds: rect, border: Border { color: color(p.accent), width: 1.0, ..Border::default() }, ..Quad::default() }, fill);
             });
         }
 
@@ -869,19 +873,13 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
             let th = (body.height * body.height / content).max(24.0);
             let y = body.y + (body.height - th) * (state.offset / self.max_offset(body).max(1.0));
             let thumb = Rectangle { x: body.x + body.width - SCROLLBAR - 2.0, y, width: SCROLLBAR - 2.0, height: th };
-            renderer.fill_quad(
-                Quad { bounds: thumb, border: Border { radius: 3.0.into(), ..Border::default() }, ..Quad::default() },
-                color(p.line_strong),
-            );
+            renderer.fill_quad(Quad { bounds: thumb, border: Border { radius: 3.0.into(), ..Border::default() }, ..Quad::default() }, color(p.line_strong));
         }
 
         if let (Some(editor), Some(child)) = (self.editor.as_ref(), layout.children().next()) {
             renderer.with_layer(body, |renderer| {
                 let r = child.bounds().expand(1.0);
-                renderer.fill_quad(
-                    Quad { bounds: r, border: Border { color: color(p.focus_ring), width: 1.0, radius: 4.0.into() }, ..Quad::default() },
-                    color(p.bg_deep),
-                );
+                renderer.fill_quad(Quad { bounds: r, border: Border { color: color(p.focus_ring), width: 1.0, radius: 4.0.into() }, ..Quad::default() }, color(p.bg_deep));
                 editor.as_widget().draw(&tree.children[0], renderer, theme, style, child, cursor, viewport);
             });
         } else {
@@ -905,23 +903,33 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for FileList<'a, 
 // ------------------------------------------------------------------------------ drawing
 
 impl<'a, Message> FileList<'a, Message> {
+    fn columns_for(&self, bounds: Rectangle) -> Columns {
+        if self.model.compact {
+            return compact_columns(bounds, self.row_icon());
+        }
+        let mut c = columns(bounds);
+        // Bigger list icons push the name over.
+        c.name += self.row_icon() - style::ICON_ROW;
+        c.name_w = (c.name_w - (self.row_icon() - style::ICON_ROW)).max(40.0);
+        c
+    }
+
+    /// The colour icon for entry `i`: the folder's own when one was chosen.
+    fn icon_for(&self, i: usize) -> iced::advanced::svg::Handle {
+        let l = self.model.listing;
+        (self.model.decor)(i).unwrap_or_else(|| {
+            let kind = if l.is_folderish(i) { Kind::Dir } else { l.kind[i] };
+            self.icons.color(kinds::icon(l.name_bytes(i), kind))
+        })
+    }
+
     fn editor_rect_in(&self, state: &State, bounds: Rectangle, pos: usize) -> Rectangle {
-        let (_, body) = areas(bounds, self.model.grid);
+        let (_, body) = areas(bounds, self.headless());
         self.editor_rect(state, body, bounds, pos)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn text(
-        &self,
-        renderer: &mut iced::Renderer,
-        content: String,
-        at: Point,
-        size: f32,
-        font: iced::Font,
-        c: Color,
-        align: text::Alignment,
-        clip: Rectangle,
-    ) {
+    fn text(&self, renderer: &mut iced::Renderer, content: String, at: Point, size: f32, font: iced::Font, c: Color, align: text::Alignment, clip: Rectangle) {
         use iced::advanced::text::Renderer as _;
         let shaping = if content.is_ascii() { text::Shaping::Basic } else { text::Shaping::Advanced };
         renderer.fill_text(
@@ -945,7 +953,7 @@ impl<'a, Message> FileList<'a, Message> {
     fn draw_header(&self, renderer: &mut iced::Renderer, bounds: Rectangle, header: Rectangle, cursor: mouse::Cursor) {
         use iced::advanced::Renderer as _;
         let p = self.palette;
-        let cols = columns(bounds);
+        let cols = self.columns_for(bounds);
         let arrow = if self.model.sort.descending { " ↓" } else { " ↑" };
         let hovered_col = cursor.position().filter(|pt| header.contains(*pt)).map(|pt| header_column(&cols, pt.x));
         if let Some(by) = hovered_col {
@@ -957,11 +965,7 @@ impl<'a, Message> FileList<'a, Message> {
                 _ => (cols.date - style::SPACE_1, bounds.x + bounds.width - SCROLLBAR),
             };
             renderer.fill_quad(
-                Quad {
-                    bounds: Rectangle { x: x0, y: header.y + 2.0, width: x1 - x0 - style::SPACE_1, height: header.height - 4.0 },
-                    border: Border { radius: 2.0.into(), ..Border::default() },
-                    ..Quad::default()
-                },
+                Quad { bounds: Rectangle { x: x0, y: header.y + 2.0, width: x1 - x0 - style::SPACE_1, height: header.height - 4.0 }, border: Border { radius: 2.0.into(), ..Border::default() }, ..Quad::default() },
                 color(p.state_hover),
             );
         }
@@ -977,21 +981,9 @@ impl<'a, Message> FileList<'a, Message> {
             let active = self.model.sort.by == by;
             let t = if active { format!("{title}{arrow}") } else { title.to_string() };
             let c = if active || hovered_col == Some(by) { color(p.ink_strong) } else { color(p.ink_muted) };
-            self.text(
-                renderer,
-                t,
-                Point::new(x, header.center_y()),
-                style::LABEL,
-                style::FONT_BOLD,
-                c,
-                if right { text::Alignment::Right } else { text::Alignment::Left },
-                header,
-            );
+            self.text(renderer, t, Point::new(x, header.center_y()), style::LABEL, style::FONT_BOLD, c, if right { text::Alignment::Right } else { text::Alignment::Left }, header);
         }
-        renderer.fill_quad(
-            Quad { bounds: Rectangle { y: header.y + header.height - 1.0, height: 1.0, ..header }, ..Quad::default() },
-            color(p.line),
-        );
+        renderer.fill_quad(Quad { bounds: Rectangle { y: header.y + header.height - 1.0, height: 1.0, ..header }, ..Quad::default() }, color(p.line));
     }
 
     fn draw_skeleton(&self, renderer: &mut iced::Renderer, bounds: Rectangle, body: Rectangle) {
@@ -1010,10 +1002,7 @@ impl<'a, Message> FileList<'a, Message> {
                 (cols.date, style::COL_DATE * 0.7, 10.0),
             ] {
                 let bar = Rectangle { x, y: y + (10.0 - h) / 2.0, width, height: h };
-                renderer.fill_quad(
-                    Quad { bounds: bar, border: Border { radius: 2.0.into(), ..Border::default() }, ..Quad::default() },
-                    color(p.line),
-                );
+                renderer.fill_quad(Quad { bounds: bar, border: Border { radius: 2.0.into(), ..Border::default() }, ..Quad::default() }, color(p.line));
             }
         }
     }
@@ -1023,26 +1012,8 @@ impl<'a, Message> FileList<'a, Message> {
         let p = self.palette;
         let icon = Rectangle { x: body.center_x() - 32.0, y: body.y + body.height * 0.3 - 32.0, width: 64.0, height: 64.0 };
         renderer.draw_svg(Svg::new(self.icons.color("folder-open")), icon, body);
-        self.text(
-            renderer,
-            title.to_string(),
-            Point::new(body.center_x(), icon.y + 64.0 + 28.0),
-            22.0,
-            style::FONT_BOLD,
-            color(p.ink_strong),
-            text::Alignment::Center,
-            body,
-        );
-        self.text(
-            renderer,
-            hint.to_string(),
-            Point::new(body.center_x(), icon.y + 64.0 + 58.0),
-            style::META,
-            style::FONT,
-            color(p.ink_muted),
-            text::Alignment::Center,
-            body,
-        );
+        self.text(renderer, title.to_string(), Point::new(body.center_x(), icon.y + 64.0 + 28.0), 22.0, style::FONT_BOLD, color(p.ink_strong), text::Alignment::Center, body);
+        self.text(renderer, hint.to_string(), Point::new(body.center_x(), icon.y + 64.0 + 58.0), style::META, style::FONT, color(p.ink_muted), text::Alignment::Center, body);
     }
 
     /// Selection, hover, cursor and drop-target ground for an item.
@@ -1053,50 +1024,25 @@ impl<'a, Message> FileList<'a, Message> {
         let is_cursor = self.model.cursor == Some(pos) && self.model.active;
         let drop = state.drop_hover.is_some_and(|d| d.0 == pos) && self.model.dragging;
         if drop {
-            renderer.fill_quad(
-                Quad { bounds: r, border: Border { color: color(p.accent), width: 1.0, radius: 2.0.into() }, ..Quad::default() },
-                color(p.accent_soft),
-            );
+            renderer.fill_quad(Quad { bounds: r, border: Border { color: color(p.accent), width: 1.0, radius: 2.0.into() }, ..Quad::default() }, color(p.accent_soft));
             // Spring-loading: a 2px bar fills over 700ms, then the folder opens.
             if let Some((_, since)) = state.drop_hover {
                 let t = (since.elapsed().as_secs_f32() / SPRING.as_secs_f32()).min(1.0);
-                renderer.fill_quad(
-                    Quad { bounds: Rectangle { y: r.y + r.height - 2.0, height: 2.0, width: r.width * t, ..r }, ..Quad::default() },
-                    color(p.accent),
-                );
+                renderer.fill_quad(Quad { bounds: Rectangle { y: r.y + r.height - 2.0, height: 2.0, width: r.width * t, ..r }, ..Quad::default() }, color(p.accent));
             }
             return;
         }
-        if self.model.grid && self.model.renaming == Some(pos) {
-            // The rename field is the focus now; a frame round the whole tile would cross it.
-            let pic = Rectangle { height: THUMB + 6.0, ..r };
-            renderer.fill_quad(
-                Quad { bounds: pic, border: Border { radius: 2.0.into(), ..Border::default() }, ..Quad::default() },
-                color(p.selection),
-            );
-            return;
-        }
         if selected || hover == Some(pos) || is_cursor {
-            let bg = if selected {
-                color(p.selection)
-            } else if hover == Some(pos) {
-                color(p.state_hover)
-            } else {
-                Color::TRANSPARENT
-            };
-            let border = if is_cursor {
-                Border { color: color(p.focus_ring), width: 1.0, radius: 2.0.into() }
-            } else {
-                Border { radius: 2.0.into(), ..Border::default() }
-            };
+            let bg = if selected { color(p.selection) } else if hover == Some(pos) { color(p.state_hover) } else { Color::TRANSPARENT };
+            let border = if is_cursor { Border { color: color(p.focus_ring), width: 1.0, radius: 2.0.into() } } else { Border { radius: 2.0.into(), ..Border::default() } };
             renderer.fill_quad(Quad { bounds: r, border, ..Quad::default() }, Background::Color(bg));
         }
     }
 
     /// One badge per icon, bottom-right; priority broken > lock > cloud > link.
     fn draw_badge(&self, renderer: &mut iced::Renderer, icon: Rectangle, i: usize, clip: Rectangle) {
-        use iced::advanced::Renderer as _;
         use iced::advanced::svg::Renderer as _;
+        use iced::advanced::Renderer as _;
         let l = self.model.listing;
         let f = l.flags[i];
         let (glyph, tint) = if f & flags::BROKEN != 0 {
@@ -1112,10 +1058,7 @@ impl<'a, Message> FileList<'a, Message> {
         };
         let s = (icon.width * 0.55).max(9.0);
         let b = Rectangle { x: icon.x + icon.width - s + 2.0, y: icon.y + icon.height - s + 2.0, width: s, height: s };
-        renderer.fill_quad(
-            Quad { bounds: b.expand(1.0), border: Border { radius: (s / 2.0 + 1.0).into(), ..Border::default() }, ..Quad::default() },
-            color(self.palette.bg_raised),
-        );
+        renderer.fill_quad(Quad { bounds: b.expand(1.0), border: Border { radius: (s / 2.0 + 1.0).into(), ..Border::default() }, ..Quad::default() }, color(self.palette.bg_raised));
         renderer.draw_svg(Svg::new(self.icons.glyph(glyph)).color(color(tint)), b.shrink(1.5), clip);
     }
 
@@ -1133,7 +1076,7 @@ impl<'a, Message> FileList<'a, Message> {
     fn draw_row(&self, renderer: &mut iced::Renderer, state: &State, bounds: Rectangle, body: Rectangle, pos: usize, hover: Option<usize>) {
         use iced::advanced::svg::Renderer as _;
         let p = self.palette;
-        let cols = columns(bounds);
+        let cols = self.columns_for(bounds);
         let l = self.model.listing;
         let i = self.model.order[pos] as usize;
         let row = self.item_rect(state, body, pos);
@@ -1142,16 +1085,16 @@ impl<'a, Message> FileList<'a, Message> {
         let selected = is_selected(self.model.selected, i);
         let name = l.name_bytes(i);
         let alpha = self.alpha(i);
-        let icon_box = Rectangle { x: cols.icon, y: y + (rh - style::ICON_ROW) / 2.0, width: style::ICON_ROW, height: style::ICON_ROW };
-        renderer.draw_svg(
-            Svg { opacity: alpha, ..Svg::new(self.icons.color(kinds::icon(name, if l.is_folderish(i) { Kind::Dir } else { l.kind[i] }))) },
-            icon_box,
-            body,
-        );
+        // Google Docs in Drive: their own kind and icon, no size, no `.link.html`.
+        let google = kinds::google(&l.dir, name);
+        let ic = self.row_icon();
+        let icon_box = Rectangle { x: cols.icon, y: y + (rh - ic) / 2.0, width: ic, height: ic };
+        renderer.draw_svg(Svg { opacity: alpha, ..Svg::new(match google { Some(g) => self.icons.color(g.icon()), None => self.icon_for(i) }) }, icon_box, body);
         self.draw_badge(renderer, icon_box, i, body);
         let cy = y + rh / 2.0;
         if self.model.renaming != Some(pos) {
-            let full = String::from_utf8_lossy(name);
+            let shown = if google.is_some() { &name[..name.len() - ef_cloud::drive::LINK_SUFFIX.len()] } else { name };
+            let full = String::from_utf8_lossy(shown);
             let max_cells = (cols.name_w / ADVANCE).floor() as usize;
             let (mut stem, mut ext, _) = fit_name(&full, l.is_dir(i), max_cells);
             if !name.is_ascii() {
@@ -1167,8 +1110,6 @@ impl<'a, Message> FileList<'a, Message> {
             let name_clip = Rectangle { x: cols.name, y, width: cols.name_w, height: rh };
             let clip = name_clip.intersection(&body).unwrap_or(name_clip);
             let stem_cells: usize = stem.chars().map(cols_of).sum();
-            // Mark where the search matched (ASCII names: one cell per byte, so the match
-            // offset is its position on screen; a name cut short skips the mark).
             let q = self.model.highlight.as_bytes();
             let shown = format!("{stem}{ext}");
             if !q.is_empty()
@@ -1197,23 +1138,20 @@ impl<'a, Message> FileList<'a, Message> {
                 }
             }
         }
+        if self.model.compact {
+            if is_folder(l, i) {
+                let c = Rectangle { x: cols.name + cols.name_w + 2.0, y: cy - 6.0, width: 12.0, height: 12.0 };
+                renderer.draw_svg(Svg::new(self.icons.glyph("chevron-right")).color(color(if selected { p.ink_strong } else { p.ink_muted })), c, body);
+            }
+            return;
+        }
         let mut buf = String::with_capacity(32);
         let meta = |renderer: &mut iced::Renderer, s: String, x: f32, right: bool, w: f32| {
             let clip = Rectangle { x: if right { x - w } else { x }, y, width: w, height: rh };
-            self.text(
-                renderer,
-                s,
-                Point::new(x, cy),
-                style::META,
-                style::FONT,
-                color(p.ink_muted),
-                if right { text::Alignment::Right } else { text::Alignment::Left },
-                clip.intersection(&body).unwrap_or(clip),
-            );
+            self.text(renderer, s, Point::new(x, cy), style::META, style::FONT, color(p.ink_muted), if right { text::Alignment::Right } else { text::Alignment::Left }, clip.intersection(&body).unwrap_or(clip));
         };
         let stated = l.flags[i] & flags::STATED != 0;
-        // A link's own size is the length of its target path: meaningless here.
-        if l.is_folderish(i) || l.kind[i] == Kind::Symlink {
+        if l.is_folderish(i) || l.kind[i] == Kind::Symlink || google.is_some() {
             buf.push('—');
         } else if stated {
             fmt::size(l.size[i], &mut buf);
@@ -1225,7 +1163,10 @@ impl<'a, Message> FileList<'a, Message> {
         } else if l.is_folderish(i) && l.kind[i] == Kind::Symlink {
             buf.push_str("Link to folder");
         } else {
-            kinds::label(name, l.kind[i], &mut buf);
+            match google {
+                Some(g) => buf.push_str(g.label()),
+                None => kinds::label(name, l.kind[i], &mut buf),
+            }
         }
         if cols.show_kind {
             meta(renderer, buf.clone(), cols.kind, false, style::COL_KIND);
@@ -1247,31 +1188,26 @@ impl<'a, Message> FileList<'a, Message> {
         self.draw_ground(renderer, state, r, pos, i, hover);
         let alpha = self.alpha(i);
         let name = l.name_bytes(i);
-        let pic = Rectangle { x: r.center_x() - THUMB / 2.0, y: r.y + 4.0, width: THUMB, height: THUMB };
+        let thumb = self.thumb();
+        let pic = Rectangle { x: r.center_x() - thumb / 2.0, y: r.y + 4.0, width: thumb, height: thumb };
         match (self.model.thumb)(i) {
             Some(handle) => {
                 // Fit the thumbnail inside the 88px square, keeping its shape.
                 let (w, h) = match renderer.measure_image(&handle) {
                     Some(sz) if sz.width > 0 && sz.height > 0 => {
-                        let s = (THUMB / sz.width as f32).min(THUMB / sz.height as f32);
+                        let s = (thumb / sz.width as f32).min(thumb / sz.height as f32);
                         (sz.width as f32 * s, sz.height as f32 * s)
                     }
-                    _ => (THUMB, THUMB),
+                    _ => (thumb, thumb),
                 };
-                let fit = Rectangle { x: pic.center_x() - w / 2.0, y: pic.y + THUMB - h, width: w, height: h };
+                let fit = Rectangle { x: pic.center_x() - w / 2.0, y: pic.y + thumb - h, width: w, height: h };
                 renderer.draw_image(Image { opacity: alpha, ..Image::new(handle) }, fit, body);
             }
             None => {
-                let icon = Rectangle { x: pic.center_x() - 24.0, y: pic.center_y() - 24.0, width: 48.0, height: 48.0 };
-                renderer.draw_svg(
-                    Svg {
-                        opacity: alpha,
-                        ..Svg::new(self.icons.color(kinds::icon(name, if l.is_folderish(i) { Kind::Dir } else { l.kind[i] })))
-                    },
-                    icon,
-                    body,
-                );
-                self.draw_badge(renderer, Rectangle { x: icon.x + 24.0, y: icon.y + 24.0, width: 24.0, height: 24.0 }, i, body);
+                let side = (thumb * 0.55).round();
+                let icon = Rectangle { x: pic.center_x() - side / 2.0, y: pic.center_y() - side / 2.0, width: side, height: side };
+                renderer.draw_svg(Svg { opacity: alpha, ..Svg::new(self.icon_for(i)) }, icon, body);
+                self.draw_badge(renderer, Rectangle { x: icon.x + side / 2.0, y: icon.y + side / 2.0, width: side / 2.0, height: side / 2.0 }, i, body);
             }
         }
         if self.model.renaming == Some(pos) {
@@ -1283,27 +1219,9 @@ impl<'a, Message> FileList<'a, Message> {
         let mut ink = if is_selected(self.model.selected, i) { color(p.ink_strong) } else { color(p.ink) };
         ink.a *= alpha;
         let clip = r.intersection(&body).unwrap_or(r);
-        self.text(
-            renderer,
-            a,
-            Point::new(r.center_x(), pic.y + THUMB + 14.0),
-            style::META,
-            style::FONT,
-            ink,
-            text::Alignment::Center,
-            clip,
-        );
+        self.text(renderer, a, Point::new(r.center_x(), pic.y + thumb + 14.0), style::META, style::FONT, ink, text::Alignment::Center, clip);
         if !b.is_empty() {
-            self.text(
-                renderer,
-                b,
-                Point::new(r.center_x(), pic.y + THUMB + 30.0),
-                style::META,
-                style::FONT,
-                ink,
-                text::Alignment::Center,
-                clip,
-            );
+            self.text(renderer, b, Point::new(r.center_x(), pic.y + thumb + 30.0), style::META, style::FONT, ink, text::Alignment::Center, clip);
         }
     }
 
@@ -1316,12 +1234,16 @@ impl<'a, Message> FileList<'a, Message> {
         }
         let l = self.model.listing;
         let i = self.model.order[pos] as usize;
+        // A folder's peek shows its whole name already.
+        if self.model.peek && is_folder(l, i) {
+            return;
+        }
         let full = String::from_utf8_lossy(l.name_bytes(i)).into_owned();
         let cut = if self.model.grid {
             let r = self.item_rect(state, body, pos);
             two_lines(&full, ((r.width - 8.0) / (style::META * 0.6)).floor() as usize).2
         } else {
-            fit_name(&full, l.is_dir(i), (columns(bounds).name_w / ADVANCE).floor() as usize).2
+            fit_name(&full, l.is_dir(i), (self.columns_for(bounds).name_w / ADVANCE).floor() as usize).2
         };
         if !cut {
             return;
@@ -1330,26 +1252,14 @@ impl<'a, Message> FileList<'a, Message> {
         let r = self.item_rect(state, body, pos);
         let w: f32 = full.chars().map(cols_of).sum::<usize>() as f32 * (style::LABEL * 0.6) + 16.0;
         let w = w.min(bounds.width - 16.0);
-        let x = if self.model.grid { r.center_x() - w / 2.0 } else { columns(bounds).name - 8.0 };
+        let x = if self.model.grid { r.center_x() - w / 2.0 } else { self.columns_for(bounds).name - 8.0 };
         let x = x.clamp(bounds.x + 4.0, bounds.x + bounds.width - w - 4.0);
         let y = r.y + r.height + 2.0;
         let y = if y + 22.0 > bounds.y + bounds.height { r.y - 24.0 } else { y };
         let bubble = Rectangle { x, y, width: w, height: 22.0 };
         renderer.with_layer(bounds, |renderer| {
-            renderer.fill_quad(
-                Quad { bounds: bubble, border: Border { color: color(p.line_strong), width: 1.0, radius: 2.0.into() }, ..Quad::default() },
-                color(p.bg_raised),
-            );
-            self.text(
-                renderer,
-                full,
-                Point::new(bubble.x + 8.0, bubble.center_y()),
-                style::LABEL,
-                style::FONT,
-                color(p.ink),
-                text::Alignment::Left,
-                bubble,
-            );
+            renderer.fill_quad(Quad { bounds: bubble, border: Border { color: color(p.line_strong), width: 1.0, radius: 2.0.into() }, ..Quad::default() }, color(p.bg_raised));
+            self.text(renderer, full, Point::new(bubble.x + 8.0, bubble.center_y()), style::LABEL, style::FONT, color(p.ink), text::Alignment::Left, bubble);
         });
     }
 }
@@ -1370,24 +1280,11 @@ mod tests {
         let icons = Icons::new(&palette);
         let dates = DateFormatter::new();
         let model = Model {
-            listing: &listing,
-            order: &[4, 1, 3, 0, 2],
-            selected: &[0],
-            cut: &[],
-            cursor: None,
-            generation: 0,
-            sort: SortSpec::default(),
-            skeleton: false,
-            empty: None,
-            row_h: 30.0,
-            grid,
-            keys: true,
-            active: true,
-            dragging: false,
-            renaming: None,
-            rename_chars: 0,
-            highlight: "",
-            thumb: Box::new(|_| None),
+            listing: &listing, order: &[4, 1, 3, 0, 2], selected: &[0], cut: &[],
+            cursor: None, generation: 0, sort: SortSpec::default(), skeleton: false,
+            empty: None, row_h: 30.0, grid, keys: true, active: true, dragging: false,
+            renaming: None, rename_chars: 0, highlight: "", thumb: Box::new(|_| None),
+            zoom: crate::folders::DEFAULT_ZOOM, compact: false, decor: Box::new(|_| None), peek: false,
         };
         run(FileList::new(model, &palette, &icons, &dates, |a| a));
     }

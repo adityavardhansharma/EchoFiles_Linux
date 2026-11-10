@@ -7,6 +7,7 @@
 //! start_at_login = false      # launch in the background when you log in
 //! open_to = "home"            # "home" or "last"
 //! show_hidden = false
+//! keys = "standard"           # "standard" or "10xer" (Yazi-style: hjkl, gg/G, Space marks)
 //!
 //! [search]
 //! index = true                # off: search reads folders live instead
@@ -20,11 +21,15 @@
 //! [agents]
 //! cli = true                  # off: `ef` refuses to run
 //! skill = false               # EchoFiles skill linked into global agent skill folders
+//! gdrive = false              # let `ef` search Google Drive (separate from [cloud] index)
+//! phone = false               # let `ef phone photos` copy photos from a paired phone
 //!
 //! [appearance]
 //! density = "default"         # "compact", "default" or "comfortable"
 //! preview = false             # the preview pane (Space)
-//! view = "auto"               # "auto" (grid in picture/video folders), "list" or "grid"
+//! view = "auto"               # "auto" (grid in picture/video folders), "list", "grid" or "columns"
+//! footer = true               # the footer with shortcuts and what's on the clipboard
+//! peek = true                 # hovering a folder shows what's inside
 //!
 //! [sidebar]
 //! pinned = ["~/Projects"]     # the Pinned section, in order
@@ -37,6 +42,8 @@
 //!
 //! phone = true                # show the Phone section
 //! phone_open = true
+//! cloud = true                # show the Cloud section (Google Drive)
+//! cloud_open = true
 //!
 //! [phone]                     # pairings live in ~/.config/echofiles/phone/
 //! files = true                # browse the phone's files and photos
@@ -48,6 +55,16 @@
 //! auto_accept = false         # true: save files the phone sends without asking
 //! save_to = "~/Downloads/Phone"
 //! picture = "photo"           # what the phone on the hub shows: "photo" or "echofiles"
+//!
+//! [cloud]                     # Google Drive through rclone; sign-ins live in ~/.config/echofiles/rclone/
+//! index = false               # save Drive file names on this computer (separate from [search] index)
+//! live_search = true          # after saved results, also ask Google Drive
+//! cache_max_gb = 10           # rclone's cache of opened files
+//!
+//! [[cloud.accounts]]
+//! id = "k3f9q2"               # random; names the rclone remote, catalog and mount
+//! name = "Google Drive"
+//! access = "full"             # "full" or "read"
 //!
 //! [[network.servers]]           # the Network section, in order
 //! uri = "smb://nas.local/Media" # never holds a password (GVfs keeps those in the keyring)
@@ -120,6 +137,16 @@ impl Density {
     }
 }
 
+/// How the keyboard drives the file list: the usual keys, or Yazi-style single letters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum KeyMode {
+    #[default]
+    #[serde(rename = "standard")]
+    Standard,
+    #[serde(rename = "10xer")]
+    TenXer,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct General {
@@ -127,11 +154,12 @@ pub struct General {
     pub start_at_login: bool,
     pub open_to: OpenTo,
     pub show_hidden: bool,
+    pub keys: KeyMode,
 }
 
 impl Default for General {
     fn default() -> Self {
-        General { background: false, start_at_login: false, open_to: OpenTo::Home, show_hidden: false }
+        General { background: false, start_at_login: false, open_to: OpenTo::Home, show_hidden: false, keys: KeyMode::Standard }
     }
 }
 
@@ -191,16 +219,22 @@ impl SearchConfig {
 pub struct Agents {
     pub cli: bool,
     pub skill: bool,
+    /// `ef` may search Google Drive. Separate from `[cloud] index`: it never follows it,
+    /// and `ef` searches Drive only when both are on.
+    pub gdrive: bool,
+    /// `ef phone photos` may copy photos and videos from a paired phone. Off until the
+    /// user turns it on: it hands personal pictures to whatever runs `ef`.
+    pub phone: bool,
 }
 
 impl Default for Agents {
     fn default() -> Self {
-        Agents { cli: true, skill: false }
+        Agents { cli: true, skill: false, gdrive: false, phone: false }
     }
 }
 
-/// How folders open: every folder as a list, every folder as a grid, or grid only where
-/// pictures and videos live.
+/// How folders open: every folder as a list, every folder as a grid, every folder in
+/// columns, or grid only where pictures and videos live.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DefaultView {
@@ -208,14 +242,25 @@ pub enum DefaultView {
     Auto,
     List,
     Grid,
+    Columns,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
     pub density: Density,
     pub preview: bool,
     pub view: DefaultView,
+    /// The footer with shortcut hints and the clipboard.
+    pub footer: bool,
+    /// Hovering a folder shows a popover of what's inside.
+    pub peek: bool,
+}
+
+impl Default for Appearance {
+    fn default() -> Self {
+        Appearance { density: Density::Default, preview: false, view: DefaultView::Auto, footer: true, peek: true }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,21 +281,15 @@ pub struct Sidebar {
     pub phone: bool,
     /// The Phone section is expanded (open by default).
     pub phone_open: bool,
+    /// Show the Cloud section.
+    pub cloud: bool,
+    /// The Cloud section is expanded (open by default).
+    pub cloud_open: bool,
 }
 
 impl Default for Sidebar {
     fn default() -> Self {
-        Sidebar {
-            pinned: Vec::new(),
-            width: 236,
-            hidden: false,
-            windows: true,
-            network: true,
-            windows_open: false,
-            network_open: false,
-            phone: true,
-            phone_open: true,
-        }
+        Sidebar { pinned: Vec::new(), width: 236, hidden: false, windows: true, network: true, windows_open: false, network_open: false, phone: true, phone_open: true, cloud: true, cloud_open: true }
     }
 }
 
@@ -266,6 +305,76 @@ pub struct Server {
 #[serde(default)]
 pub struct Network {
     pub servers: Vec<Server>,
+}
+
+/// What a Google Drive sign-in may do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CloudAccess {
+    #[default]
+    Full,
+    Read,
+}
+
+/// A place inside an account other than My Drive.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", tag = "kind")]
+pub enum CloudPlace {
+    /// Files other people shared with you (read-only).
+    Shared,
+    /// A shared drive, by Drive's ID.
+    Team { drive: String },
+}
+
+/// One connected Google Drive account (or a shared place under one). Tokens and client
+/// secrets are never here: they live in EchoFiles' own rclone config (`cloud_rclone_dir()`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudAccount {
+    /// Short random ID: the rclone remote name, catalog file and mount folder.
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub access: CloudAccess,
+    /// The account this shared place belongs to (`None` for My Drive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub under: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<CloudPlace>,
+    /// Shared places are indexed only with their own switch on too (other people's files).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub indexed: bool,
+}
+
+impl CloudAccount {
+    pub fn new(id: String, name: String, access: CloudAccess) -> CloudAccount {
+        CloudAccount { id, name, access, under: None, place: None, indexed: false }
+    }
+
+    /// Whether the Drive index covers it (with `[cloud] index` on).
+    pub fn in_index(&self) -> bool {
+        self.under.is_none() || self.indexed
+    }
+}
+
+/// Settings → Google Drive.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Cloud {
+    pub accounts: Vec<CloudAccount>,
+    /// Save Drive metadata on this computer. Its own switch: `[search] index` never
+    /// changes it.
+    pub index: bool,
+    /// After saved results, also send the search to Google Drive.
+    pub live_search: bool,
+    /// Live search also looks inside files (Drive's full-text search).
+    pub fulltext: bool,
+    pub cache_max_gb: u32,
+}
+
+impl Default for Cloud {
+    fn default() -> Self {
+        Cloud { accounts: Vec::new(), index: false, live_search: true, fulltext: false, cache_max_gb: 10 }
+    }
 }
 
 /// Where phone notifications show up.
@@ -345,6 +454,7 @@ pub struct Settings {
     pub sidebar: Sidebar,
     pub network: Network,
     pub phone: Phone,
+    pub cloud: Cloud,
 }
 
 pub fn home() -> PathBuf {
@@ -370,17 +480,44 @@ pub fn state_dir() -> PathBuf {
     xdg("XDG_STATE_HOME", ".local/state").join("echofiles")
 }
 
-/// `$XDG_RUNTIME_DIR/echofiles` — per-login, private: the phone's folder is mounted here.
-/// Without a runtime dir, a private folder in the config dir stands in.
+/// `$XDG_CONFIG_HOME/echofiles/rclone` — EchoFiles' own rclone config (never the user's).
+pub fn cloud_rclone_dir() -> PathBuf {
+    config_dir().join("rclone")
+}
+
+/// `$XDG_CACHE_HOME/echofiles/rclone` — rclone's cache of opened Drive files.
+pub fn cloud_cache_dir() -> PathBuf {
+    xdg("XDG_CACHE_HOME", ".cache").join("echofiles/rclone")
+}
+
+/// `$XDG_STATE_HOME/echofiles/cloud-index` — Drive catalogs (only with `[cloud] index`).
+pub fn cloud_index_dir() -> PathBuf {
+    state_dir().join("cloud-index")
+}
+
+/// `$XDG_RUNTIME_DIR/echofiles` — per-login, private: phone mounts, rclone, Drive mounts.
+/// Without a runtime dir, a private folder in the config dir stands in. Created 0700.
 pub fn runtime_dir() -> PathBuf {
     use std::os::unix::fs::DirBuilderExt;
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .map(|p| p.join("echofiles"))
-        .unwrap_or_else(|| config_dir().join("runtime"));
+    let dir = socket_path().parent().map(|p| p.join("echofiles")).unwrap_or_else(|| config_dir().join("runtime/echofiles"));
     let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
     dir
+}
+
+/// `$XDG_RUNTIME_DIR/echofiles/cloud` — one folder per mounted Drive account.
+pub fn cloud_mount_root() -> PathBuf {
+    runtime_dir().join("cloud")
+}
+
+/// Inside a mounted Google Drive.
+pub fn is_cloud_path(p: &Path) -> bool {
+    p.starts_with(cloud_mount_root())
+}
+
+/// `$XDG_CACHE_HOME/echofiles/phone` — photos `ef phone photos` copied, one folder per
+/// phone, laid out like the phone's storage.
+pub fn phone_cache_dir() -> PathBuf {
+    xdg("XDG_CACHE_HOME", ".cache").join("echofiles/phone")
 }
 
 /// `$XDG_RUNTIME_DIR/echofiles.sock` — the running app listens here. A Unix socket path
@@ -558,6 +695,29 @@ mod tests {
         let partial = Settings::load_from(&file).unwrap();
         assert!(!partial.agents.cli);
         assert_eq!(partial.search, SearchConfig::default());
+    }
+
+    #[test]
+    fn cloud_settings_are_separate_switches() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.toml");
+        let d = Settings::default();
+        assert!(!d.cloud.index && !d.agents.gdrive && d.cloud.live_search);
+        // Old files without [cloud] load with defaults.
+        std::fs::write(&file, "[search]\nindex = true\n").unwrap();
+        let old = Settings::load_from(&file).unwrap();
+        assert_eq!(old.cloud, Cloud::default());
+        assert!(!old.agents.gdrive, "the main index never turns ef's Drive access on");
+        let mut s = Settings::default();
+        s.cloud.accounts.push(CloudAccount::new("k3f9q2".into(), "Google Drive".into(), CloudAccess::Read));
+        s.cloud.accounts.push(CloudAccount { place: Some(CloudPlace::Team { drive: "0AB".into() }), under: Some("k3f9q2".into()), ..CloudAccount::new("t1".into(), "Team".into(), CloudAccess::Full) });
+        s.cloud.index = true;
+        s.save_to(&file).unwrap();
+        let back = Settings::load_from(&file).unwrap();
+        assert_eq!(back, s);
+        assert!(!back.agents.gdrive, "the Drive index never turns ef's Drive access on");
+        assert!(is_cloud_path(&cloud_mount_root().join("k3f9q2/Docs")));
+        assert!(!is_cloud_path(&home()));
     }
 
     #[test]

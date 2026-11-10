@@ -173,6 +173,7 @@ impl App {
                     }
                 }
                 self.volumes = v;
+                self.refresh_trashes();
                 Task::none()
             }
             DriveMsg::Volumes(Err(e)) => {

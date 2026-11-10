@@ -8,8 +8,8 @@ use std::sync::atomic::Ordering;
 use ef_config::{self as config, Scope};
 use ef_core::fmt;
 use ef_core::trash;
-use iced::widget::{Space, button, column, container, mouse_area, pin, row, scrollable, stack, text, text_input, tooltip};
-use iced::{Alignment, Background, Border, Color, Element, Length, Padding, mouse};
+use iced::widget::{button, column, container, mouse_area, pin, row, scrollable, stack, text, text_input, tooltip, Space};
+use iced::{mouse, Alignment, Background, Border, Color, Element, Length, Padding};
 
 use crate::actions::FileMsg;
 use crate::app::{App, Message, PATH_ID, RENAME_ID, SEARCH_ID};
@@ -17,12 +17,13 @@ use crate::drives::display_name;
 use crate::file_list::{self, FileList};
 use crate::indexer::{self, IndexState};
 use crate::overlay::{MenuFor, UiMsg};
-use crate::pane::Pane;
+use crate::pane::{Layout, Pane};
 use crate::settings::SettingsMsg;
 use crate::style::{self, color};
 use crate::widgets::{self as w, Variant};
 
 const TABS_H: f32 = 32.0;
+pub const FILTER_ID: &str = "filter";
 
 /// A sidebar section that folds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +31,7 @@ pub enum Fold {
     Windows,
     Network,
     Phone,
+    Cloud,
 }
 
 impl App {
@@ -39,9 +41,7 @@ impl App {
 
     pub(crate) fn tip<'a>(&self, content: impl Into<Element<'a, Message>>, label: &str, key: Option<&str>) -> Element<'a, Message> {
         let p = self.palette.clone();
-        let mut r = row![text(label.to_string()).size(style::LABEL).font(style::FONT).color(color(p.ink))]
-            .spacing(style::SPACE_3)
-            .align_y(Alignment::Center);
+        let mut r = row![text(label.to_string()).size(style::LABEL).font(style::FONT).color(color(p.ink))].spacing(style::SPACE_3).align_y(Alignment::Center);
         if let Some(k) = key {
             r = r.push(w::kbd_chip(&p, k));
         }
@@ -62,7 +62,7 @@ impl App {
         let home = config::home();
         let phone = self.phone_storage().filter(|s| location.starts_with(s)).map(Path::to_path_buf);
         let (base, mut out) = if let Some(storage) = phone {
-            // The phone's storage: its name, never the mount folder's path.
+            // The phone's storage: its name, never kdeconnect@192.168.….
             let rest = location.strip_prefix(&storage).unwrap_or(Path::new("")).to_path_buf();
             let name = self.phone_id().map(|i| self.phone_name(&i)).unwrap_or_else(|| "Phone".into());
             (rest, vec![(Some("phone"), name, storage)])
@@ -72,16 +72,15 @@ impl App {
             // A network place: its name, never GVfs' `smb-share:server=…` folder.
             let rest = location.strip_prefix(&m.root).unwrap_or(Path::new("")).to_path_buf();
             (rest, vec![(Some("network"), name, m.root.clone())])
-        } else if let Some((v, mp)) =
-            self.volumes.iter().find_map(|v| v.mount_points.iter().find(|m| location.starts_with(m.as_str())).map(|m| (v, m.clone())))
-        {
+        } else if let Some((a, root)) = self.cloud_place_at(location) {
+            // A Drive account: the name it was given, never the runtime mount folder.
+            let rest = location.strip_prefix(&root).unwrap_or(Path::new("")).to_path_buf();
+            (rest, vec![(Some("cloud"), a.name.clone(), root)])
+        } else if let Some((v, mp)) = self.volumes.iter().find_map(|v| v.mount_points.iter().find(|m| location.starts_with(m.as_str())).map(|m| (v, m.clone()))) {
             let rest = location.strip_prefix(&mp).unwrap_or(Path::new("")).to_path_buf();
             (rest, vec![(Some("drive"), display_name(v, &self.volumes), PathBuf::from(mp))])
         } else {
-            (
-                location.strip_prefix("/").unwrap_or(location).to_path_buf(),
-                vec![(Some("drive"), "Computer".to_string(), PathBuf::from("/"))],
-            )
+            (location.strip_prefix("/").unwrap_or(location).to_path_buf(), vec![(Some("drive"), "Computer".to_string(), PathBuf::from("/"))])
         };
         let mut acc = out[0].2.clone();
         for c in base.components() {
@@ -89,21 +88,6 @@ impl App {
             out.push((None, c.as_os_str().to_string_lossy().into_owned(), acc.clone()));
         }
         out
-    }
-
-    /// About how wide one pane's content is, for fitting paths to it.
-    pub(crate) fn pane_width(&self) -> f32 {
-        let mut w = self.window_size.width;
-        if !self.settings.sidebar.hidden {
-            w -= f32::from(self.settings.sidebar.width) + 5.0;
-        }
-        if self.settings.appearance.preview && !self.pane().special() {
-            w -= crate::preview::WIDTH + 1.0;
-        }
-        if self.tabs[self.tab].panes.len() == 2 {
-            w = w / 2.0 - 1.0;
-        }
-        w.max(0.0)
     }
 
     pub(crate) fn files_view(&self) -> Element<'_, Message> {
@@ -117,13 +101,7 @@ impl App {
         }
         let tab = &self.tabs[self.tab];
         let panes: Element<'_, Message> = if tab.panes.len() == 2 {
-            row![
-                self.pane_view(&tab.panes[0], tab.active == 0, true),
-                w::vline(p.line),
-                self.pane_view(&tab.panes[1], tab.active == 1, true)
-            ]
-            .height(Length::Fill)
-            .into()
+            row![self.pane_view(&tab.panes[0], tab.active == 0, true), w::vline(p.line), self.pane_view(&tab.panes[1], tab.active == 1, true)].height(Length::Fill).into()
         } else {
             self.pane_view(&tab.panes[0], true, false)
         };
@@ -138,9 +116,17 @@ impl App {
             body = body.push(w::vline(p.line));
             body = body.push(self.preview_view());
         }
-        let root = column![self.tab_strip(), self.toolbar(), w::hline(p.line), body, w::hline(p.line), self.status_bar()];
+        let mut root = column![self.tab_strip(), self.toolbar(), w::hline(p.line), body, w::hline(p.line)];
+        if let Some(f) = self.footer() {
+            root = root.push(f);
+            root = root.push(w::hline(p.line));
+        }
+        root = root.push(self.status_bar());
         let base: Element<'_, Message> = w::fill(root, p.bg).width(Length::Fill).height(Length::Fill).into();
         let mut layers = vec![base];
+        if let Some(k) = self.peek_layer() {
+            layers.push(k);
+        }
         if let Some(g) = self.drag_ghost() {
             layers.push(g);
         }
@@ -156,8 +142,14 @@ impl App {
         if let Some(c) = self.connect_layer() {
             layers.push(c);
         }
+        if let Some(c) = self.cloud_layer() {
+            layers.push(c);
+        }
         if let Some(c) = self.phone_layer() {
             layers.push(c);
+        }
+        if let Some(h) = self.help_layer() {
+            layers.push(h);
         }
         if let Some(d) = self.dialog_layer() {
             layers.push(d);
@@ -167,52 +159,23 @@ impl App {
 
     fn resize_handle(&self) -> Element<'_, Message> {
         let line = color(if self.sidebar_drag.is_some() { self.palette.accent } else { self.palette.line });
-        mouse_area(
-            container(
-                container(Space::new())
-                    .width(1)
-                    .height(Length::Fill)
-                    .style(move |_| container::Style { background: Some(Background::Color(line)), ..Default::default() }),
-            )
-            .width(5)
-            .height(Length::Fill)
-            .align_x(Alignment::Start),
-        )
-        .on_press(Message::SidebarResize(Some(f32::NAN)))
-        .interaction(mouse::Interaction::ResizingHorizontally)
-        .into()
+        mouse_area(container(container(Space::new()).width(1).height(Length::Fill).style(move |_| container::Style { background: Some(Background::Color(line)), ..Default::default() })).width(5).height(Length::Fill).align_x(Alignment::Start))
+            .on_press(Message::SidebarResize(Some(f32::NAN)))
+            .interaction(mouse::Interaction::ResizingHorizontally)
+            .into()
     }
 
     fn drag_ghost(&self) -> Option<Element<'_, Message>> {
         let d = self.drag.as_ref()?;
         let p = &self.palette;
-        let label = if d.paths.len() == 1 {
-            d.paths[0].file_name().unwrap_or_default().to_string_lossy().into_owned()
-        } else {
-            format!("{} items", d.paths.len())
-        };
-        let verb = if self.modifiers.control() {
-            "Copy"
-        } else if self.modifiers.shift() {
-            "Move"
-        } else {
-            ""
-        };
-        let mut r = row![
-            self.glyph(if d.paths.len() == 1 && d.paths[0].is_dir() { "folder" } else { "file" }, 14.0, color(p.accent_ink)),
-            text(label).size(style::META).font(style::FONT).color(color(p.ink_strong))
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center);
+        let label = if d.paths.len() == 1 { d.paths[0].file_name().unwrap_or_default().to_string_lossy().into_owned() } else { format!("{} items", d.paths.len()) };
+        let verb = if self.modifiers.control() { "Copy" } else if self.modifiers.shift() { "Move" } else { "" };
+        let mut r = row![self.glyph(if d.paths.len() == 1 && d.paths[0].is_dir() { "folder" } else { "file" }, 14.0, color(p.accent_ink)), text(label).size(style::META).font(style::FONT).color(color(p.ink_strong))].spacing(6).align_y(Alignment::Center);
         if !verb.is_empty() {
             r = r.push(w::kbd_chip(p, verb));
         }
         let pal = p.clone();
-        let chip = container(r).padding([4, 8]).style(move |_| container::Style {
-            background: Some(Background::Color(color(pal.bg_raised))),
-            border: Border { color: color(pal.accent), width: 1.0, radius: 2.0.into() },
-            ..Default::default()
-        });
+        let chip = container(r).padding([4, 8]).style(move |_| container::Style { background: Some(Background::Color(color(pal.bg_raised))), border: Border { color: color(pal.accent), width: 1.0, radius: 2.0.into() }, ..Default::default() });
         Some(pin(chip).x(d.at.x + 14.0).y(d.at.y + 10.0).into())
     }
 
@@ -221,10 +184,6 @@ impl App {
     fn tab_strip(&self) -> Element<'_, Message> {
         let p = &self.palette;
         let mut r = row![].spacing(0).align_y(Alignment::End).height(TABS_H);
-        // Tabs share the strip: each gets at most 220 px and shrinks (the title clips) so
-        // the last tab and the New tab button always stay on screen.
-        let room = (self.window_size.width - 48.0).max(0.0);
-        let tab_w = (room / self.tabs.len().max(1) as f32 - 20.0).clamp(48.0, 220.0);
         for (i, t) in self.tabs.iter().enumerate() {
             let active = i == self.tab;
             let pane = &t.panes[t.active];
@@ -234,63 +193,39 @@ impl App {
                 "phone"
             } else if pane.shares.is_some() || ef_net::gvfs::is_network_path(&pane.location) {
                 "network"
+            } else if config::is_cloud_path(&pane.location) {
+                "cloud"
             } else if pane.location == config::home() {
                 "home"
             } else {
                 "folder"
             };
-            let mut label = row![
-                self.glyph(icon, 14.0, color(if active { p.accent_ink } else { p.ink_muted })),
-                text(self.pane_title(pane))
-                    .size(style::META)
-                    .font(if active { style::FONT_BOLD } else { style::FONT })
-                    .color(color(if active { p.ink_strong } else { p.ink_muted }))
-                    .wrapping(text::Wrapping::None)
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center);
+            let mut content = row![self.glyph(icon, 14.0, color(if active { p.accent_ink } else { p.ink_muted })), text(self.pane_title(pane)).size(style::META).font(if active { style::FONT_BOLD } else { style::FONT }).color(color(if active { p.ink_strong } else { p.ink_muted })).wrapping(text::Wrapping::None)]
+                .spacing(6)
+                .align_y(Alignment::Center);
             if t.panes.len() == 2 {
-                label = label.push(self.glyph("columns", 12.0, color(p.ink_faint)));
+                content = content.push(self.glyph("columns", 12.0, color(p.ink_faint)));
             }
-            // The title clips when tabs are narrow; the close button never does.
-            let mut content = row![container(label).width(Length::Fill).clip(true)].spacing(6).align_y(Alignment::Center);
             if self.tabs.len() > 1 {
                 content = content.push(w::icon_button(p, &self.icons, "close", Some(Message::CloseTab(i)), false));
             }
             let pal = p.clone();
-            let tabb = button(container(content).height(TABS_H - 2.0).align_y(Alignment::Center).max_width(tab_w).clip(true))
+            let tabb = button(container(content).height(TABS_H - 2.0).align_y(Alignment::Center).max_width(220).clip(true))
                 .padding([0, 10])
                 .on_press(Message::SelectTab(i))
                 .style(move |_, status| button::Style {
-                    background: Some(Background::Color(if active {
-                        color(pal.bg)
-                    } else if matches!(status, button::Status::Hovered) {
-                        color(pal.state_hover)
-                    } else {
-                        Color::TRANSPARENT
-                    })),
+                    background: Some(Background::Color(if active { color(pal.bg) } else if matches!(status, button::Status::Hovered) { color(pal.state_hover) } else { Color::TRANSPARENT })),
                     text_color: color(pal.ink),
                     border: Border::default(),
                     ..Default::default()
                 });
             let accent = color(p.accent);
-            let top: Element<'_, Message> = container(Space::new())
-                .width(Length::Fill)
-                .height(2)
-                .style(move |_| container::Style { background: active.then_some(Background::Color(accent)), ..Default::default() })
-                .into();
+            let top: Element<'_, Message> = container(Space::new()).width(Length::Fill).height(2).style(move |_| container::Style { background: active.then_some(Background::Color(accent)), ..Default::default() }).into();
             let whole = column![top, tabb].width(Length::Shrink);
-            let with_menu = w::context_area(mouse_area(whole).on_middle_press(Message::CloseTab(i)), move |at| {
-                Message::Ui(UiMsg::OpenMenu(MenuFor::Tab(i), at))
-            });
+            let with_menu = w::context_area(mouse_area(whole).on_middle_press(Message::CloseTab(i)), move |at| Message::Ui(UiMsg::OpenMenu(MenuFor::Tab(i), at)));
             r = r.push(with_menu);
         }
-        r = r.push(
-            container(self.tool("plus", "New tab", Some("Ctrl+T"), Some(Message::NewTab), false))
-                .height(TABS_H)
-                .align_y(Alignment::Center)
-                .padding([0, 4]),
-        );
+        r = r.push(container(self.tool("plus", "New tab", Some("Ctrl+T"), Some(Message::NewTab), false)).height(TABS_H).align_y(Alignment::Center).padding([0, 4]));
         w::fill(r, p.bg_deep).width(Length::Fill).height(TABS_H).padding(Padding { left: 4.0, ..Padding::ZERO }).into()
     }
 
@@ -317,18 +252,12 @@ impl App {
             self.phone_crumbs(page)
         } else if let Some(page) = &pane.shares {
             vec![(Some("network"), page.address.host_port(), PathBuf::new())]
-        } else if self.everywhere() {
-            // Everywhere results aren't inside the folder you were in; say what they are.
-            vec![(Some("search"), "Everywhere".to_string(), PathBuf::new())]
         } else {
             self.crumbs_for(&pane.location)
         };
         // Overflow: middle segments fold into "…" (a menu) when the path is long.
-        let budget = (self.window_size.width - if self.settings.sidebar.hidden { 0.0 } else { self.settings.sidebar.width as f32 } - 720.0)
-            .max(160.0);
-        let width = |c: &[(Option<&'static str>, String, PathBuf)]| {
-            c.iter().map(|(i, l, _)| l.chars().count() as f32 * 7.8 + 12.0 + if i.is_some() { 20.0 } else { 0.0 } + 16.0).sum::<f32>()
-        };
+        let budget = (self.window_size.width - if self.settings.sidebar.hidden { 0.0 } else { self.settings.sidebar.width as f32 } - 720.0).max(160.0);
+        let width = |c: &[(Option<&'static str>, String, PathBuf)]| c.iter().map(|(i, l, _)| l.chars().count() as f32 * 7.8 + 12.0 + if i.is_some() { 20.0 } else { 0.0 } + 16.0).sum::<f32>();
         let mut hidden: Vec<(String, PathBuf)> = Vec::new();
         while crumbs.len() > 3 && width(&crumbs) > budget {
             let (_, l, t) = crumbs.remove(1);
@@ -343,19 +272,7 @@ impl App {
             }
             if idx == 1 && !hidden.is_empty() {
                 let items = hidden.clone();
-                let more = w::context_area(
-                    w::icon_button(
-                        p,
-                        &self.icons,
-                        "more-horizontal",
-                        Some(Message::Ui(UiMsg::OpenMenu(
-                            MenuFor::Crumbs(items.clone()),
-                            iced::Point::new(self.settings.sidebar.width as f32 + 180.0, 72.0),
-                        ))),
-                        false,
-                    ),
-                    move |at| Message::Ui(UiMsg::OpenMenu(MenuFor::Crumbs(items.clone()), at)),
-                );
+                let more = w::context_area(w::icon_button(p, &self.icons, "more-horizontal", Some(Message::Ui(UiMsg::OpenMenu(MenuFor::Crumbs(items.clone()), iced::Point::new(self.settings.sidebar.width as f32 + 180.0, 72.0)))), false), move |at| Message::Ui(UiMsg::OpenMenu(MenuFor::Crumbs(items.clone()), at)));
                 trail = trail.push(more);
                 trail = trail.push(self.glyph("chevron-right", 12.0, color(p.ink_faint)));
             }
@@ -365,13 +282,7 @@ impl App {
             if let Some(icon) = icon {
                 content = content.push(self.glyph(icon, 14.0, ink));
             }
-            content = content.push(
-                text(label)
-                    .size(style::BODY)
-                    .font(if last { style::FONT_BOLD } else { style::FONT })
-                    .color(ink)
-                    .wrapping(text::Wrapping::None),
-            );
+            content = content.push(text(label).size(style::BODY).font(if last { style::FONT_BOLD } else { style::FONT }).color(ink).wrapping(text::Wrapping::None));
             let pal = p.clone();
             let hover_ink = color(p.ink_strong);
             let target_ok = !target.as_os_str().is_empty();
@@ -390,10 +301,7 @@ impl App {
                 });
             // Drop files on a segment to move them up there.
             let seg: Element<'_, Message> = if self.drag.is_some() && target_ok {
-                mouse_area(seg)
-                    .on_enter(Message::Ui(UiMsg::DropHover(Some(target.clone()))))
-                    .on_exit(Message::Ui(UiMsg::DropLeave(target.clone())))
-                    .into()
+                mouse_area(seg).on_enter(Message::Ui(UiMsg::DropHover(Some(target.clone())))).on_exit(Message::Ui(UiMsg::DropLeave(target.clone()))).into()
             } else {
                 seg.into()
             };
@@ -401,21 +309,10 @@ impl App {
         }
         if everywhere {
             trail = trail.push(self.glyph("chevron-right", 12.0, color(p.ink_faint)));
-            trail = trail.push(
-                container(
-                    text(format!("Results for “{}”", pane.query.trim()))
-                        .size(style::BODY)
-                        .font(style::FONT_BOLD)
-                        .color(color(p.ink_strong))
-                        .wrapping(text::Wrapping::None),
-                )
-                .padding([0, 6]),
-            );
+            trail = trail.push(container(text("Search results").size(style::BODY).font(style::FONT_BOLD).color(color(p.ink_strong)).wrapping(text::Wrapping::None)).padding([0, 6]));
         }
         // Double-click the empty part of the bar to type a path (Ctrl+L).
-        let filler = mouse_area(container(Space::new()).width(Length::Fill).height(24))
-            .on_double_click(Message::EditPath(true))
-            .on_press(Message::Ui(UiMsg::CloseMenu));
+        let filler = mouse_area(container(Space::new()).width(Length::Fill).height(24)).on_double_click(Message::EditPath(true)).on_press(Message::Ui(UiMsg::CloseMenu));
         container(row![trail, filler].align_y(Alignment::Center)).width(Length::Fill).clip(true).into()
     }
 
@@ -432,38 +329,13 @@ impl App {
             .on_submit(Message::SearchSubmit)
             .size(style::BODY)
             .font(style::FONT)
-            .padding(Padding { top: 5.0, bottom: 5.0, left: 10.0, right: 28.0 })
+            .padding([5, 10])
             .width(220)
             .style(w::field_style(p, false));
-        // A clear button inside the field's right edge while there is something to clear.
-        // The stack is always there (only its top layer changes) so the field keeps its
-        // focus and state when the first character is typed.
-        let clear: Element<'_, Message> = if pane.query.is_empty() {
-            Space::new().into()
-        } else {
-            self.tip(w::icon_button(p, &self.icons, "close", Some(Message::Search(String::new())), false), "Clear search", Some("Esc"))
-        };
-        let search: Element<'_, Message> = stack![
-            search,
-            container(clear)
-                .width(220)
-                .height(Length::Fill)
-                .align_x(Alignment::End)
-                .align_y(Alignment::Center)
-                .padding(Padding { right: 2.0, ..Padding::ZERO })
-        ]
-        .into();
-        let scope = w::segmented(
-            p,
-            &[("Folder", Message::SetScope(Scope::Folder)), ("Everywhere", Message::SetScope(Scope::Everywhere))],
-            if pane.scope == Scope::Folder { 0 } else { 1 },
-        );
+        let scope = w::segmented(p, &[("Folder", Message::SetScope(Scope::Folder)), ("Everywhere", Message::SetScope(Scope::Everywhere))], if pane.scope == Scope::Folder { 0 } else { 1 });
         let sep = || {
             let c = color(p.line);
-            container(Space::new())
-                .width(1)
-                .height(18)
-                .style(move |_| container::Style { background: Some(Background::Color(c)), ..Default::default() })
+            container(Space::new()).width(1).height(18).style(move |_| container::Style { background: Some(Background::Color(c)), ..Default::default() })
         };
         let bar = row![
             self.tool("arrow-left", "Back", Some("Alt+←"), (!pane.back.is_empty()).then_some(Message::Back), false),
@@ -493,27 +365,23 @@ impl App {
         let at = iced::Point::new(right - 272.0, TABS_H + style::TOOLBAR - 2.0);
         let open = Message::Ui(UiMsg::OpenMenu(MenuFor::View, at));
         let ink = color(p.ink_muted);
-        let content =
-            row![self.glyph(if self.pane().grid { "grid" } else { "list" }, style::GLYPH, ink), self.glyph("chevron-down", 12.0, ink)]
-                .spacing(2)
-                .align_y(Alignment::Center);
+        let glyph = match self.pane().layout {
+            Layout::List => "list",
+            Layout::Grid => "grid",
+            Layout::Columns => "columns",
+        };
+        let content = row![self.glyph(glyph, style::GLYPH, ink), self.glyph("chevron-down", 12.0, ink)].spacing(2).align_y(Alignment::Center);
         let pal = p.clone();
-        let b = button(container(content).height(28).padding([0, 6]).align_y(Alignment::Center)).padding(0).on_press(open).style(
-            move |_, status| button::Style {
-                background: match status {
-                    button::Status::Hovered => Some(Background::Color(color(pal.state_hover))),
-                    button::Status::Pressed => Some(Background::Color(color(pal.state_press))),
-                    _ => None,
-                },
-                text_color: color(pal.ink),
-                border: Border { radius: 4.0.into(), ..Border::default() },
-                ..Default::default()
+        let b = button(container(content).height(28).padding([0, 6]).align_y(Alignment::Center)).padding(0).on_press(open).style(move |_, status| button::Style {
+            background: match status {
+                button::Status::Hovered => Some(Background::Color(color(pal.state_hover))),
+                button::Status::Pressed => Some(Background::Color(color(pal.state_press))),
+                _ => None,
             },
-        );
-        // No tooltip while a menu is open: it drew on top of the View menu itself.
-        if self.menu.is_some() {
-            return b.into();
-        }
+            text_color: color(pal.ink),
+            border: Border { radius: 4.0.into(), ..Border::default() },
+            ..Default::default()
+        });
         self.tip(b, "View", None)
     }
 
@@ -523,12 +391,7 @@ impl App {
         let p = &self.palette;
         let mut r = row![].spacing(style::SPACE_3).align_y(Alignment::Center);
         if let Some(c) = mark {
-            r = r.push(
-                container(Space::new())
-                    .width(6)
-                    .height(6)
-                    .style(move |_| container::Style { background: Some(Background::Color(c)), ..Default::default() }),
-            );
+            r = r.push(container(Space::new()).width(6).height(6).style(move |_| container::Style { background: Some(Background::Color(c)), ..Default::default() }));
         }
         r = r.push(text(title.to_uppercase()).size(style::LABEL).font(style::FONT_BOLD).color(color(p.ink_muted)).width(Length::Fill));
         if let Some(n) = count {
@@ -554,6 +417,11 @@ impl App {
             if path.is_dir() || label == "Trash" {
                 col = col.push(self.side_item(icon, label.to_string(), path, false, 0.0));
             }
+        }
+        // Files trashed on another drive stay in that drive's own trash.
+        for t in &self.trashes {
+            let label = trash::label(t).unwrap_or_else(|| "Trash".into());
+            col = col.push(self.side_item("trash", label, t.clone(), false, 0.0));
         }
         // Your other Linux drives (internal, USB, unlocked LUKS), under their own names.
         let mut linux_drives = self.volumes.iter().enumerate().filter(|(_, v)| !v.is_windows()).peekable();
@@ -584,34 +452,23 @@ impl App {
             col = col.push(Space::new().height(style::SPACE_5));
             col = col.push(self.network_section());
         }
+        if self.settings.sidebar.cloud {
+            col = col.push(Space::new().height(style::SPACE_5));
+            col = col.push(self.cloud_section());
+        }
         // A thin scrollbar beside the rows, never over them.
         let bar = scrollable::Scrollbar::new().width(4).scroller_width(4).spacing(4);
-        w::fill(scrollable(col).direction(scrollable::Direction::Vertical(bar)).height(Length::Fill), p.bg_sunken)
-            .width(self.settings.sidebar.width as f32)
-            .height(Length::Fill)
-            .padding([12, 8])
-            .into()
+        w::fill(scrollable(col).direction(scrollable::Direction::Vertical(bar)).height(Length::Fill), p.bg_sunken).width(self.settings.sidebar.width as f32).height(Length::Fill).padding([12, 8]).into()
     }
 
     /// A section head that folds its section: chevron, world mark, title, count, and an
     /// optional action at the end (design system `SidebarSection` with `collapsible`).
-    pub(crate) fn fold_head<'a>(
-        &'a self,
-        title: &str,
-        mark: Color,
-        count: Option<usize>,
-        open: bool,
-        section: Fold,
-        action: Option<Element<'a, Message>>,
-    ) -> Element<'a, Message> {
+    pub(crate) fn fold_head<'a>(&'a self, title: &str, mark: Color, count: Option<usize>, open: bool, section: Fold, action: Option<Element<'a, Message>>) -> Element<'a, Message> {
         let p = &self.palette;
         let muted = color(p.ink_muted);
         let mut r = row![
             self.glyph(if open { "chevron-down" } else { "chevron-right" }, 12.0, muted),
-            container(Space::new())
-                .width(6)
-                .height(6)
-                .style(move |_| container::Style { background: Some(Background::Color(mark)), ..Default::default() }),
+            container(Space::new()).width(6).height(6).style(move |_| container::Style { background: Some(Background::Color(mark)), ..Default::default() }),
             text(title.to_uppercase()).size(style::LABEL).font(style::FONT_BOLD).color(muted).width(Length::Fill),
         ]
         .spacing(style::SPACE_3)
@@ -633,12 +490,9 @@ impl App {
         let open = self.settings.sidebar.windows_open;
         let pane = self.pane();
         let count = self.volumes.iter().filter(|v| v.is_windows()).count();
-        let mut col =
-            column![self.fold_head("Windows", color(p.world_windows), (count > 0).then_some(count), open, Fold::Windows, None)].spacing(1);
+        let mut col = column![self.fold_head("Windows", color(p.world_windows), (count > 0).then_some(count), open, Fold::Windows, None)].spacing(1);
         if open && count == 0 {
-            col = col.push(
-                container(text("No Windows drives found").size(style::META).font(style::FONT).color(color(p.ink_muted))).padding([4, 12]),
-            );
+            col = col.push(container(text("No Windows drives found").size(style::META).font(style::FONT).color(color(p.ink_muted))).padding([4, 12]));
         }
         let here = if pane.special() { None } else { self.volume_at(&pane.location).map(|(i, _)| i) };
         for (i, v) in self.volumes.iter().enumerate().filter(|(_, v)| v.is_windows()) {
@@ -658,16 +512,9 @@ impl App {
     pub(crate) fn side_button<'a>(&'a self, icon: &str, label: &str, msg: Message, active: bool) -> Element<'a, Message> {
         let p = &self.palette;
         let tint = if active { color(p.accent_ink) } else { color(p.ink_muted) };
-        let r = row![
-            self.glyph(icon, 16.0, tint),
-            text(label.to_string())
-                .size(style::BODY)
-                .font(if active { style::FONT_BOLD } else { style::FONT })
-                .color(color(if active { p.ink_strong } else { p.ink }))
-                .width(Length::Fill)
-        ]
-        .spacing(style::SPACE_4)
-        .align_y(Alignment::Center);
+        let r = row![self.glyph(icon, 16.0, tint), text(label.to_string()).size(style::BODY).font(if active { style::FONT_BOLD } else { style::FONT }).color(color(if active { p.ink_strong } else { p.ink })).width(Length::Fill)]
+            .spacing(style::SPACE_4)
+            .align_y(Alignment::Center);
         w::row_button(p, container(r).height(style::ROW).align_y(Alignment::Center).into(), active, Some(msg))
     }
 
@@ -681,12 +528,7 @@ impl App {
         let ink = if active { color(p.ink_strong) } else { color(p.ink) };
         let r = row![
             self.glyph(icon, 16.0, tint),
-            text(label)
-                .size(style::BODY)
-                .font(if active { style::FONT_BOLD } else { style::FONT })
-                .color(ink)
-                .width(Length::Fill)
-                .wrapping(text::Wrapping::None)
+            text(label).size(style::BODY).font(if active { style::FONT_BOLD } else { style::FONT }).color(ink).width(Length::Fill).wrapping(text::Wrapping::None)
         ]
         .spacing(style::SPACE_4)
         .align_y(Alignment::Center);
@@ -694,20 +536,13 @@ impl App {
         let item: Element<'a, Message> = if drop {
             let pal = p.clone();
             container(w::row_button(p, inner.into(), false, Some(Message::Navigate(path.clone()))))
-                .style(move |_| container::Style {
-                    background: Some(Background::Color(color(pal.accent_soft))),
-                    border: Border { color: color(pal.accent), width: 1.0, radius: 2.0.into() },
-                    ..Default::default()
-                })
+                .style(move |_| container::Style { background: Some(Background::Color(color(pal.accent_soft))), border: Border { color: color(pal.accent), width: 1.0, radius: 2.0.into() }, ..Default::default() })
                 .into()
         } else {
             w::row_button(p, inner.into(), active, Some(Message::Navigate(path.clone())))
         };
         let (enter, target) = (path.clone(), path.clone());
-        let item = mouse_area(item)
-            .on_middle_press(Message::OpenTab(path.clone()))
-            .on_enter(Message::Ui(UiMsg::DropHover(Some(enter))))
-            .on_exit(Message::Ui(UiMsg::DropLeave(path.clone())));
+        let item = mouse_area(item).on_middle_press(Message::OpenTab(path.clone())).on_enter(Message::Ui(UiMsg::DropHover(Some(enter)))).on_exit(Message::Ui(UiMsg::DropLeave(path.clone())));
         w::context_area(item, move |at| Message::Ui(UiMsg::OpenMenu(MenuFor::Place { path: target.clone(), pinned }, at)))
     }
 
@@ -741,6 +576,8 @@ impl App {
             self.phone_page_view(page)
         } else if pane.everywhere() {
             self.results_view(pane)
+        } else if pane.layout == Layout::Columns {
+            self.columns_view(pane, active)
         } else {
             self.list(pane, active)
         };
@@ -750,61 +587,38 @@ impl App {
             // the accent edge.
             let world = if pane.shares.is_some() || ef_net::gvfs::is_network_path(&pane.location) {
                 p.world_network
+            } else if config::is_cloud_path(&pane.location) {
+                p.world_cloud
             } else if self.volume_at(&pane.location).is_some_and(|(_, v)| v.is_windows()) {
                 p.world_windows
             } else {
                 p.world_linux
             };
             let edge = if active { color(p.accent) } else { color(p.line) };
-            col = col.push(
-                container(Space::new())
-                    .width(Length::Fill)
-                    .height(2)
-                    .style(move |_| container::Style { background: Some(Background::Color(edge)), ..Default::default() }),
-            );
+            col = col.push(container(Space::new()).width(Length::Fill).height(2).style(move |_| container::Style { background: Some(Background::Color(edge)), ..Default::default() }));
             let wc = color(world);
             let head = row![
-                container(Space::new())
-                    .width(6)
-                    .height(6)
-                    .style(move |_| container::Style { background: Some(Background::Color(wc)), ..Default::default() }),
-                // A long path keeps its end (the folder you're in) and loses its start.
-                text(if pane.special() {
-                    pane.title()
-                } else {
-                    fit_start(
-                        &self.net_uri_for(&pane.location).unwrap_or_else(|| config::tilde(&pane.location)),
-                        self.pane_width() - 48.0,
-                        style::META,
-                    )
-                })
-                .size(style::META)
-                .font(if active { style::FONT_BOLD } else { style::FONT })
-                .color(color(if active { p.ink_strong } else { p.ink_muted }))
-                .wrapping(text::Wrapping::None),
+                container(Space::new()).width(6).height(6).style(move |_| container::Style { background: Some(Background::Color(wc)), ..Default::default() }),
+                text(if pane.special() { pane.title() } else { self.net_uri_for(&pane.location).unwrap_or_else(|| config::tilde(&pane.location)) }).size(style::META).font(if active { style::FONT_BOLD } else { style::FONT }).color(color(if active { p.ink_strong } else { p.ink_muted })).wrapping(text::Wrapping::None),
             ]
             .spacing(style::SPACE_3)
             .align_y(Alignment::Center);
             let bg = if active { p.bg } else { p.bg_sunken };
-            col = col
-                .push(w::fill(container(head).height(24).align_y(Alignment::Center).padding([0, 16]).clip(true), bg).width(Length::Fill));
+            col = col.push(w::fill(container(head).height(24).align_y(Alignment::Center).padding([0, 16]).clip(true), bg).width(Length::Fill));
+            col = col.push(w::hline(p.line));
+        }
+        if pane.filter_bar && !pane.special() {
+            col = col.push(self.filter_bar(pane, active));
             col = col.push(w::hline(p.line));
         }
         col = col.push(content);
         if let Some(r) = self.rename.as_ref().filter(|r| r.pane == pane.id && r.error.is_some()) {
             let tone = p.danger;
             col = col.push(
-                container(
-                    row![
-                        self.glyph("error", 14.0, color(tone.ink)),
-                        text(r.error.clone().unwrap_or_default()).size(style::META).font(style::FONT).color(color(tone.ink))
-                    ]
-                    .spacing(6)
-                    .align_y(Alignment::Center),
-                )
-                .width(Length::Fill)
-                .padding([4, 16])
-                .style(move |_| container::Style { background: Some(Background::Color(color(tone.soft))), ..Default::default() }),
+                container(row![self.glyph("error", 14.0, color(tone.ink)), text(r.error.clone().unwrap_or_default()).size(style::META).font(style::FONT).color(color(tone.ink))].spacing(6).align_y(Alignment::Center))
+                    .width(Length::Fill)
+                    .padding([4, 16])
+                    .style(move |_| container::Style { background: Some(Background::Color(color(tone.soft))), ..Default::default() }),
             );
         }
         let id = pane.id;
@@ -812,14 +626,54 @@ impl App {
         mouse_area(container(col).width(Length::Fill).height(Length::Fill)).on_press(Message::List(id, file_list::Action::Focus)).into()
     }
 
-    fn list<'a>(&'a self, pane: &'a Pane, active: bool) -> Element<'a, Message> {
+    /// The quick filter (Ctrl+F): narrows this folder as you type; with Subfolders on it
+    /// reaches into every folder below, through the search engine.
+    fn filter_bar<'a>(&'a self, pane: &'a Pane, active: bool) -> Element<'a, Message> {
+        let p = &self.palette;
+        let mut field = text_input(if pane.deep { "Filter this folder and its subfolders" } else { "Filter this folder" }, &pane.query)
+            .size(style::BODY)
+            .font(style::FONT)
+            .padding([4, 8])
+            .width(Length::Fill)
+            .style(w::field_style(p, false));
+        // Only the active pane's bar takes typing (and owns the id focus looks for).
+        if active {
+            field = field.id(FILTER_ID).on_input(Message::Search).on_submit(Message::SearchSubmit);
+        }
+        let mut count = String::new();
+        if pane.deep && !pane.query.trim().is_empty() {
+            match &pane.results {
+                Some(r) => {
+                    fmt::count(r.total, &mut count);
+                    count.push_str(if r.total == 1 { " match" } else { " matches" });
+                }
+                None if pane.searching => count.push_str("Searching…"),
+                None => {}
+            }
+        } else if !pane.query.is_empty() {
+            let total = pane.loaded.as_ref().map_or(0, |l| l.listing.len() - if self.show_hidden { 0 } else { l.hidden });
+            fmt::count(pane.order.len(), &mut count);
+            count.push_str(" of ");
+            fmt::count(total, &mut count);
+        }
+        let deep = pane.deep;
+        let bar = row![
+            self.glyph("filter", 14.0, color(p.accent_ink)),
+            field,
+            self.tip(w::checkbox(p, &self.icons, "Subfolders", deep, Message::SetDeep), "Include every folder below this one", Some("Ctrl+Shift+F")),
+            text(count).size(style::META).font(style::FONT).color(color(p.ink_muted)).wrapping(text::Wrapping::None),
+            self.tool("close", "Close the filter", Some("Esc"), Some(Message::CloseFilter), false),
+        ]
+        .spacing(style::SPACE_3)
+        .align_y(Alignment::Center);
+        w::fill(container(bar).padding([4, 12]), p.bg_sunken).width(Length::Fill).into()
+    }
+
+    pub(crate) fn list<'a>(&'a self, pane: &'a Pane, active: bool) -> Element<'a, Message> {
         let Some(loaded) = &pane.loaded else { return container(Space::new()).width(Length::Fill).height(Length::Fill).into() };
         let empty = (!pane.skeleton && pane.order.is_empty()).then(|| {
             if !pane.query.is_empty() {
-                (
-                    format!("No matches for “{}”", pane.query),
-                    "Nothing in this folder matches. Esc clears the search · Ctrl+E searches everywhere.".to_string(),
-                )
+                (format!("No matches for “{}”", pane.query), "Nothing in this folder matches. Esc clears the search · Ctrl+E searches everywhere.".to_string())
             } else if trash::is_trash_files(&pane.location) {
                 ("The Trash is empty".to_string(), "Things you delete wait here until you empty the Trash.".to_string())
             } else if loaded.listing.is_empty() {
@@ -831,14 +685,11 @@ impl App {
         let renaming = self.rename.as_ref().filter(|r| r.pane == pane.id).and_then(|r| r.pos);
         let editor: Option<Element<'a, Message>> = self.rename.as_ref().filter(|_| renaming.is_some()).map(|r| {
             let pal = self.palette.clone();
-            // In the grid the field stands in for the centred label, so it matches it.
-            let (size, align) = if pane.grid { (style::META, Alignment::Center) } else { (style::BODY, Alignment::Start) };
             text_input("", &r.value)
                 .id(RENAME_ID)
                 .on_input(|v| Message::File(FileMsg::RenameDraft(v)))
                 .on_submit(Message::File(FileMsg::RenameCommit))
-                .size(size)
-                .align_x(align)
+                .size(style::BODY)
                 .font(style::FONT)
                 .padding([3, 6])
                 .style(move |_, _| text_input::Style {
@@ -853,9 +704,8 @@ impl App {
         });
         let l = &loaded.listing;
         let thumbs = &self.thumbs;
-        let grid = pane.grid;
-        let thumb: Box<dyn Fn(usize) -> Option<iced::advanced::image::Handle> + 'a> =
-            Box::new(move |i: usize| if grid { thumbs.get(&l.path(i)) } else { None });
+        let grid = pane.grid();
+        let thumb: Box<dyn Fn(usize) -> Option<iced::advanced::image::Handle> + 'a> = Box::new(move |i: usize| if grid { thumbs.get(&l.path(i)) } else { None });
         let id = pane.id;
         FileList::new(
             file_list::Model {
@@ -874,9 +724,14 @@ impl App {
                 active,
                 dragging: self.drag.is_some(),
                 renaming,
-                rename_chars: self.rename.as_ref().map_or(0, |r| r.value.chars().count()),
-                thumb,
+                rename_chars: self.rename.as_ref().map(|r| r.value.chars().count()).unwrap_or(0),
                 highlight: if pane.everywhere() { "" } else { pane.query.trim() },
+                thumb,
+                zoom: pane.zoom,
+                compact: false,
+                decor: self.decor_fn(l),
+                // Column view shows a folder's contents beside it already.
+                peek: self.settings.appearance.peek && self.drag.is_none() && pane.layout != Layout::Columns,
             },
             &self.palette,
             &self.icons,
@@ -899,10 +754,7 @@ impl App {
             let hint = if let Some(note) = &res.note {
                 note.clone()
             } else if res.from_index {
-                format!(
-                    "Nothing in the index matches. It was updated {}; new files in other folders can take up to a minute.",
-                    indexer::ago(res.index_updated)
-                )
+                format!("Nothing in the index matches. It was updated {}; new files in other folders can take up to a minute.", indexer::ago(res.index_updated))
             } else {
                 "Nothing in your indexed folders matches.".to_string()
             };
@@ -936,17 +788,13 @@ impl App {
             .align_y(Alignment::Center)
         };
         let row_h = self.settings.appearance.density.row_height();
-        // The location column's share (4 of 7 portions) of what's left after the icon,
-        // size and date columns and the gaps.
-        let loc_w =
-            (self.pane_width() - 40.0 - style::ICON_ROW - style::COL_SIZE - style::COL_DATE - 5.0 * style::SPACE_4).max(0.0) * 4.0 / 7.0;
         let mut rows = column![].spacing(0).padding([0, 4]);
         let mut buf = String::new();
         for (i, h) in res.hits.iter().enumerate() {
             let active = pane.result_cursor == Some(i);
-            let icon = if h.is_dir { "folder" } else { crate::kinds::icon(h.name.as_bytes(), ef_core::listing::Kind::File) };
+            let icon = if h.is_dir { "folder" } else if let Some(g) = h.google { g.icon() } else { crate::kinds::icon(h.name.as_bytes(), ef_core::listing::Kind::File) };
             buf.clear();
-            if !h.is_dir {
+            if !h.is_dir && h.google.is_none() {
                 fmt::size(h.size, &mut buf);
             } else {
                 buf.push('—');
@@ -958,27 +806,18 @@ impl App {
             let meta = |s: String| text(s).size(style::META).font(style::FONT).color(color(p.ink_muted)).wrapping(text::Wrapping::None);
             let content = row![
                 iced::widget::svg(self.icons.color(icon)).width(style::ICON_ROW).height(style::ICON_ROW),
-                container(
-                    text(h.name.clone())
-                        .size(style::BODY)
-                        .font(style::FONT)
-                        .color(color(if active { p.ink_strong } else { p.ink }))
-                        .wrapping(text::Wrapping::None)
-                )
-                .width(Length::FillPortion(3))
-                .clip(true),
-                // The end of the location (the folder holding the result) is what matters;
-                // a long one loses its start, not its end.
-                container(meta(fit_start(&config::tilde(Path::new(&h.location)), loc_w, style::META)))
-                    .width(Length::FillPortion(4))
-                    .clip(true),
+                container(text(h.name.clone()).size(style::BODY).font(style::FONT).color(color(if active { p.ink_strong } else { p.ink })).wrapping(text::Wrapping::None)).width(Length::FillPortion(3)).clip(true),
+                container(meta(if h.gone {
+                    "No longer on Google Drive".to_string()
+                } else {
+                    fit_start(&h.location, self.pane_width() * 0.4, style::META)
+                })).width(Length::FillPortion(4)).clip(true),
                 container(meta(size)).width(style::COL_SIZE).align_x(Alignment::End),
                 meta(date).width(style::COL_DATE),
             ]
             .spacing(style::SPACE_4)
             .align_y(Alignment::Center);
-            let item =
-                w::row_button(p, container(content).height(row_h).align_y(Alignment::Center).into(), active, Some(Message::ResultClick(i)));
+            let item = w::row_button(p, container(content).height(row_h).align_y(Alignment::Center).into(), active, Some(Message::ResultClick(i)));
             rows = rows.push(mouse_area(item).on_double_click(Message::ResultOpen(i)));
         }
         let footer = {
@@ -989,15 +828,7 @@ impl App {
             r = r.push(text("show in folder").size(style::META).font(style::FONT).color(color(p.ink_muted)));
             r = r.push(Space::new().width(Length::Fill));
             if let Some(i) = pane.result_cursor {
-                r = r.push(w::text_button(
-                    p,
-                    &self.icons,
-                    "Show in folder",
-                    Some("folder"),
-                    None,
-                    Variant::Secondary,
-                    Some(Message::ResultReveal(i)),
-                ));
+                r = r.push(w::text_button(p, &self.icons, "Show in folder", Some("folder"), None, Variant::Secondary, Some(Message::ResultReveal(i))));
             }
             container(r).padding([6, 16]).width(Length::Fill)
         };
@@ -1032,6 +863,10 @@ impl App {
                         fmt::count(r.hits.len(), &mut left);
                     }
                     left.push_str(if r.from_index { "  ·  from the index" } else { "  ·  live search (index off)" });
+                    if let Some(t) = pane.live.as_ref().and_then(|l| l.text()) {
+                        left.push_str("  ·  ");
+                        left.push_str(&t);
+                    }
                 }
                 None if pane.searching => left.push_str("Searching…"),
                 None => {}
@@ -1063,15 +898,13 @@ impl App {
                 }
             }
             if let Some(l) = &pane.loaded
-                && !self.show_hidden
-                && l.hidden > 0
-                && pane.query.is_empty()
-            {
-                left.push_str("  ·  ");
-                fmt::count(l.hidden, &mut left);
-                left.push_str(" hidden");
-            }
-            if let Some(c) = self.clip.as_ref() {
+                && !self.show_hidden && l.hidden > 0 && pane.query.is_empty() {
+                    left.push_str("  ·  ");
+                    fmt::count(l.hidden, &mut left);
+                    left.push_str(" hidden");
+                }
+            // The footer shows the clipboard when it's on.
+            if let Some(c) = self.clip.as_ref().filter(|_| !self.settings.appearance.footer) {
                 left.push_str(&format!("  ·  {} {} on the clipboard", c.paths.len(), if c.cut { "cut" } else { "copied" }));
             }
         }
@@ -1079,13 +912,8 @@ impl App {
         if pane.loaded.as_ref().is_some_and(|l| !l.metadata_ready) {
             right.push_str("Reading details…  ·  ");
         }
-        if std::env::var_os("ECHOFILES_TIMING").is_some()
-            && let Some(l) = pane.loaded.as_ref().filter(|l| l.metadata_ready)
-        {
-            right.push_str(&format!(
-                "names {:.1} · sort {:.1} · details {:.1} · paint {:.1} ms  ·  ",
-                l.names_ms, l.sort_ms, l.meta_ms, pane.first_paint_ms
-            ));
+        if std::env::var_os("ECHOFILES_TIMING").is_some() && let Some(l) = pane.loaded.as_ref().filter(|l| l.metadata_ready) {
+            right.push_str(&format!("names {:.1} · sort {:.1} · details {:.1} · paint {:.1} ms  ·  ", l.names_ms, l.sort_ms, l.meta_ms, pane.first_paint_ms));
         }
         let running = self.transfers.iter().filter(|t| t.running()).count();
         if running > 0 {
@@ -1094,12 +922,36 @@ impl App {
         if self.index_state == IndexState::Building {
             right.push_str("Indexing…  ·  ");
         }
+        // Copies into Drive finish in rclone's cache; say so until they're on Google.
+        let uploads = self.cloud_uploads();
+        if uploads > 0 {
+            let offline = self.cloud.status.values().any(|s| s.offline && s.uploads.pending() > 0);
+            if offline {
+                right.push_str("Waiting for connection to upload  ·  ");
+            } else {
+                right.push_str(&format!("Uploading {uploads} {} to Google Drive  ·  ", if uploads == 1 { "file" } else { "files" }));
+            }
+        } else if self.cloud.uploaded_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(4)) {
+            right.push_str("Uploaded to Google Drive  ·  ");
+        }
         // The volume: its name, driver and state repeat here so read-only is never a surprise.
         let mut pill: Option<Element<'_, Message>> = None;
         let net = if pane.special() { None } else { self.net_place_at(&pane.location) };
         if !pane.special() && self.is_phone_path(&pane.location) {
             right.push_str(&self.phone_id().map(|i| self.phone_name(&i)).unwrap_or_default());
             right.push_str(" · phone · SFTP");
+        } else if let Some((a, _)) = (!pane.special()).then(|| self.cloud_place_at(&pane.location)).flatten() {
+            // Drive: its name and Google's quota, not FUSE's made-up free space.
+            right.push_str(&a.name);
+            right.push_str(" · Google Drive");
+            if let Some((used, total)) = self.cloud.status.get(&a.id).and_then(|s| s.quota).filter(|q| q.1 > 0) {
+                right.push_str(" · ");
+                fmt::size(total.saturating_sub(used), &mut right);
+                right.push_str(" free");
+            }
+            if a.access == ef_config::CloudAccess::Read {
+                pill = Some(w::pill(p, "Read-only", Some(p.warning)));
+            }
         } else if let Some((m, name)) = &net {
             // Network: which server and how, instead of FUSE's made-up free space.
             right.push_str(name);
@@ -1152,6 +1004,7 @@ pub(crate) fn fit_start(s: &str, width: f32, size: f32) -> String {
 
 /// `s` if it fits in `width` pixels at `size` (the monospace UI font), else as much of its
 /// start as fits and "…".
+#[allow(dead_code)]
 pub(crate) fn fit_end(s: &str, width: f32, size: f32) -> String {
     let max = (width / (size * 0.6)).floor().max(4.0) as usize;
     if s.chars().count() <= max {

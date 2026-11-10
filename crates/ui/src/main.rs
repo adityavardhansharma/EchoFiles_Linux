@@ -11,22 +11,29 @@
 
 mod actions;
 mod app;
-mod app_index;
-mod app_search;
+mod cloud;
+mod cloud_index;
+mod cloud_live;
+mod cloud_settings;
 mod codec;
+mod columns;
 mod connect;
 mod drives;
 mod file_list;
+mod folders;
 mod gpu;
 mod indexer;
 mod jpeg;
+mod keys;
 mod kinds;
 mod network;
 mod overlay;
 mod pane;
 mod phone;
+mod phone_link;
 mod phone_view;
 mod preview;
+mod remote;
 mod scribe;
 mod search;
 mod settings;
@@ -100,6 +107,7 @@ fn main() -> iced::Result {
         }
         // Answer `ef` from here: settings, index maps and threads stay loaded.
         ef_index::cli::server::spawn();
+        ef_index::phone::set_link(Box::new(phone_link::Bridge));
     }
 
     // Iced parses every system font before it can draw text (714 files, ~450 ms here). Load

@@ -24,15 +24,17 @@ pub enum Page {
     Search,
     Agents,
     Phone,
+    Cloud,
     Appearance,
     About,
 }
 
-const PAGES: [(Page, &str, &str); 6] = [
+const PAGES: [(Page, &str, &str); 7] = [
     (Page::General, "sliders", "General"),
     (Page::Search, "search", "Search & index"),
     (Page::Agents, "terminal", "AI agents"),
     (Page::Phone, "phone", "Phone"),
+    (Page::Cloud, "cloud", "Google Drive"),
     (Page::Appearance, "image", "Appearance"),
     (Page::About, "info", "About"),
 ];
@@ -71,6 +73,13 @@ pub enum SettingsMsg {
     ShowWindows(bool),
     ShowNetwork(bool),
     ShowPhone(bool),
+    ShowCloud(bool),
+    /// `ef` may search Google Drive (separate from Drive's index switch).
+    AgentsDrive(bool),
+    TenXer(bool),
+    Footer(bool),
+    Peek(bool),
+    AgentsPhone(bool),
     Reveal(PathBuf),
     Saved(Result<(), String>),
 }
@@ -202,7 +211,11 @@ impl App {
             }
             SettingsMsg::OpenPage(p) => {
                 self.settings_ui.page = p;
-                self.settings_update(SettingsMsg::Open)
+                let open = self.settings_update(SettingsMsg::Open);
+                if p == Page::Cloud {
+                    return Task::batch([open, self.cloud_settings_opened()]);
+                }
+                open
             }
             SettingsMsg::Close => {
                 self.mode = Mode::Files;
@@ -211,6 +224,9 @@ impl App {
             SettingsMsg::Page(p) => {
                 self.settings_ui.page = p;
                 self.settings_ui.error = None;
+                if p == Page::Cloud {
+                    return self.cloud_settings_opened();
+                }
                 Task::none()
             }
             SettingsMsg::Background(on) => {
@@ -320,6 +336,32 @@ impl App {
                 self.settings.sidebar.phone = on;
                 self.save_settings()
             }
+            SettingsMsg::ShowCloud(on) => {
+                self.settings.sidebar.cloud = on;
+                self.save_settings()
+            }
+            SettingsMsg::AgentsDrive(on) => {
+                self.settings.agents.gdrive = on;
+                self.save_settings()
+            }
+            SettingsMsg::TenXer(on) => {
+                self.settings.general.keys = if on { config::KeyMode::TenXer } else { config::KeyMode::Standard };
+                self.chord = None;
+                self.save_settings()
+            }
+            SettingsMsg::Footer(on) => {
+                self.settings.appearance.footer = on;
+                self.save_settings()
+            }
+            SettingsMsg::Peek(on) => {
+                self.settings.appearance.peek = on;
+                self.peek = None;
+                self.save_settings()
+            }
+            SettingsMsg::AgentsPhone(on) => {
+                self.settings.agents.phone = on;
+                self.save_settings()
+            }
             SettingsMsg::Density(d) => {
                 self.settings.appearance.density = d;
                 self.save_settings()
@@ -360,6 +402,7 @@ impl App {
             Page::Search => self.page_search(),
             Page::Agents => self.page_agents(),
             Page::Phone => self.page_phone(),
+            Page::Cloud => self.page_cloud(),
             Page::Appearance => self.page_appearance(),
             Page::About => self.page_about(),
         };
@@ -441,7 +484,7 @@ impl App {
 
     // ------------------------------------------------------------------ building blocks
 
-    fn page_head<'a>(&self, title: &str, desc: &str) -> Element<'a, Message> {
+    pub(crate) fn page_head<'a>(&self, title: &str, desc: &str) -> Element<'a, Message> {
         let p = &self.palette;
         column![
             text(title.to_string()).size(22).font(style::FONT_BOLD).color(color(p.ink_strong)),
@@ -452,7 +495,7 @@ impl App {
     }
 
     /// A titled, bordered box of rows separated by hairlines.
-    fn group<'a>(&self, title: &str, rows: Vec<Element<'a, Message>>) -> Element<'a, Message> {
+    pub(crate) fn group<'a>(&self, title: &str, rows: Vec<Element<'a, Message>>) -> Element<'a, Message> {
         let p = &self.palette;
         let mut inner = column![];
         let n = rows.len();
@@ -474,11 +517,11 @@ impl App {
     }
 
     /// Label + description on the left, control on the right.
-    fn setting<'a>(&self, label: &str, desc: &str, control: Element<'a, Message>) -> Element<'a, Message> {
+    pub(crate) fn setting<'a>(&self, label: &str, desc: &str, control: Element<'a, Message>) -> Element<'a, Message> {
         self.setting_with(label, desc, false, control)
     }
 
-    fn setting_with<'a>(&self, label: &str, desc: &str, disabled: bool, control: Element<'a, Message>) -> Element<'a, Message> {
+    pub(crate) fn setting_with<'a>(&self, label: &str, desc: &str, disabled: bool, control: Element<'a, Message>) -> Element<'a, Message> {
         let p = &self.palette;
         let a = if disabled { w::DISABLED } else { 1.0 };
         let ink = iced::Color { a, ..color(p.ink_strong) };
@@ -491,7 +534,7 @@ impl App {
     }
 
     /// A row that's just content (lists, notes) with the group's padding.
-    fn block<'a>(&self, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    pub(crate) fn block<'a>(&self, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
         container(content).padding([12, 16]).width(Length::Fill).into()
     }
 
@@ -499,7 +542,7 @@ impl App {
         w::switch(&self.palette, on, Some(Box::new(move |b| Message::Settings(f(b)))))
     }
 
-    fn note<'a>(&self, tone: ef_theme::Semantic, icon: &str, msg: String, action: Option<(&str, SettingsMsg)>) -> Element<'a, Message> {
+    pub(crate) fn note<'a>(&self, tone: ef_theme::Semantic, icon: &str, msg: String, action: Option<(&str, SettingsMsg)>) -> Element<'a, Message> {
         let p = &self.palette;
         let mut r = row![
             w::glyph(&self.icons, icon, 16.0, color(tone.ink)),
@@ -678,7 +721,7 @@ impl App {
         vec![self.block(lines), self.block(add)]
     }
 
-    fn mono_block<'a>(&self, lines: &[(&str, &str)]) -> Element<'a, Message> {
+    pub(crate) fn mono_block<'a>(&self, lines: &[(&str, &str)]) -> Element<'a, Message> {
         let p = &self.palette;
         let mut col = column![].spacing(style::SPACE_1 + 2.0);
         for (cmd, what) in lines {
@@ -707,7 +750,7 @@ impl App {
             .into()
     }
 
-    fn page<'a>(&self, head: Element<'a, Message>, groups: Vec<Element<'a, Message>>) -> Element<'a, Message> {
+    pub(crate) fn page<'a>(&self, head: Element<'a, Message>, groups: Vec<Element<'a, Message>>) -> Element<'a, Message> {
         let mut col = column![head].spacing(28);
         if let Some(prob) = &self.settings_ui.problem {
             col = col.push(self.note(self.palette.danger, "error", prob.clone(), None));
@@ -770,7 +813,15 @@ impl App {
                 ),
             ],
         );
-        self.page(self.page_head("General", "How EchoFiles starts, runs and opens."), vec![window, windows])
+        let keyboard = self.group(
+            "Keyboard",
+            vec![self.setting(
+                "10xer keys",
+                "Yazi-style: j/k move, h/l go up and open, gg/G jump, Space marks, y/x/p copy, cut and paste, d trashes. Letters stop jumping to names. Ctrl+Shift+Y switches it; F1 lists every key.",
+                self.toggle(g.keys == config::KeyMode::TenXer, SettingsMsg::TenXer),
+            )],
+        );
+        self.page(self.page_head("General", "How EchoFiles starts, runs and opens."), vec![window, windows, keyboard])
     }
 
     fn index_status(&self) -> Element<'_, Message> {
@@ -826,6 +877,14 @@ impl App {
             self.toggle(s.index, SettingsMsg::Index),
         )];
         index_rows.push(self.index_status());
+        // Drive's index is its own switch; this page only points there.
+        index_rows.push(self.block(
+            row![
+                text("Google Drive has its own index switch in Settings → Google Drive.").size(style::META).font(style::FONT).color(color(p.ink_muted)).width(Length::Fill),
+                w::text_button(p, &self.icons, "Google Drive", Some("cloud"), None, Variant::Ghost, Some(Message::Settings(SettingsMsg::Page(Page::Cloud)))),
+            ]
+            .align_y(Alignment::Center),
+        ));
         let index = self.group("Index", index_rows);
 
         let search = self.group(
@@ -932,6 +991,18 @@ impl App {
                     if ef_path.is_some() { "Installed on your PATH." } else { "Run scripts/install.sh from the EchoFiles folder to put ef on your PATH." },
                     location,
                 ),
+                self.setting_with(
+                    "Let ef search Google Drive",
+                    "Separate from Google Drive's index switch: turning on the index never lets agents see Drive, and this never turns the index on. ef searches Drive only when both are on.",
+                    !a.cli,
+                    w::switch(p, a.gdrive, a.cli.then(|| Box::new(|b| Message::Settings(SettingsMsg::AgentsDrive(b))) as Box<dyn Fn(bool) -> Message>)),
+                ),
+                self.setting_with(
+                    "Let ef fetch phone photos",
+                    "ef phone photos copies recent photos and videos from your paired phone (today, the last 5…) into EchoFiles' cache and prints where they are, so agents can look at them. Off: ef can't see your phone's photos at all.",
+                    !a.cli,
+                    w::switch(p, a.phone, a.cli.then(|| Box::new(|b| Message::Settings(SettingsMsg::AgentsPhone(b))) as Box<dyn Fn(bool) -> Message>)),
+                ),
             ],
         ));
         groups.push(self.group(
@@ -1005,41 +1076,40 @@ impl App {
                 ),
             ), self.setting(
                 "Folders open as",
-                "Automatic uses a grid in Pictures, Videos, camera folders and any folder that is mostly photos or videos, and a list everywhere else. Changing this resets views you switched by hand (Ctrl+1 / Ctrl+2).",
+                "Automatic uses a grid in Pictures, Videos, camera folders and any folder that is mostly photos or videos, and a list everywhere else. Columns opens each folder in a new column. Changing this resets views you switched by hand (Ctrl+1, Ctrl+2, Ctrl+3).",
                 w::segmented(
                     p,
                     &[
                         ("Automatic", Message::Settings(SettingsMsg::DefaultView(DefaultView::Auto))),
                         ("List", Message::Settings(SettingsMsg::DefaultView(DefaultView::List))),
                         ("Grid", Message::Settings(SettingsMsg::DefaultView(DefaultView::Grid))),
+                        ("Columns", Message::Settings(SettingsMsg::DefaultView(DefaultView::Columns))),
                     ],
                     match self.settings.appearance.view {
                         DefaultView::Auto => 0,
                         DefaultView::List => 1,
                         DefaultView::Grid => 2,
+                        DefaultView::Columns => 3,
                     },
                 ),
+            ), self.setting(
+                "Footer",
+                "A line above the status bar with the keys that matter right now and what's on the clipboard.",
+                self.toggle(self.settings.appearance.footer, SettingsMsg::Footer),
+            ), self.setting(
+                "Peek into folders",
+                "Resting the pointer on a folder shows what's inside it.",
+                self.toggle(self.settings.appearance.peek, SettingsMsg::Peek),
             )],
         );
         let sb = &self.settings.sidebar;
         let sidebar = self.group(
             "Sidebar",
             vec![
-                self.setting(
-                    "Windows drives",
-                    "The Windows section with your NTFS and BitLocker drives. Click its heading to open or close it.",
-                    self.toggle(sb.windows, SettingsMsg::ShowWindows),
-                ),
-                self.setting(
-                    "Network places",
-                    "The Network section with Windows shares, SSH and FTP servers. Ctrl+Shift+S connects to a server either way.",
-                    self.toggle(sb.network, SettingsMsg::ShowNetwork),
-                ),
-                self.setting(
-                    "Phone",
-                    "The Phone section with your paired phone, its files and photos. Pairing stays when it's hidden.",
-                    self.toggle(sb.phone, SettingsMsg::ShowPhone),
-                ),
+                self.setting("Windows drives", "The Windows section with your NTFS and BitLocker drives. Click its heading to open or close it.", self.toggle(sb.windows, SettingsMsg::ShowWindows)),
+                self.setting("Network places", "The Network section with Windows shares, SSH and FTP servers. Ctrl+Shift+S connects to a server either way.", self.toggle(sb.network, SettingsMsg::ShowNetwork)),
+                self.setting("Phone", "The Phone section with your paired phone, its files and photos. Pairing stays when it's hidden.", self.toggle(sb.phone, SettingsMsg::ShowPhone)),
+                self.setting("Cloud", "The Cloud section with your Google Drive accounts. Signed-in accounts stay when it's hidden.", self.toggle(sb.cloud, SettingsMsg::ShowCloud)),
             ],
         );
         self.page(self.page_head("Appearance", "EchoFiles looks like the rest of your desktop."), vec![theme, layout, sidebar])
@@ -1257,8 +1327,12 @@ impl App {
         let keys = self.group(
             "Keyboard",
             vec![self.block(self.mono_block(&[
-                ("Ctrl+F  /", "search"),
+                ("F1", "every shortcut"),
+                ("Ctrl+F", "filter this folder (Ctrl+Shift+F: and subfolders)"),
+                ("/", "search"),
                 ("Ctrl+E", "search this folder ↔ everywhere"),
+                ("Ctrl+Z  Ctrl+Shift+Z", "undo · redo"),
+                ("Ctrl+1 2 3", "list · grid · columns"),
                 ("Esc", "clear search · leave Settings"),
                 ("Alt+← Alt+→ Alt+↑", "back · forward · parent"),
                 ("Backspace", "parent folder"),
@@ -1272,7 +1346,7 @@ impl App {
     }
 }
 
-fn fmt_count(n: usize) -> String {
+pub(crate) fn fmt_count(n: usize) -> String {
     let mut s = String::new();
     ef_core::fmt::count(n, &mut s);
     s

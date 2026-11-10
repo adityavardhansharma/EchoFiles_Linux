@@ -413,8 +413,8 @@ pub fn start() {
         match Service::start(move |e| {
             // EchoScribe hears about phones coming and going.
             crate::scribe::observe(&e);
-            // EchoConnect's dictation packets never reach the window.
-            if crate::scribe::claim(&e) {
+            // Answers to `ef phone` and EchoConnect's dictation packets never reach the window.
+            if crate::phone_link::claim(&e) || crate::scribe::claim(&e) {
                 return;
             }
             let _ = t2.unbounded_send(PhoneMsg::Event(e));

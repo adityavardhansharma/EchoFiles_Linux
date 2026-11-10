@@ -23,6 +23,7 @@ pub mod args;
 pub mod exec;
 pub mod find;
 pub mod output;
+pub mod phone;
 pub mod query;
 pub mod server;
 pub mod tools;
@@ -98,7 +99,7 @@ pub fn runs_locally(argv: &[String]) -> bool {
     let (flavor, rest) = match cmd {
         "fd" => (Flavor::Fd, &argv[1..]),
         "find" | "f" => (Flavor::Ef, &argv[1..]),
-        "why" | "map" | "tree" | "recent" | "related" | "mark" | "changed" | "dupes" | "status" | "help" | "version" => return false,
+        "why" | "map" | "tree" | "recent" | "related" | "mark" | "changed" | "dupes" | "status" | "help" | "version" | "phone" => return false,
         _ => (Flavor::Ef, argv),
     };
     args::parse(flavor, rest).is_ok_and(|a| a.exec.is_some() || a.list_details)
@@ -126,6 +127,7 @@ pub fn run(argv: &[String], ctx: &Ctx) -> u8 {
         "dupes" => tools::dupes(rest, ctx),
         "status" => tools::status(ctx),
         "index" => tools::index(rest, ctx),
+        "phone" => phone::main(rest, ctx),
         "" | "help" | "-h" | "--help" => {
             help(ctx, Flavor::Ef);
             0

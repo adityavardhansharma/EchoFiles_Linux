@@ -11,23 +11,24 @@ use std::time::{Duration, Instant, SystemTime};
 
 use ef_config::{self as config, Scope, Settings};
 use ef_core::fmt::DateFormatter;
-use ef_core::ops::Undo;
 use ef_core::sort::{SortBy, SortSpec};
 use ef_core::volume::{self, FsInfo};
 use ef_disks::Volume;
 use ef_theme::Palette;
 use iced::futures::channel::mpsc;
-use iced::keyboard::{self, Key, key::Named};
-use iced::{Point, Subscription, Task, window};
+use iced::keyboard::{self, key::Named, Key};
+use iced::{window, Point, Subscription, Task};
 
-use crate::actions::{Clip, FileMsg, Rename, Transfer};
+use crate::actions::{Again, Clip, Done, FileMsg, Rename, Transfer};
+use crate::columns::{ColCache, ColData, Peek};
 use crate::drives::{DriveMsg, DriveState};
 use crate::file_list::{self, Action};
 use crate::indexer::{self, IndexState, RootIndex, Watcher};
 use crate::network::{NetMsg, NetState};
-use crate::overlay::{Command, Dialog, Menu, MenuFor, Toast, UiMsg};
-use crate::pane::{Loaded, Pane};
 use crate::phone::{PhoneMsg, PhoneState};
+use crate::overlay::{Command, Dialog, Menu, MenuFor, Toast, UiMsg};
+use crate::folders::Folders;
+use crate::pane::{Layout, Loaded, Pane};
 use crate::preview::PreviewData;
 use crate::search::{self, Results};
 use crate::settings::{SettingsMsg, SettingsUi};
@@ -37,21 +38,10 @@ use crate::thumbs::{self, Pixels, Thumbs};
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    Loaded {
-        generation: u64,
-        loaded: Arc<Loaded>,
-        order: Arc<Vec<u32>>,
-    },
+    Loaded { generation: u64, loaded: Arc<Loaded>, order: Arc<Vec<u32>> },
     PaneFs(u64, Option<FsInfo>),
-    LoadFailed {
-        generation: u64,
-        error: String,
-    },
-    Reordered {
-        generation: u64,
-        revision: u64,
-        order: Arc<Vec<u32>>,
-    },
+    LoadFailed { generation: u64, error: String },
+    Reordered { generation: u64, revision: u64, order: Arc<Vec<u32>> },
     ShowSkeleton(u64),
     List(u64, Action),
     Navigate(PathBuf),
@@ -68,7 +58,9 @@ pub enum Message {
     CycleTab(bool),
     ToggleDual,
     SwitchPane,
-    SetGrid(bool),
+    SetLayout(Layout),
+    /// Bigger (+1) or smaller (-1) icons in this folder; 0 goes back to the default size.
+    Zoom(i8),
     TogglePreview,
     ToggleSidebar,
     SidebarResize(Option<f32>),
@@ -78,10 +70,24 @@ pub enum Message {
     SearchSubmit,
     FocusSearch,
     SetScope(Scope),
-    SearchDone {
-        generation: u64,
-        results: Option<Results>,
-    },
+    SearchDone { generation: u64, results: Option<Results> },
+    /// The quick filter (Ctrl+F): open it, reaching into subfolders or not.
+    OpenFilter(bool),
+    SetDeep(bool),
+    CloseFilter,
+    // column view and folder peeks
+    /// A column or peek listing: folder, hidden-files setting, request number, result.
+    ColLoaded(PathBuf, bool, u64, Result<Arc<ColData>, String>),
+    Column(u64, PathBuf, Action),
+    /// Give folders a colour or an icon (`None` puts the usual one back).
+    FolderColor(Vec<PathBuf>, Option<&'static str>),
+    FolderIcon(Vec<PathBuf>, Option<&'static str>),
+    // keyboard and footer
+    ToggleHelp,
+    ToggleTenxer,
+    ToggleFooter,
+    TogglePeek,
+    ClearClip,
     ResultClick(usize),
     ResultOpen(usize),
     ResultReveal(usize),
@@ -96,6 +102,7 @@ pub enum Message {
     Drive(DriveMsg),
     Net(NetMsg),
     Phone(PhoneMsg),
+    Cloud(crate::cloud::CloudMsg),
     /// Fold or unfold a sidebar section.
     Fold(crate::view::Fold, bool),
     Ui(UiMsg),
@@ -155,8 +162,6 @@ pub struct App {
     pub(crate) settings: Settings,
     pub(crate) settings_ui: SettingsUi,
     pub(crate) palette: Palette,
-    /// iced's own theme, built from the palette, for widgets drawn with default styles
-    /// (scrollbars, text selection): otherwise they use iced's stock blue.
     iced_theme: iced::Theme,
     pub(crate) icons: Icons,
     pub(crate) dates: DateFormatter,
@@ -165,13 +170,17 @@ pub struct App {
     pub(crate) tab: usize,
     pub(crate) show_hidden: bool,
     pub(crate) volumes: Vec<Volume>,
+    /// The `files/` folders of other drives' trashes that hold something (sidebar entries).
+    pub(crate) trashes: Vec<PathBuf>,
+    /// The `files/` folders of every other drive's trash, empty or not (watched for changes).
+    drive_trashes: Vec<PathBuf>,
     pub(crate) root_fs: Option<FsInfo>,
     pub(crate) volume_fs: Vec<Option<FsInfo>>,
-    /// When drive free space was last re-read (see `refresh_drive_space`).
     pub(crate) space_checked: Option<Instant>,
     pub(crate) drive_state: HashMap<String, DriveState>,
     pub(crate) net: NetState,
     pub(crate) phone: PhoneState,
+    pub(crate) cloud: crate::cloud::CloudState,
     pub(crate) notice: Option<String>,
     bench: Option<Bench>,
     first_frame_logged: bool,
@@ -179,21 +188,28 @@ pub struct App {
     pub(crate) index_state: IndexState,
     pub(crate) roots: Vec<RootIndex>,
     pub(crate) index_error: Option<String>,
-    pub(crate) index_dirty: Option<Instant>,
+    index_dirty: Option<Instant>,
     /// Names changed in a watched folder since this moment: rebuild when it has settled,
     /// at most once a minute (a busy Downloads folder must not crawl ~ continuously).
-    pub(crate) index_stale: Option<Instant>,
-    /// Watched folders whose names changed since the last index update.
-    pub(crate) index_changed: Vec<PathBuf>,
-    pub(crate) last_index_build: Option<Instant>,
+    index_stale: Option<Instant>,
+    last_index_build: Option<Instant>,
+    /// Watched folders whose names changed; the next refresh recrawls just these.
+    index_changed: Vec<PathBuf>,
     watcher: Option<Arc<Watcher>>,
     // files
     pub(crate) clip: Option<Clip>,
-    pub(crate) undo: Vec<Undo>,
+    pub(crate) undo: Vec<Done>,
+    /// Undone steps Redo (Ctrl+Shift+Z) can do again, newest last.
+    pub(crate) redo: Vec<Again>,
+    /// Bumped whenever a new action ends the redo history, so a reply from an undo or redo
+    /// that started before it can't bring the old history back.
+    pub(crate) history: u64,
+    /// `history` when the running undo started.
+    pub(crate) undo_history: u64,
     pub(crate) undo_busy: bool,
     pub(crate) pending_dialogs: std::collections::VecDeque<crate::overlay::Dialog>,
-    pub(crate) index_generation: u64,
-    pub(crate) preview_generation: u64,
+    index_generation: u64,
+    preview_generation: u64,
     pub(crate) rename: Option<Rename>,
     pub(crate) transfers: Vec<Transfer>,
     pub(crate) drag: Option<Drag>,
@@ -209,7 +225,16 @@ pub struct App {
     pub(crate) thumbs: Thumbs,
     pub(crate) preview: Option<(PathBuf, Arc<PreviewData>)>,
     pub(crate) preview_want: Option<PathBuf>,
-    pub(crate) view_modes: HashMap<PathBuf, bool>,
+    pub(crate) view_modes: HashMap<PathBuf, Layout>,
+    /// Sort, icon size, colour and icon per folder.
+    pub(crate) folders: Folders,
+    /// Listings for column view and folder peeks.
+    pub(crate) cols: ColCache,
+    pub(crate) peek: Option<Peek>,
+    /// The F1 shortcut sheet is open.
+    pub(crate) help: bool,
+    /// The first key of a 10xer chord (`g`, `c`) and when it was pressed.
+    pub(crate) chord: Option<(char, Instant)>,
     /// Recently visited folders, newest last (command palette "Go to").
     pub(crate) recent: Vec<PathBuf>,
     pub(crate) animations: bool,
@@ -223,8 +248,11 @@ pub struct App {
     sel_seen: ((u64, usize, bool), Vec<u64>),
 }
 
-/// The palette as an iced theme: accent as primary, so hovered scrollbars and selected
-/// text use the Omarchy accent, not iced's blue.
+fn theme_stamp() -> Option<SystemTime> {
+    let dir = ef_theme::omarchy_theme_dir()?;
+    std::fs::metadata(dir.join("colors.toml")).and_then(|m| m.modified()).ok()
+}
+
 fn iced_theme(p: &Palette) -> iced::Theme {
     use crate::style::color;
     iced::Theme::custom(
@@ -240,16 +268,29 @@ fn iced_theme(p: &Palette) -> iced::Theme {
     )
 }
 
-impl App {
-    /// The theme for every window (see [`iced_theme`]).
-    pub fn theme(&self, _window: window::Id) -> iced::Theme {
-        self.iced_theme.clone()
-    }
+fn media_dirs() -> &'static (PathBuf, PathBuf) {
+    static DIRS: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
+    DIRS.get_or_init(|| {
+        let home = config::home();
+        let text = std::fs::read_to_string(config::config_dir().with_file_name("user-dirs.dirs")).unwrap_or_default();
+        let get = |key: &str, fallback: &str| {
+            text.lines()
+                .find_map(|l| l.strip_prefix(key)?.strip_prefix('=').map(|v| v.trim().trim_matches('"').replace("$HOME", &home.to_string_lossy())))
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(fallback))
+        };
+        (get("XDG_PICTURES_DIR", "Pictures"), get("XDG_VIDEOS_DIR", "Videos"))
+    })
 }
 
-fn theme_stamp() -> Option<SystemTime> {
-    let dir = ef_theme::omarchy_theme_dir()?;
-    std::fs::metadata(dir.join("colors.toml")).and_then(|m| m.modified()).ok()
+/// A photo or video, by extension.
+fn is_media_name(name: &std::ffi::OsStr) -> bool {
+    let ext = Path::new(name).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "heic" | "heif" | "avif" | "tif" | "tiff" | "jxl" | "raw" | "dng" | "cr2"
+            | "nef" | "arw" | "mp4" | "mkv" | "mov" | "webm" | "avi" | "m4v" | "3gp"
+    )
 }
 
 /// Stream of folder changes from the watcher thread.
@@ -266,10 +307,7 @@ fn changes() -> impl iced::futures::Stream<Item = indexer::Change> {
 }
 
 /// Run blocking work on a plain thread and deliver its result as a message.
-pub fn background<T: Send + 'static>(
-    work: impl FnOnce() -> T + Send + 'static,
-    to: impl Fn(T) -> Message + Send + 'static,
-) -> Task<Message> {
+pub fn background<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static, to: impl Fn(T) -> Message + Send + 'static) -> Task<Message> {
     Task::perform(
         async move {
             let (tx, rx) = iced::futures::channel::oneshot::channel();
@@ -290,72 +328,18 @@ pub fn window_settings() -> window::Settings {
         size: iced::Size::new(1280.0, 800.0),
         exit_on_close_request: false,
         // ECHOFILES_APP_ID lets a development build run beside the installed one.
-        platform_specific: window::settings::PlatformSpecific {
-            application_id: std::env::var("ECHOFILES_APP_ID").unwrap_or_else(|_| "echofiles".into()),
-            ..Default::default()
-        },
+        platform_specific: window::settings::PlatformSpecific { application_id: std::env::var("ECHOFILES_APP_ID").unwrap_or_else(|_| "echofiles".into()), ..Default::default() },
         ..Default::default()
     }
-}
-
-/// The user's Pictures and Videos folders from `~/.config/user-dirs.dirs` (they are
-/// translated on many systems: "Bilder", "Imágenes"…).
-fn media_dirs() -> &'static (PathBuf, PathBuf) {
-    static DIRS: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
-    DIRS.get_or_init(|| {
-        let home = config::home();
-        let text = std::fs::read_to_string(config::config_dir().with_file_name("user-dirs.dirs")).unwrap_or_default();
-        let get = |key: &str, fallback: &str| {
-            text.lines()
-                .find_map(|l| {
-                    l.strip_prefix(key)?.strip_prefix('=').map(|v| v.trim().trim_matches('"').replace("$HOME", &home.to_string_lossy()))
-                })
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(fallback))
-        };
-        (get("XDG_PICTURES_DIR", "Pictures"), get("XDG_VIDEOS_DIR", "Videos"))
-    })
-}
-
-/// A photo or video, by extension.
-fn is_media_name(name: &std::ffi::OsStr) -> bool {
-    let ext = Path::new(name).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    matches!(
-        ext.as_str(),
-        "jpg"
-            | "jpeg"
-            | "png"
-            | "gif"
-            | "webp"
-            | "bmp"
-            | "heic"
-            | "heif"
-            | "avif"
-            | "tif"
-            | "tiff"
-            | "jxl"
-            | "raw"
-            | "dng"
-            | "cr2"
-            | "nef"
-            | "arw"
-            | "mp4"
-            | "mkv"
-            | "mov"
-            | "webm"
-            | "avi"
-            | "m4v"
-            | "3gp"
-    )
 }
 
 fn view_modes_file() -> PathBuf {
     config::state_dir().join("view-modes")
 }
 
-fn load_view_modes() -> HashMap<PathBuf, bool> {
+fn load_view_modes() -> HashMap<PathBuf, Layout> {
     std::fs::read_to_string(view_modes_file())
-        .map(|t| t.lines().filter_map(|l| l.split_once('\t')).map(|(m, p)| (PathBuf::from(p), m == "grid")).collect())
+        .map(|t| t.lines().filter_map(|l| l.split_once('\t')).filter_map(|(m, p)| Some((PathBuf::from(p), Layout::parse(m)?))).collect())
         .unwrap_or_default()
 }
 
@@ -383,10 +367,10 @@ impl App {
         };
         // A network folder from last time may not be connected now (and asking a gone
         // server can stall), so those start at home.
-        let last = (settings.general.open_to == config::OpenTo::Last)
-            .then(system::last_folder)
-            .flatten()
-            .filter(|p| !ef_net::gvfs::is_network_path(p));
+        let last_any = (settings.general.open_to == config::OpenTo::Last).then(system::last_folder).flatten();
+        // A Drive folder opens once its mount is back (if that's quick); until then, home.
+        let reopen = last_any.clone().filter(|p| config::is_cloud_path(p));
+        let last = last_any.filter(|p| !crate::remote::is_remote(p));
         let start = bench_dir.clone().or(path_arg).or(last).unwrap_or_else(config::home);
 
         let (tx, rx) = mpsc::unbounded();
@@ -405,8 +389,8 @@ impl App {
             window: None,
             mode: if args.iter().any(|a| a == "--settings") { Mode::Settings } else { Mode::Files },
             settings_ui: SettingsUi::new(settings_error),
+            palette: palette.clone(),
             iced_theme: iced_theme(&palette),
-            palette,
             icons,
             dates: DateFormatter::new(),
             theme_stamp: theme_stamp(),
@@ -414,12 +398,15 @@ impl App {
             tab: 0,
             show_hidden: settings.general.show_hidden,
             volumes: Vec::new(),
+            trashes: Vec::new(),
+            drive_trashes: Vec::new(),
             root_fs: None,
             volume_fs: Vec::new(),
             space_checked: None,
             drive_state: HashMap::new(),
             net: NetState { recent: crate::network::load_recent(), ..Default::default() },
             phone: crate::phone::load_state(),
+            cloud: Default::default(),
             notice: None,
             bench: bench_dir.map(|_| Bench { frames: Vec::with_capacity(700), last: None, started: false }),
             first_frame_logged: false,
@@ -428,11 +415,14 @@ impl App {
             index_error: None,
             index_dirty: None,
             index_stale: None,
-            index_changed: Vec::new(),
             last_index_build: None,
+            index_changed: Vec::new(),
             watcher,
             clip: None,
             undo: Vec::new(),
+            redo: Vec::new(),
+            history: 0,
+            undo_history: 0,
             undo_busy: false,
             pending_dialogs: Default::default(),
             index_generation: 0,
@@ -451,6 +441,11 @@ impl App {
             preview: None,
             preview_want: None,
             view_modes: load_view_modes(),
+            folders: Folders::load(),
+            cols: ColCache::default(),
+            peek: None,
+            help: false,
+            chord: None,
             recent: Vec::new(),
             animations: true,
             mouse: Point::ORIGIN,
@@ -464,6 +459,8 @@ impl App {
         tasks.push(background(crate::drives::read_volumes, |r| Message::Drive(DriveMsg::Volumes(r))));
         tasks.push(background(animations_enabled, |on| Message::Drive(DriveMsg::Animations(on))));
         tasks.push(crate::network::boot_tasks());
+        app.cloud.reopen = reopen.map(|p| (p, std::time::Instant::now()));
+        tasks.push(crate::cloud::boot_tasks(&app.settings));
         crate::phone::start();
         if let Some(Request::Connect(uri)) = launch {
             match ef_net::Address::parse(&uri, ef_net::Protocol::Smb) {
@@ -490,6 +487,11 @@ impl App {
         }
     }
 
+    /// The theme for every window (see [`iced_theme`]).
+    pub fn theme(&self, _window: window::Id) -> iced::Theme {
+        self.iced_theme.clone()
+    }
+
     /// A pane's name for tabs and the window title; network roots use the name people
     /// gave the place, not GVfs' folder name.
     pub(crate) fn pane_title(&self, pane: &Pane) -> String {
@@ -504,6 +506,12 @@ impl App {
             && pane.location == m.root
         {
             return name;
+        }
+        if !pane.special()
+            && let Some((a, root)) = self.cloud_place_at(&pane.location)
+            && pane.location == root
+        {
+            return a.name.clone();
         }
         pane.title()
     }
@@ -542,32 +550,48 @@ impl App {
         self.tabs.iter().flat_map(|t| t.panes.iter())
     }
 
-    /// Watch every folder on screen in this tab.
-    fn watch_visible(&self) {
+    /// Watch every folder on screen in this tab, columns and peeks included.
+    pub(crate) fn watch_visible(&self) {
         if let Some(w) = &self.watcher {
-            let open: Vec<PathBuf> = self.tabs[self.tab].panes.iter().map(|p| p.location.clone()).collect();
+            let mut open: Vec<PathBuf> = self.tabs[self.tab].panes.iter().map(|p| p.location.clone()).collect();
+            open.extend(self.cols.shown.iter().filter(|d| !open.contains(d)).cloned().collect::<Vec<_>>());
+            // Every drive's trash, so items trashed or emptied by another app update the sidebar.
+            open.extend(self.drive_trashes.iter().cloned());
             w.watch_open(&open);
         }
     }
 
+    /// Find the other drives' trashes that hold items. Files trashed on a drive stay on that
+    /// drive (`<drive>/.Trash-<uid>`), so each gets its own sidebar entry.
+    pub(crate) fn refresh_trashes(&mut self) {
+        let all: Vec<PathBuf> = ef_core::trash::drive_trashes().into_iter().map(|t| t.join("files")).collect();
+        self.trashes = all.iter().filter(|f| std::fs::read_dir(f).is_ok_and(|mut r| r.next().is_some())).cloned().collect();
+        if all != self.drive_trashes {
+            self.drive_trashes = all;
+            self.watch_visible();
+        }
+    }
+
     /// The folder's remembered view, else Settings → Appearance → Folders open as.
-    fn grid_for(&self, dir: &Path) -> bool {
-        if let Some(&g) = self.view_modes.get(dir) {
-            return g;
+    fn layout_for(&self, dir: &Path) -> Layout {
+        if let Some(&l) = self.view_modes.get(dir) {
+            return l;
         }
         match self.settings.appearance.view {
-            config::DefaultView::List => return false,
-            config::DefaultView::Grid => return true,
+            config::DefaultView::List => return Layout::List,
+            config::DefaultView::Grid => return Layout::Grid,
+            config::DefaultView::Columns => return Layout::Columns,
             config::DefaultView::Auto => {}
         }
         let home = config::home();
         let name = dir.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
         let (pictures, videos) = media_dirs();
-        dir == pictures
+        let media = dir == pictures
             || dir == videos
             || dir == home.join("Pictures")
             || dir == home.join("Videos")
-            || matches!(name.as_str(), "dcim" | "camera" | "screenshots" | "photos" | "wallpapers")
+            || matches!(name.as_str(), "dcim" | "camera" | "screenshots" | "photos" | "wallpapers");
+        if media { Layout::Grid } else { Layout::List }
     }
 
     /// Automatic view, after listing: a folder that is mostly photos and videos (at least
@@ -578,7 +602,7 @@ impl App {
         }
         let modes = &self.view_modes;
         let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.generation == generation) else { return };
-        if pane.grid || modes.contains_key(&pane.location) {
+        if pane.layout != Layout::List || modes.contains_key(&pane.location) {
             return;
         }
         let Some(l) = pane.loaded.as_ref() else { return };
@@ -593,7 +617,7 @@ impl App {
             }
         }
         if files >= 4 && media * 10 >= files * 6 {
-            pane.grid = true;
+            pane.layout = Layout::Grid;
         }
     }
 
@@ -601,26 +625,30 @@ impl App {
     pub(crate) fn apply_default_view(&mut self) {
         self.view_modes.clear();
         let _ = std::fs::remove_file(view_modes_file());
-        let grids: Vec<(u64, bool)> = self.all_panes().map(|p| (p.id, self.grid_for(&p.location))).collect();
-        for (id, g) in grids {
+        let layouts: Vec<(u64, Layout)> = self.all_panes().map(|p| (p.id, self.layout_for(&p.location))).collect();
+        for (id, l) in layouts {
             if let Some(p) = self.pane_by_id_mut(id) {
-                p.grid = g;
+                p.layout = l;
             }
         }
     }
 
-    /// (Re)load the active pane's folder.
+    /// (Re)load the active pane's folder, in the layout, sort and icon size it had.
     pub(crate) fn load_active(&mut self, dir: PathBuf) -> Task<Message> {
         let hidden = self.show_hidden;
-        let grid = self.grid_for(&dir);
+        let layout = self.layout_for(&dir);
+        let sort = self.folders.sort(&dir).unwrap_or_default();
+        let zoom = self.folders.zoom(&dir);
         let pane = self.pane_mut();
-        pane.grid = grid;
+        pane.layout = layout;
+        pane.sort = sort;
+        pane.zoom = zoom;
         let t = pane.load(dir, hidden);
         self.watch_visible();
         t
     }
 
-    pub(crate) fn reload_pane(&mut self, id: u64) -> Task<Message> {
+    fn reload_pane(&mut self, id: u64) -> Task<Message> {
         let hidden = self.show_hidden;
         match self.pane_by_id_mut(id) {
             Some(p) => {
@@ -633,6 +661,7 @@ impl App {
 
     /// Reload every pane showing `dir` (after we changed something there).
     pub(crate) fn refresh(&mut self, dir: &Path) -> Task<Message> {
+        self.cols.forget(Some(dir));
         let ids: Vec<u64> = self.all_panes().filter(|p| p.location == dir && !p.special()).map(|p| p.id).collect();
         Task::batch(ids.into_iter().map(|id| self.reload_pane(id)))
     }
@@ -642,6 +671,7 @@ impl App {
         self.mode = Mode::Files;
         self.rename = None;
         self.path_edit = None;
+        self.peek = None;
         let pane = self.pane_mut();
         if dir == pane.location && pane.results.is_none() && !pane.special() {
             return Task::none();
@@ -669,16 +699,9 @@ impl App {
 
     pub(crate) fn open_path(&mut self, path: PathBuf) -> Task<Message> {
         let original = path.clone();
-        background(
-            move || {
-                if path.is_dir() {
-                    (true, Ok(()))
-                } else {
-                    (false, crate::system::spawn_detached(std::process::Command::new("xdg-open").arg(&path)).map_err(|e| e.to_string()))
-                }
-            },
-            move |(dir, result)| Message::OpenChecked(original.clone(), dir, result),
-        )
+        background(move || {
+            if path.is_dir() { (true, Ok(())) } else { (false, std::process::Command::new("xdg-open").arg(&path).spawn().map(drop).map_err(|e| e.to_string())) }
+        }, move |(dir, result)| Message::OpenChecked(original.clone(), dir, result))
     }
 
     fn open(&mut self, pos: usize) -> Task<Message> {
@@ -692,14 +715,18 @@ impl App {
         self.pane().everywhere()
     }
 
-    pub(crate) fn run_search(&mut self) -> Task<Message> {
+    fn run_search(&mut self) -> Task<Message> {
         let hidden = self.show_hidden;
         let settings = self.settings.clone();
         let pane = self.pane_mut();
         pane.search_cancel.store(true, Ordering::Relaxed);
         pane.search_generation = crate::pane::next_id();
         let generation = pane.search_generation;
-        let text = pane.query.trim().to_string();
+        let mut text = pane.query.trim().to_string();
+        if !text.is_empty() && pane.deep && pane.scope == Scope::Folder {
+            // The folder filter reaching into subfolders: the same engine, kept to here.
+            text.push_str(&format!(" in:\"{}\"", pane.location.display()));
+        }
         if text.is_empty() {
             pane.results = None;
             pane.searching = false;
@@ -711,20 +738,85 @@ impl App {
         background(move || search::run(&settings, &text, hidden, &cancel), move |results| Message::SearchDone { generation, results })
     }
 
-    /// Toasts, dates, the theme and the phone, then the index's own timers.
-    fn on_tick(&mut self) -> Task<Message> {
-        self.dates = DateFormatter::new();
-        let stamp = theme_stamp();
-        if stamp != self.theme_stamp {
-            self.theme_stamp = stamp;
-            self.palette = ef_theme::load_active();
-            self.iced_theme = iced_theme(&self.palette);
-            self.icons = Icons::new(&self.palette);
+    // ------------------------------------------------------------------ index
+
+    pub(crate) fn build_index(&mut self) -> Task<Message> {
+        self.build_index_in(indexer::Scope::all())
+    }
+
+    /// Re-crawl only the watched folders that changed, in the roots holding them.
+    pub(crate) fn refresh_index(&mut self) -> Task<Message> {
+        let folders = std::mem::take(&mut self.index_changed);
+        if folders.is_empty() {
+            self.index_stale = None;
+            return Task::none();
         }
-        self.expire_toasts();
-        self.phone_tick();
-        let space = self.refresh_drive_space();
-        Task::batch([space, self.index_tick()])
+        let scope = indexer::Scope::changed(folders, &self.settings.search.roots());
+        // Changes outside every indexed root (an open folder elsewhere) need no crawl.
+        if scope.roots.as_ref().is_some_and(Vec::is_empty) {
+            self.index_stale = None;
+            return Task::none();
+        }
+        self.build_index_in(scope)
+    }
+
+    /// The periodic safety net for changes no watch saw: the configured roots, plus the
+    /// mounted drives not crawled for 6 hours (so an idle disk is left to spin down).
+    pub(crate) fn safety_net_index(&mut self) -> Task<Message> {
+        let configured: Vec<PathBuf> = self.settings.search.roots.iter().map(|r| ef_config::expand(r)).collect();
+        let old = |root: &PathBuf| {
+            self.roots
+                .iter()
+                .find(|r| &r.root == root)
+                .and_then(|r| r.updated)
+                .and_then(|t| t.elapsed().ok())
+                .is_none_or(|age| age >= Duration::from_secs(6 * 3600))
+        };
+        let roots = self.settings.search.roots().into_iter().filter(|r| configured.contains(r) || old(r)).collect();
+        self.build_index_in(indexer::Scope::roots(roots))
+    }
+
+    pub(crate) fn build_index_in(&mut self, scope: indexer::Scope) -> Task<Message> {
+        if !self.settings.search.index || self.index_state == IndexState::Building {
+            return Task::none();
+        }
+        self.index_state = IndexState::Building;
+        self.index_dirty = None;
+        self.index_stale = None;
+        if scope.roots.is_none() {
+            self.index_changed.clear();
+        }
+        self.last_index_build = Some(Instant::now());
+        let generation = self.index_generation;
+        let cfg = self.settings.search.clone();
+        background(move || indexer::build_all(&cfg, generation, &scope), move |roots| Message::IndexBuilt(generation, roots))
+    }
+
+    /// Settings that change what's indexed: rebuild soon (debounced).
+    pub(crate) fn index_settings_changed(&mut self) {
+        self.index_generation = indexer::invalidate();
+        if self.settings.search.index {
+            self.index_dirty = Some(Instant::now());
+        }
+    }
+
+    pub(crate) fn set_index_enabled(&mut self, on: bool) -> Task<Message> {
+        self.index_generation = indexer::invalidate();
+        self.settings.search.index = on;
+        if on {
+            self.index_state = IndexState::Opening;
+            let generation = self.index_generation;
+            let cfg = self.settings.search.clone();
+            background(move || indexer::open_existing(&cfg), move |roots| Message::IndexOpened(generation, roots))
+        } else {
+            self.index_state = IndexState::Off;
+            self.roots.clear();
+            self.index_error = None;
+            let cfg = self.settings.search.clone();
+            let generation = self.index_generation;
+            std::thread::spawn(move || indexer::remove_files(&cfg, generation));
+            Task::none()
+        }
     }
 
     // ------------------------------------------------------------------ windows
@@ -741,12 +833,12 @@ impl App {
 
     /// Something modal is up: lists don't take keys.
     pub(crate) fn modal(&self) -> bool {
-        self.menu.is_some() || self.dialog.is_some() || self.command.is_some() || self.phone.dialog.is_some()
+        self.menu.is_some() || self.dialog.is_some() || self.command.is_some() || self.phone.dialog.is_some() || self.help || self.cloud.dialog.is_some()
     }
 
     // ------------------------------------------------------------------ thumbnails
 
-    fn start_thumbs(&self, jobs: Vec<thumbs::Job>) -> Task<Message> {
+    pub(crate) fn start_thumbs(&self, jobs: Vec<thumbs::Job>) -> Task<Message> {
         Task::batch(jobs.into_iter().map(|(p, m, cancel)| {
             let q = p.clone();
             let token = cancel.clone();
@@ -757,7 +849,7 @@ impl App {
     fn want_thumbs(&mut self, pane: u64, first: usize, last: usize) -> Task<Message> {
         let Some(p) = self.pane_by_id(pane) else { return Task::none() };
         let Some(l) = p.loaded.clone() else { return Task::none() };
-        if !p.grid || !l.metadata_ready {
+        if !p.grid() || !l.metadata_ready {
             return Task::none();
         }
         let items: Vec<(PathBuf, i64)> = (first..last.min(p.order.len()))
@@ -772,38 +864,41 @@ impl App {
     // ------------------------------------------------------------------ update
 
     pub(crate) fn queue_dialog(&mut self, dialog: crate::overlay::Dialog) {
-        if self.dialog.is_none() {
-            self.dialog = Some(dialog);
-        } else {
-            self.pending_dialogs.push_back(dialog);
-        }
+        if self.dialog.is_none() { self.dialog = Some(dialog); } else { self.pending_dialogs.push_back(dialog); }
     }
 
-    fn request_exit(&mut self) -> Task<Message> {
+    pub(crate) fn request_exit(&mut self) -> Task<Message> {
         if crate::actions::busy() || self.undo_busy || self.transfers.iter().any(|t| t.running()) {
             self.notice = Some("File operations are still running. Wait for them to finish, or cancel them before quitting.".into());
             return Task::none();
         }
-        // Replaced files kept for undo are not needed once the session ends.
-        for u in self.undo.drain(..) {
-            u.discard();
+        // Pending Drive uploads ask first; then mounts and rclone stop.
+        if !self.cloud_before_exit() {
+            return Task::none();
         }
+        // Replaced files kept for undo are not needed once the session ends.
+        for u in self.undo.drain(..) { u.undo.discard(); }
         iced::exit()
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let t = self.handle(message);
-        if self.dialog.is_none() {
-            self.dialog = self.pending_dialogs.pop_front();
-        }
+        if self.dialog.is_none() { self.dialog = self.pending_dialogs.pop_front(); }
         let p = self.sync_preview();
+        let c = if self.mode == Mode::Files { self.sync_columns() } else { Task::none() };
         self.sync_selection_size();
         for tr in &mut self.transfers {
             if tr.running() {
                 tr.sample();
             }
         }
-        Task::batch([t, p])
+        Task::batch([t, p, c])
+    }
+
+    /// Save the per-folder layouts.
+    fn save_view_modes(&self) {
+        let text: String = self.view_modes.iter().map(|(p, l)| format!("{}\t{}\n", l.name(), p.display())).collect();
+        config::queue_state(view_modes_file(), text.into_bytes());
     }
 
     /// Count the selected folders' sizes in the background for the status bar.
@@ -815,12 +910,7 @@ impl App {
         }
         let seen = (key, pane.selected.clone());
         let dirs: Vec<PathBuf> = match pane.loaded.as_ref() {
-            Some(l) if self.mode == Mode::Files => pane
-                .selected_bits()
-                .filter(|&i| i < l.listing.len() && l.listing.is_dir(i))
-                .take(10_000)
-                .map(|i| l.listing.path(i))
-                .collect(),
+            Some(l) if self.mode == Mode::Files => pane.selected_bits().filter(|&i| i < l.listing.len() && l.listing.is_dir(i)).take(10_000).map(|i| l.listing.path(i)).collect(),
             _ => Vec::new(),
         };
         self.sel_seen = seen;
@@ -840,42 +930,33 @@ impl App {
         self.sel_size = Some((dirs, size, cancel));
     }
 
-    pub(crate) fn handle(&mut self, message: Message) -> Task<Message> {
+    fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::OpenChecked(path, dir, result) => {
-                if let Err(e) = result {
-                    self.toast_error("Couldn't open the file".into(), e);
-                }
-                if dir { self.go(path, true) } else { Task::none() }
+                if let Err(e) = result { self.toast_error("Couldn't open the file".into(), e); }
+                if !dir { return Task::none(); }
+                let t = self.go(path, true);
+                // Keyboard-first ways in land on the first item, ready for the next key.
+                if self.tenxer() || self.pane().layout == Layout::Columns { self.pane_mut().select_first = true; }
+                t
             }
             Message::PathChecked(raw, result) => {
-                if self.path_edit.as_ref() != Some(&raw) {
-                    return Task::none();
-                }
+                if self.path_edit.as_ref() != Some(&raw) { return Task::none(); }
                 match result {
-                    Ok((p, true)) => {
-                        self.path_edit = None;
-                        self.go(p, true)
-                    }
+                    Ok((p, true)) => { self.path_edit = None; self.go(p, true) },
                     Ok((p, false)) => {
                         self.path_edit = None;
                         let name = p.file_name().map(|n| n.to_os_string());
                         let task = self.go(p.parent().unwrap_or(Path::new("/")).to_path_buf(), true);
-                        self.pane_mut().reveal = name.into_iter().collect();
-                        task
-                    }
-                    Err(e) => {
-                        self.toast_error("Can't go there".into(), e);
-                        Task::none()
-                    }
+                        self.pane_mut().reveal = name.into_iter().collect(); task
+                    },
+                    Err(e) => { self.toast_error("Can't go there".into(), e); Task::none() },
                 }
             }
             Message::Loaded { generation, loaded, order } => {
                 let hidden = self.show_hidden;
                 let timing = std::env::var_os("ECHOFILES_TIMING").is_some() || self.bench.is_some();
-                let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.generation == generation) else {
-                    return Task::none();
-                };
+                let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.generation == generation) else { return Task::none() };
                 let ready = loaded.metadata_ready;
                 if ready && timing {
                     eprintln!(
@@ -888,31 +969,27 @@ impl App {
                         pane.first_paint_ms
                     );
                 }
+                let dir = loaded.listing.dir.clone();
                 pane.apply_loaded(loaded, order);
                 let id = pane.id;
                 let t = pane.reorder(hidden);
-                self.auto_grid_by_content(generation);
                 self.refresh_cut();
+                self.auto_grid_by_content(generation);
                 let r = self.resume_rename(id);
-                Task::batch([t, r])
+                // Drive folders: which entries are Google Docs (their kind and icon).
+                let c = if ready && config::is_cloud_path(&dir) { self.cloud_listed(&dir) } else { Task::none() };
+                Task::batch([t, r, c])
             }
             Message::Reordered { generation, revision, order } => {
                 if let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.generation == generation) {
-                    if pane.order_revision.load(Ordering::Relaxed) != revision {
-                        return Task::none();
-                    }
-                    pane.order = order;
-                    pane.cursor = None;
-                    // Entries the filter now hides leave the selection: "1 selected" must
-                    // never count something that isn't on screen.
+                    if pane.order_revision.load(Ordering::Relaxed) != revision { return Task::none(); }
+                    pane.set_order(order);
                     pane.retain_visible_selection();
                 }
                 Task::none()
             }
             Message::PaneFs(generation, fs) => {
-                if let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.generation == generation) {
-                    pane.fs = fs;
-                }
+                if let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.generation == generation) { pane.fs = fs; }
                 Task::none()
             }
             Message::LoadFailed { generation, error } => {
@@ -938,10 +1015,9 @@ impl App {
             }
             Message::ShowSkeleton(generation) => {
                 if let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.generation == generation)
-                    && pane.pending
-                {
-                    pane.skeleton = true;
-                }
+                    && pane.pending {
+                        pane.skeleton = true;
+                    }
                 Task::none()
             }
             Message::List(id, action) => self.list_action(id, action),
@@ -990,10 +1066,12 @@ impl App {
             },
             Message::Reload => {
                 let id = self.pane().id;
+                self.cols.forget(None);
                 self.reload_pane(id)
             }
             Message::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
+                self.cols.clear();
                 let hidden = self.show_hidden;
                 let mut tasks: Vec<Task<Message>> = self.tabs.iter().flat_map(|t| t.panes.iter()).map(|p| p.reorder(hidden)).collect();
                 if self.everywhere() {
@@ -1058,14 +1136,23 @@ impl App {
                 }
                 Task::none()
             }
-            Message::SetGrid(on) => {
+            Message::SetLayout(layout) => {
                 let pane = self.pane_mut();
-                pane.grid = on;
+                pane.layout = layout;
                 let dir = pane.location.clone();
-                self.view_modes.insert(dir, on);
-                let text: String =
-                    self.view_modes.iter().map(|(p, g)| format!("{}\t{}\n", if *g { "grid" } else { "list" }, p.display())).collect();
-                config::queue_state(view_modes_file(), text.into_bytes());
+                self.view_modes.insert(dir, layout);
+                self.save_view_modes();
+                Task::none()
+            }
+            Message::Zoom(step) => {
+                let pane = self.pane_mut();
+                if pane.special() {
+                    return Task::none();
+                }
+                let zoom = if step == 0 { crate::folders::DEFAULT_ZOOM } else { (pane.zoom as i16 + step as i16).clamp(0, crate::folders::ZOOMS.len() as i16 - 1) as u8 };
+                pane.zoom = zoom;
+                let dir = pane.location.clone();
+                self.folders.update(&dir, |p| p.zoom = (zoom != crate::folders::DEFAULT_ZOOM).then_some(zoom));
                 Task::none()
             }
             Message::TogglePreview => {
@@ -1102,30 +1189,214 @@ impl App {
                     pane.drives = true;
                     pane.clear_search();
                 }
-
+                
                 background(crate::drives::read_volumes, |r| Message::Drive(DriveMsg::Volumes(r)))
             }
             // ---- search
-            m @ (Message::Search(_)
-            | Message::SearchSubmit
-            | Message::SetScope(_)
-            | Message::SearchDone { .. }
-            | Message::ResultClick(_)
-            | Message::ResultOpen(_)
-            | Message::ResultReveal(_)
-            | Message::FocusSearch
-            | Message::EditPath(_)
-            | Message::PathDraft(_)
-            | Message::PathSubmit) => self.search_update(m),
+            Message::Search(q) => {
+                let hidden = self.show_hidden;
+                let pane = self.pane_mut();
+                pane.query = q;
+                match pane.scope {
+                    Scope::Folder if pane.deep => {
+                        let t = pane.reorder(hidden);
+                        Task::batch([t, self.run_search()])
+                    }
+                    Scope::Folder => pane.reorder(hidden),
+                    Scope::Everywhere => self.run_search(),
+                }
+            }
+            Message::OpenFilter(deep) => {
+                let hidden = self.show_hidden;
+                self.mode = Mode::Files;
+                let pane = self.pane_mut();
+                if pane.special() {
+                    return Task::none();
+                }
+                pane.filter_bar = true;
+                let rerun = pane.scope != Scope::Folder || pane.deep != deep;
+                pane.scope = Scope::Folder;
+                pane.deep = deep;
+                let focus = Task::batch([iced::widget::operation::focus(crate::view::FILTER_ID), iced::widget::operation::move_cursor_to_end(crate::view::FILTER_ID)]);
+                // Same scope: only focusing the bar, so the finished results stay.
+                if !rerun {
+                    return focus;
+                }
+                pane.results = None;
+                pane.result_cursor = None;
+                let t = pane.reorder(hidden);
+                Task::batch([focus, t, self.run_search()])
+            }
+            Message::CloseFilter => {
+                let hidden = self.show_hidden;
+                let pane = self.pane_mut();
+                pane.clear_search();
+                pane.reorder(hidden)
+            }
+            Message::SetDeep(on) => {
+                let hidden = self.show_hidden;
+                let pane = self.pane_mut();
+                pane.deep = on;
+                pane.scope = Scope::Folder;
+                pane.results = None;
+                pane.result_cursor = None;
+                let t = pane.reorder(hidden);
+                Task::batch([t, self.run_search()])
+            }
+            Message::SearchSubmit => match (self.everywhere(), self.pane().result_cursor) {
+                (true, Some(i)) => self.handle(Message::ResultOpen(i)),
+                // Filtering this folder: Enter opens the item under the cursor, else the first match.
+                (false, _) if self.pane().scope == Scope::Folder && !self.pane().order.is_empty() => {
+                    let pane = self.pane_mut();
+                    let pos = pane.cursor.filter(|&c| c < pane.order.len()).unwrap_or(0);
+                    pane.select_only(pos);
+                    self.file_update(FileMsg::Open)
+                }
+                _ => Task::none(),
+            },
+            Message::SetScope(s) => {
+                let hidden = self.show_hidden;
+                let pane = self.pane_mut();
+                pane.scope = s;
+                pane.deep = false;
+                pane.filter_bar = false;
+                pane.results = None;
+                pane.result_cursor = None;
+                let t = pane.reorder(hidden);
+                if s == Scope::Everywhere { Task::batch([t, self.run_search()]) } else { t }
+            }
+            Message::SearchDone { generation, results } => {
+                let mut live = None;
+                if let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.search_generation == generation) {
+                    // `None`: the search was cancelled. Errors arrive as results with a note.
+                    pane.searching = false;
+                    pane.results = None;
+                    pane.result_cursor = None;
+                    pane.live = None;
+                    if let Some(r) = results {
+                        pane.result_cursor = (!r.hits.is_empty()).then_some(0);
+                        pane.results = Some(r);
+                        live = Some(pane.id);
+                    }
+                }
+                // Step 2: the same search, asked of Google Drive once typing pauses.
+                match live {
+                    Some(id) => self.cloud_live_schedule(id, generation),
+                    None => Task::none(),
+                }
+            }
+            Message::ResultClick(i) => {
+                self.pane_mut().result_cursor = Some(i);
+                Task::none()
+            }
+            Message::ResultOpen(i) => match self.pane().results.as_ref().and_then(|r| r.hits.get(i)).map(|h| h.path.clone()) {
+                Some(p) if p.to_string_lossy().starts_with("phone://") => {
+                    let directory = self.pane().results.as_ref().and_then(|r| r.hits.get(i)).is_some_and(|h| h.is_dir);
+                    self.open_phone_result(&p, directory, false)
+                }
+                Some(p) if p.to_string_lossy().starts_with(ef_cloud::uri::SCHEME) => self.open_drive_uri(&p),
+                Some(p) if p.to_string_lossy().starts_with("https://") => self.open_web_result(&p),
+                Some(_) if self.pane().results.as_ref().and_then(|r| r.hits.get(i)).is_some_and(|h| h.gone) => Task::none(),
+                Some(p) => self.open_path(p),
+                None => Task::none(),
+            },
+            Message::ResultReveal(i) => {
+                let Some(h) = self.pane().results.as_ref().and_then(|r| r.hits.get(i)) else { return Task::none() };
+                if h.path.to_string_lossy().starts_with("phone://") { let p = h.path.clone(); return self.open_phone_result(&p, false, true); }
+                if h.path.to_string_lossy().starts_with(ef_cloud::uri::SCHEME) { let p = h.path.clone(); return self.open_drive_uri(&p); }
+                let (Some(parent), Some(name)) = (h.path.parent().map(Path::to_path_buf), h.path.file_name().map(|n| n.to_os_string())) else { return Task::none() };
+                self.pane_mut().scope = Scope::Folder;
+                let t = self.go(parent, true);
+                self.pane_mut().reveal = vec![name];
+                t
+            }
+            Message::FocusSearch => iced::widget::operation::focus(SEARCH_ID),
+            Message::ColLoaded(dir, hidden, seq, r) => {
+                self.col_loaded(dir, hidden, seq, r);
+                Task::none()
+            }
+            Message::Column(pane, dir, action) => self.column_action(pane, dir, action),
+            Message::FolderColor(paths, c) => {
+                for p in &paths {
+                    self.folders.update(p, |f| f.color = c.map(String::from));
+                }
+                Task::none()
+            }
+            Message::FolderIcon(paths, i) => {
+                for p in &paths {
+                    self.folders.update(p, |f| f.icon = i.map(String::from));
+                }
+                Task::none()
+            }
+            Message::ToggleHelp => {
+                self.help = !self.help;
+                self.menu = None;
+                Task::none()
+            }
+            Message::ToggleTenxer => {
+                self.settings.general.keys = if self.tenxer() { config::KeyMode::Standard } else { config::KeyMode::TenXer };
+                self.chord = None;
+                let on = self.tenxer();
+                self.push_toast(crate::overlay::Tone::Accent, if on { "10xer keys on".into() } else { "10xer keys off".into() }, Some(if on { "j/k move, h/l go up and open, Space marks. F1 lists them all.".into() } else { "The usual keys are back. Ctrl+Shift+Y turns 10xer on again.".into() }), None);
+                self.persist_settings()
+            }
+            Message::ToggleFooter => {
+                self.settings.appearance.footer = !self.settings.appearance.footer;
+                self.persist_settings()
+            }
+            Message::TogglePeek => {
+                self.settings.appearance.peek = !self.settings.appearance.peek;
+                self.peek = None;
+                self.persist_settings()
+            }
+            Message::ClearClip => {
+                self.clip = None;
+                self.refresh_cut();
+                Task::none()
+            }
+            // ---- path bar
+            Message::EditPath(on) => {
+                if on {
+                    let loc = self.pane().location.clone();
+                    let s = self.net_uri_for(&loc).unwrap_or_else(|| loc.to_string_lossy().into_owned());
+                    self.path_edit = Some(s);
+                    Task::batch([iced::widget::operation::focus(PATH_ID), iced::widget::operation::select_all(PATH_ID)])
+                } else {
+                    self.path_edit = None;
+                    Task::none()
+                }
+            }
+            Message::PathDraft(s) => {
+                self.path_edit = Some(s);
+                Task::none()
+            }
+            Message::PathSubmit => {
+                let Some(raw) = self.path_edit.clone() else { return Task::none() };
+                if let Request::Connect(uri) = system::request_for(raw.trim()) {
+                    self.path_edit = None;
+                    return match ef_net::Address::parse(&uri, ef_net::Protocol::Smb) {
+                        Ok(a) => self.connect(a, false),
+                        Err(e) => {
+                            self.toast_error("Can't go there".into(), e);
+                            Task::none()
+                        }
+                    };
+                }
+                let resolved = self.resolve_typed_path(raw.trim());
+                background(move || resolved.and_then(|p| std::fs::metadata(&p).map(|m| (p, m.is_dir())).map_err(|e| e.to_string())), move |r| Message::PathChecked(raw.clone(), r))
+            }
+            // ---- subsystems
             Message::File(m) => self.file_update(m),
             Message::Drive(m) => self.drive_update(m),
             Message::Net(m) => self.net_update(m),
             Message::Phone(m) => self.phone_update(m),
+            Message::Cloud(m) => self.cloud_update(m),
             Message::Fold(section, open) => {
                 match section {
                     crate::view::Fold::Windows => self.settings.sidebar.windows_open = open,
                     crate::view::Fold::Network => self.settings.sidebar.network_open = open,
                     crate::view::Fold::Phone => self.settings.sidebar.phone_open = open,
+                    crate::view::Fold::Cloud => self.settings.sidebar.cloud_open = open,
                 }
                 self.persist_settings()
             }
@@ -1137,9 +1408,7 @@ impl App {
             Message::Preview(generation, path, data) => {
                 if generation == self.preview_generation && self.preview_want.as_ref() == Some(&path) {
                     self.preview = Some((path, data));
-                } else {
-                    data.cancel.store(true, Ordering::Relaxed);
-                }
+                } else { data.cancel.store(true, Ordering::Relaxed); }
                 Task::none()
             }
             Message::DismissNotice => {
@@ -1158,7 +1427,27 @@ impl App {
                 self.window_size = size;
                 Task::none()
             }
-            Message::Tick => self.on_tick(),
+            Message::Tick => {
+                self.dates = DateFormatter::new();
+                let stamp = theme_stamp();
+                if stamp != self.theme_stamp {
+                    self.theme_stamp = stamp;
+                    self.palette = ef_theme::load_active();
+                    self.iced_theme = iced_theme(&self.palette);
+                    self.icons = Icons::new(&self.palette);
+                }
+                self.expire_toasts();
+                self.phone_tick();
+                let space = self.refresh_drive_space();
+                let cloud = self.cloud_tick();
+                if indexer::settled(self.index_dirty, 1500) && self.index_state != IndexState::Building {
+                    return Task::batch([space, cloud, self.build_index()]);
+                }
+                if indexer::settled(self.index_stale, 10_000) && self.index_state != IndexState::Building && self.last_index_build.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
+                    return Task::batch([space, cloud, self.refresh_index()]);
+                }
+                Task::batch([space, cloud])
+            }
             Message::MouseMove(p) => {
                 self.mouse = p;
                 if let Some(d) = &mut self.drag {
@@ -1175,17 +1464,68 @@ impl App {
                 // a sidebar place lands here.
                 let place = self.drop_place.take();
                 match (self.drag.take(), place) {
-                    (Some(d), Some(dest)) if dest == crate::phone_view::drop_target() => {
-                        Task::batch([t, self.phone_update(PhoneMsg::SendPaths(d.paths))])
-                    }
+                    (Some(d), Some(dest)) if dest == crate::phone_view::drop_target() => Task::batch([t, self.phone_update(PhoneMsg::SendPaths(d.paths))]),
                     (Some(d), Some(dest)) => Task::batch([t, self.drop_paths(d.paths, dest)]),
                     _ => t,
                 }
             }
-            Message::IndexOpened(generation, roots) => self.on_index_opened(generation, roots),
-            Message::IndexBuilt(generation, roots) => self.on_index_built(generation, roots),
+            Message::IndexOpened(generation, roots) => {
+                if generation != self.index_generation { return Task::none(); }
+                if !self.settings.search.index {
+                    return Task::none();
+                }
+                let stale = roots.iter().any(|r| r.map.is_none() || r.updated.is_none_or(|t| t.elapsed().map_or(true, |d| d > Duration::from_secs(60))));
+                self.roots = roots;
+                self.index_state = if self.roots.iter().any(|r| r.map.is_some()) { IndexState::Ready } else { IndexState::Building };
+                if stale {
+                    self.index_state = IndexState::Ready;
+                    return self.build_index();
+                }
+                Task::none()
+            }
+            Message::IndexBuilt(generation, mut roots) => {
+                if generation != self.index_generation {
+                    if !self.settings.search.index { return Task::none(); }
+                    self.index_state = IndexState::Ready;
+                    return self.build_index();
+                }
+                for r in &mut roots { if r.map.is_none() { if let Some(old) = self.roots.iter().find(|old| old.root == r.root) { r.map = old.map.clone(); r.updated = old.updated; } } }
+                if !self.settings.search.index {
+                    return Task::none();
+                }
+                self.index_error = roots.iter().find_map(|r| r.error.clone());
+                self.roots = roots;
+                self.index_state = IndexState::Ready;
+                if self.everywhere() {
+                    return self.run_search();
+                }
+                Task::none()
+            }
             Message::IndexTick => self.safety_net_index(),
-            Message::FsChanged(change) => self.on_fs_changed(change),
+            Message::FsChanged(change) => {
+                if self.preview_want.as_ref().is_some_and(|p| p.parent() == Some(change.folder.as_path())) { self.preview_want = None; self.preview_generation += 1; }
+                if change.names_changed && self.settings.search.index {
+                    // Don't invalidate: recrawl the folder that changed. Empty folder: watch overflowed.
+                    if change.folder.as_os_str().is_empty() {
+                        self.index_dirty.get_or_insert_with(Instant::now);
+                    } else {
+                        if !self.index_changed.contains(&change.folder) {
+                            self.index_changed.push(change.folder.clone());
+                        }
+                        self.index_stale.get_or_insert_with(Instant::now);
+                    }
+                }
+                if self.drive_trashes.contains(&change.folder) && change.names_changed {
+                    self.refresh_trashes();
+                }
+                if !(change.visible || self.show_hidden) || self.mode != Mode::Files {
+                    return Task::none();
+                }
+                // An empty folder: the watch queue overflowed, so anything may have changed.
+                self.cols.forget(Some(change.folder.as_path()).filter(|f| !f.as_os_str().is_empty()));
+                let ids: Vec<u64> = self.tabs[self.tab].panes.iter().filter(|p| p.location == change.folder && !p.special()).map(|p| p.id).collect();
+                Task::batch(ids.into_iter().map(|id| self.reload_pane(id)))
+            }
             Message::Request(req) => {
                 if let Request::Open(Some(p)) = &req {
                     let t = self.go(p.clone(), true);
@@ -1239,15 +1579,11 @@ impl App {
 
     /// Typed paths: `~/x`, absolute paths, and Windows paths (`D:\Work`) when the drive's
     /// letter is known and it's mounted.
-    pub(crate) fn resolve_typed_path(&self, raw: &str) -> Result<PathBuf, String> {
+    fn resolve_typed_path(&self, raw: &str) -> Result<PathBuf, String> {
         let b = raw.as_bytes();
         if b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic() {
             let letter = (b[0] as char).to_ascii_uppercase();
-            let v = self
-                .volumes
-                .iter()
-                .find(|v| v.letter == Some(letter))
-                .ok_or(format!("No drive {letter}: is known yet. Mount it once so EchoFiles can learn the letters."))?;
+            let v = self.volumes.iter().find(|v| v.letter == Some(letter)).ok_or(format!("No drive {letter}: is known yet. Mount it once so EchoFiles can learn the letters."))?;
             let mp = v.mount_points.first().ok_or(format!("{letter}: isn't mounted. Click it in the sidebar to mount it."))?;
             let rest = raw[2..].trim_start_matches(['\\', '/']).replace('\\', "/");
             return Ok(Path::new(mp).join(rest));
@@ -1256,19 +1592,20 @@ impl App {
         if p.is_absolute() { Ok(p) } else { Ok(self.pane().location.join(p)) }
     }
 
-    fn list_action(&mut self, id: u64, action: Action) -> Task<Message> {
+    pub(crate) fn list_action(&mut self, id: u64, action: Action) -> Task<Message> {
+        if let Action::Peek(at) = action {
+            return self.peek_at(id, at);
+        }
         // Anything done in a pane makes it the active one.
         if let Some(ti) = self.tabs.iter().position(|t| t.panes.iter().any(|p| p.id == id)) {
             let t = &mut self.tabs[ti];
             if let Some(pi) = t.panes.iter().position(|p| p.id == id)
-                && t.active != pi
-                && self.tab == ti
-            {
-                t.active = pi;
-                if self.rename.as_ref().is_some_and(|r| r.pane != id) {
-                    self.rename = None;
+                && t.active != pi && self.tab == ti {
+                    t.active = pi;
+                    if self.rename.as_ref().is_some_and(|r| r.pane != id) {
+                        self.rename = None;
+                    }
                 }
-            }
         }
         match action {
             Action::Focus => {
@@ -1300,12 +1637,11 @@ impl App {
             }
             Action::Marquee(selected) => {
                 if let Some(pane) = self.pane_by_id_mut(id)
-                    && selected.len() == pane.selected.len()
-                {
-                    pane.selected = selected;
-                    pane.cursor = None;
-                    pane.anchor = None;
-                }
+                    && selected.len() == pane.selected.len() {
+                        pane.selected = selected;
+                        pane.cursor = None;
+                        pane.anchor = None;
+                    }
                 Task::none()
             }
             Action::ClearSelection => {
@@ -1330,7 +1666,11 @@ impl App {
                 } else {
                     pane.sort = SortSpec { by, descending: matches!(by, SortBy::Size | SortBy::Modified), ..pane.sort };
                 }
-                pane.reorder(hidden)
+                let t = pane.reorder(hidden);
+                // Remembered for this folder; the usual order isn't worth a line.
+                let (dir, sort) = (pane.location.clone(), pane.sort);
+                self.folders.update(&dir, |p| p.sort = (sort != SortSpec::default()).then_some(sort));
+                t
             }
             Action::Context { pos, at } => {
                 self.rename = None;
@@ -1372,10 +1712,29 @@ impl App {
             }
             Action::EditorBlur => self.file_update(FileMsg::RenameCommit),
             Action::Visible { first, last } => self.want_thumbs(id, first, last),
+            Action::Zoom(step) => self.handle(Message::Zoom(step)),
+            Action::Peek(_) => Task::none(),
         }
     }
 
+    /// A list reports the pointer resting on a folder (or leaving it).
+    fn peek_at(&mut self, pane: u64, at: Option<(usize, iced::Rectangle)>) -> Task<Message> {
+        self.peek = at.and_then(|(pos, rect)| {
+            let p = self.pane_by_id(pane)?;
+            let l = p.loaded.as_ref()?;
+            let i = p.entry_at(pos)?;
+            Some(Peek { pane, dir: l.listing.path(i), at: rect })
+        });
+        Task::none()
+    }
+
     fn escape(&mut self) -> Task<Message> {
+        self.chord = None;
+        self.peek = None;
+        if self.help {
+            self.help = false;
+            return Task::none();
+        }
         if self.menu.take().is_some() {
             return Task::none();
         }
@@ -1387,6 +1746,9 @@ impl App {
         }
         if self.net.form.is_some() {
             return self.net_update(NetMsg::Close);
+        }
+        if self.cloud.dialog.is_some() {
+            return self.cloud_update(crate::cloud::CloudMsg::Close);
         }
         if self.phone.dialog.is_some() {
             return self.phone_update(PhoneMsg::Dialog(false));
@@ -1406,7 +1768,12 @@ impl App {
         }
         let hidden = self.show_hidden;
         let pane = self.pane_mut();
-        if !pane.query.is_empty() {
+        if pane.visual.is_some() || pane.marking {
+            pane.visual = None;
+            pane.marking = false;
+            return Task::none();
+        }
+        if !pane.query.is_empty() || pane.filter_bar {
             pane.clear_search();
             return pane.reorder(hidden);
         }
@@ -1430,6 +1797,12 @@ impl App {
         if self.mode == Mode::Settings {
             return Task::none();
         }
+        if matches!(key.as_ref(), Key::Named(Named::F1)) {
+            return self.handle(Message::ToggleHelp);
+        }
+        if self.help {
+            return Task::none();
+        }
         let tab = |shift: bool| if shift { iced::widget::operation::focus_previous() } else { iced::widget::operation::focus_next() };
         if self.dialog.is_some() {
             return match key.as_ref() {
@@ -1448,6 +1821,13 @@ impl App {
         if self.net.form.is_some() {
             return match key.as_ref() {
                 Key::Named(Named::Enter) => self.net_update(NetMsg::Submit),
+                Key::Named(Named::Tab) => tab(shift),
+                _ => Task::none(),
+            };
+        }
+        if self.cloud.dialog.is_some() {
+            return match key.as_ref() {
+                Key::Named(Named::Enter) => self.cloud_enter(),
                 Key::Named(Named::Tab) => tab(shift),
                 _ => Task::none(),
             };
@@ -1490,6 +1870,26 @@ impl App {
                 _ => {}
             }
         }
+        // 10xer: single letters are commands (Ctrl+D/U/R too).
+        if self.tenxer() && !alt && (!ctrl || !shift)
+            // With Ctrl the text is a control character: read the key instead.
+            && let Some(ch) = match key.as_ref() {
+                Key::Character(c) if ctrl => Some(c.to_lowercase()),
+                _ if ctrl => None,
+                _ => text.as_ref().map(|t| t.to_string()),
+            }
+            && let Some(t) = self.tenxer_key(&ch, ctrl)
+        {
+            return t;
+        }
+        // Column view: → into the folder under the cursor, ← back up.
+        if self.pane().layout == Layout::Columns && !self.pane().special() && !self.everywhere() && !alt && !ctrl && !shift {
+            match key.as_ref() {
+                Key::Named(Named::ArrowRight) => return self.enter_column(),
+                Key::Named(Named::ArrowLeft) => return self.handle(Message::Up),
+                _ => {}
+            }
+        }
         let dual = self.dual();
         let f = |m: FileMsg| Message::File(m);
         let msg = match key.as_ref() {
@@ -1516,6 +1916,9 @@ impl App {
             Key::Character("c") if ctrl => Some(f(FileMsg::Copy)),
             Key::Character("x") if ctrl => Some(f(FileMsg::Cut)),
             Key::Character("v") if ctrl => Some(f(FileMsg::Paste)),
+            Key::Character("z") | Key::Character("Z") if ctrl && shift => Some(f(FileMsg::Redo)),
+            Key::Character("y") | Key::Character("Y") if ctrl && shift => Some(Message::ToggleTenxer),
+            Key::Character("y") if ctrl => Some(f(FileMsg::Redo)),
             Key::Character("z") if ctrl => Some(f(FileMsg::Undo)),
             Key::Character("n") | Key::Character("N") if ctrl && shift => Some(f(FileMsg::NewFolder)),
             Key::Character("t") if ctrl => Some(Message::NewTab),
@@ -1525,10 +1928,15 @@ impl App {
             Key::Character("b") if ctrl => Some(Message::ToggleSidebar),
             Key::Character("d") | Key::Character("D") if ctrl && shift => Some(Message::ShowDrives),
             Key::Character("s") | Key::Character("S") if ctrl && shift => Some(Message::Net(NetMsg::Open(None))),
-            Key::Character("1") if ctrl => Some(Message::SetGrid(false)),
-            Key::Character("2") if ctrl => Some(Message::SetGrid(true)),
+            Key::Character("1") if ctrl => Some(Message::SetLayout(Layout::List)),
+            Key::Character("2") if ctrl => Some(Message::SetLayout(Layout::Grid)),
+            Key::Character("3") if ctrl => Some(Message::SetLayout(Layout::Columns)),
+            Key::Character("=") | Key::Character("+") if ctrl => Some(Message::Zoom(1)),
+            Key::Character("-") if ctrl => Some(Message::Zoom(-1)),
+            Key::Character("0") if ctrl => Some(Message::Zoom(0)),
             Key::Character(",") if ctrl => Some(Message::Settings(SettingsMsg::Open)),
-            Key::Character("f") if ctrl => Some(Message::FocusSearch),
+            Key::Character("f") | Key::Character("F") if ctrl && shift => Some(if self.pane().filter_bar { Message::SetDeep(!self.pane().deep) } else { Message::OpenFilter(true) }),
+            Key::Character("f") if ctrl => Some(Message::OpenFilter(self.pane().filter_bar && self.pane().deep)),
             Key::Character("/") => Some(Message::FocusSearch),
             Key::Character("h") if ctrl => Some(Message::ToggleHidden),
             Key::Character("e") if ctrl => {
@@ -1540,10 +1948,7 @@ impl App {
         if let Some(m) = msg {
             return self.handle(m);
         }
-        if !ctrl
-            && !alt
-            && let Some(t) = text.as_ref().filter(|t| t.chars().all(|c| !c.is_control()))
-        {
+        if !ctrl && !alt && let Some(t) = text.as_ref().filter(|t| t.chars().all(|c| !c.is_control())) {
             self.pane_mut().jump_to_prefix(t);
         }
         Task::none()
@@ -1604,12 +2009,7 @@ impl App {
             || self.sel_size.as_ref().is_some_and(|s| !s.1.done.load(Ordering::Relaxed))
             || self.drag.is_some()
             || self.phone_animating()
-            || (self.animations
-                && (self.menu.as_ref().is_some_and(|m| fresh(m.opened))
-                    || self.dialog.as_ref().is_some_and(|d| fresh(d.opened()))
-                    || self.toasts.iter().any(|t| fresh(t.at))
-                    || self.command.as_ref().is_some_and(|c| fresh(c.opened))
-                    || self.net.form.as_ref().is_some_and(|f| fresh(f.opened))))
+            || (self.animations && (self.menu.as_ref().is_some_and(|m| fresh(m.opened)) || self.dialog.as_ref().is_some_and(|d| fresh(d.opened())) || self.toasts.iter().any(|t| fresh(t.at)) || self.command.as_ref().is_some_and(|c| fresh(c.opened)) || self.net.form.as_ref().is_some_and(|f| fresh(f.opened)) || self.cloud.dialog.as_ref().is_some_and(|d| fresh(d.opened))))
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -1660,38 +2060,25 @@ impl App {
 
     /// What the preview pane shows: the cursor item, else the single selected item.
     pub(crate) fn visible_dir(&self, path: &Path) -> bool {
-        if self.pane().everywhere() {
-            return self.pane().results.as_ref().is_some_and(|r| r.hits.iter().any(|h| h.path == path && h.is_dir));
-        }
+        if self.pane().everywhere() { return self.pane().results.as_ref().is_some_and(|r| r.hits.iter().any(|h| h.path == path && h.is_dir)); }
         let Some(l) = self.pane().loaded.as_ref() else { return false };
-        path.parent() == Some(l.listing.dir.as_path())
-            && (0..l.listing.len()).any(|i| Some(l.listing.name(i)) == path.file_name() && l.listing.is_dir(i))
+        path.parent() == Some(l.listing.dir.as_path()) && (0..l.listing.len()).any(|i| Some(l.listing.name(i)) == path.file_name() && l.listing.is_dir(i))
     }
 
     pub(crate) fn preview_target(&self) -> Option<PathBuf> {
         let pane = self.pane();
-        if pane.special() {
-            return None;
-        }
-        if pane.everywhere() {
-            return pane.targets().into_iter().next();
-        }
+        if pane.special() { return None; }
+        if pane.everywhere() { return pane.targets().into_iter().next(); }
         let l = pane.loaded.as_ref()?;
         // The first selected entry in display order, without listing them all.
-        let i = pane
-            .cursor
-            .and_then(|c| pane.entry_at(c))
-            .or_else(|| pane.order.iter().map(|&i| i as usize).find(|&i| crate::file_list::is_selected(&pane.selected, i)))?;
+        let i = pane.cursor.and_then(|c| pane.entry_at(c)).or_else(|| pane.order.iter().map(|&i| i as usize).find(|&i| crate::file_list::is_selected(&pane.selected, i)))?;
         Some(l.listing.path(i))
     }
 
     fn sync_preview(&mut self) -> Task<Message> {
         if !self.settings.appearance.preview || self.mode != Mode::Files {
-            self.preview_generation += 1;
-            self.preview_want = None;
-            if let Some((_, data)) = self.preview.take() {
-                data.cancel.store(true, Ordering::Relaxed);
-            }
+            self.preview_generation += 1; self.preview_want = None;
+            if let Some((_, data)) = self.preview.take() { data.cancel.store(true, Ordering::Relaxed); }
             return Task::none();
         }
         let want = self.preview_target();
@@ -1710,13 +2097,7 @@ impl App {
         };
         let mut tasks = Vec::new();
         if thumbs::thumbnailable(&path) && self.thumbs.get(&path).is_none() {
-            let mtime = self
-                .pane()
-                .loaded
-                .as_ref()
-                .filter(|l| path.parent() == Some(l.listing.dir.as_path()))
-                .and_then(|l| (0..l.listing.len()).find(|&i| Some(l.listing.name(i)) == path.file_name()).map(|i| l.listing.mtime[i]))
-                .unwrap_or(0);
+            let mtime = self.pane().loaded.as_ref().filter(|l| path.parent() == Some(l.listing.dir.as_path())).and_then(|l| (0..l.listing.len()).find(|&i| Some(l.listing.name(i)) == path.file_name()).map(|i| l.listing.mtime[i])).unwrap_or(0);
             let jobs = self.thumbs.want(vec![(path.clone(), mtime)]);
             tasks.push(self.start_thumbs(jobs));
         }

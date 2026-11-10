@@ -4,7 +4,7 @@ EchoFiles is a native file manager for Omarchy that treats Linux folders and dua
 
 1. **Omarchy is the design system above this one.** Colours, font, corner radius and borders come from the running Omarchy theme and Hyprland config. EchoFiles adds roles (selection, drop target, world marks), never a competing look. Switching Omarchy themes restyles the app live.
 2. **Speed is the design.** Anything that could make a frame late is not allowed: no blur, no per-row shadows, no animated layout in lists, no variable row heights. Navigation, selection and typing never animate; only the UI's *response* does.
-3. **One window for every world.** Linux, Windows, Phone and Network (SMB, SFTP and FTP servers) are told apart by a 6px square world mark and names people recognise — drive names that match what Windows shows ("AVS (D:)"), shares by their name ("Media") — never by different styling or raw mount paths.
+3. **One window for every world.** Linux, Windows, Phone, Network (SMB, SFTP and FTP servers) and Cloud (Google Drive) are told apart by a 6px square world mark and names people recognise — drive names that match what Windows shows ("AVS (D:)"), shares by their name ("Media"), a cloud account by the name the person gave it ("Google Drive") — never by different styling or raw mount paths.
 4. **Keyboard first, mouse welcome.** Every action has a shortcut, and every surface that offers an action shows its key hint (`Kbd`). The command palette (Ctrl+K) reaches everything.
 5. **Honest states.** Read-only, dirty, locked, cloud-only, broken link and "flushed to disk" are always visible — as a word *and* a mark, never colour alone.
 
@@ -24,7 +24,7 @@ EchoFiles reads `~/.local/state/omarchy/current/theme/colors.toml` at startup an
 | `accent` | `accent`, `accent-ink`, `focus-ring`, `accent-soft`, `on-accent` | text use pushed to 4.5:1, rings to 3:1, soft = 16% over bg |
 | `selection` | `selection` | as is, adjusted only if `ink` falls below 7:1 on it |
 | `green` `yellow` `red` `cyan` | `success` `warning` `danger` `info` (+ `-soft`, `-ink`, `on-`) | soft = 14% over bg; ink pushed to 4.5:1 on bg, raised and soft |
-| `orange` `blue` `magenta` `green` | `world-linux` `world-windows` `world-network` `world-phone` | pushed to 3:1 on the sidebar |
+| `orange` `blue` `magenta` `green` `cyan` | `world-linux` `world-windows` `world-network` `world-phone` `world-cloud` | pushed to 3:1 on the sidebar. `cyan` also feeds `info`; world marks never mean state |
 | `yellow` `blue` `green` `red` `orange` `magenta` | `icon-*` slots | colour icons recolour per theme |
 
 Beyond colour:
@@ -56,7 +56,7 @@ Colour means something or it isn't there. The ground is Omarchy's own; EchoFiles
 - `accent` — the one active thing: the primary button, the active tab's top bar, the focus ring, progress fills, drop targets.
 - `selection` — selected rows and tiles (Omarchy's own selection colour, so selection looks the same as in the terminal and launcher).
 - **Semantic** `success` / `warning` / `danger` / `info` — states and results, always paired with a word or glyph.
-- **World marks** `world-linux` / `world-windows` / `world-network` / `world-phone` — the 6px squares on sidebar sections and pane heads, drive usage bars, and the glyph of a connected network place. Nowhere else.
+- **World marks** `world-linux` / `world-windows` / `world-network` / `world-phone` / `world-cloud` — the 6px squares on sidebar sections and pane heads, drive usage bars, and the glyph of a connected network place. Nowhere else. `world-cloud` is Omarchy `cyan`, the same hue as `info`; that is acceptable because a world mark is never a state.
 
 `brand-*` colours belong to the logo, About and onboarding only; they never mean state.
 
@@ -171,7 +171,7 @@ One set of states for everything clickable — toolbar buttons, path segments, s
 
 Settings is its own screen (Ctrl+, or the toolbar gear): top bar with **← Files** `Esc` and a live **Saved** mark, `SettingsNav` on the left, one page on the right. Use `SettingsPage` as the reference.
 
-- Five pages: General · Search & index · AI agents · Appearance · About. A page is a 22px title, one sentence, then 2–5 `SettingsGroup`s in a centred 720px column.
+- Seven pages: General · Search & index · AI agents · Phone · Google Drive · Appearance · About. A page is a 22px title, one sentence, then 2–5 `SettingsGroup`s in a centred 720px column. Google Drive's index switch lives only on that page. Search & index shows a read-only line pointing there and never turns it on or off.
 - Every row is a `SettingRow`: what it does on the left, the control on the right. Dependent settings are shown disabled with the dependency as their description, never hidden.
 - Only settings that work today. No "coming soon" rows.
 - Save on every change to `~/.config/echofiles/settings.toml` (shared with `ef`). No Save/Cancel pair.

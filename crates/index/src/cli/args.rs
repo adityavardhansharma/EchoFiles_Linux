@@ -107,6 +107,8 @@ pub struct FindArgs {
     pub here: bool,
     pub verbose: bool,
     pub details: bool,
+    /// Also ask Google Drive itself, not just the Drive index (needs EchoFiles running).
+    pub drive_live: bool,
     /// Leave out what Settings → Search excludes from the index, even where read live.
     pub respect_settings: bool,
     pub help: bool,
@@ -170,6 +172,7 @@ impl FindArgs {
             here: false,
             verbose: false,
             details: false,
+            drive_live: false,
             respect_settings: false,
             help: false,
             version: false,
@@ -435,6 +438,7 @@ pub fn parse(flavor: Flavor, argv: &[String]) -> Result<FindArgs, String> {
                 "here" => a.here = true,
                 "verbose" | "meta" => a.verbose = true,
                 "details" => a.details = true,
+                "drive-live" => a.drive_live = true,
                 "respect-settings" => a.respect_settings = true,
                 _ => return Err(format!("unknown option '--{name}'")),
             }
