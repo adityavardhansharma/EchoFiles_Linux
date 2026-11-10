@@ -570,7 +570,7 @@
         h(ListGroup, { title: "This phone" },
           h(ListRow, { icon: "shield", title: "Permissions", sub: "8 of 9 allowed", chevron: true }),
           h(ListRow, { icon: "battery", title: "Stay connected", sub: "Never sleeping on Samsung", trailing: h(StatePill, { tone: "success" }, "Set") })),
-        h(ListGroup, { title: "About", foot: "EchoConnect and EchoFiles are open source (GPL-3.0). Read every line at github.com/adityavardhansharma/EchoFiles_Linux." },
+        h(ListGroup, { title: "About", foot: "EchoConnect and EchoFiles are open source (MIT). Read every line at github.com/adityavardhansharma/EchoFiles_Linux." },
           h(ListRow, { icon: "info", title: "EchoConnect 0.1.0", sub: "Android 14 · One UI 6.1" }),
           h(ListRow, { icon: "code", title: "Source code", sub: "github.com/adityavardhansharma/EchoFiles_Linux", trailing: h(Icon, { name: "external", size: 18 }) }))),
       h(BottomNav, { active: 3 }));

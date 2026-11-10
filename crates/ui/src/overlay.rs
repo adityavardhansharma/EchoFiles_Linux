@@ -191,6 +191,8 @@ pub struct Command {
 #[derive(Debug, Clone)]
 pub enum UiMsg {
     CloseMenu,
+    /// Whether anything can be pasted (checked after a menu opens): `false` disables Paste.
+    PasteAvailable(bool),
     Pick(Box<Message>),
     /// A dialog's confirm button: close the dialog (not a cancel), then run the action.
     Confirm(Box<Message>),
@@ -737,6 +739,28 @@ impl App {
             }
             UiMsg::OpenMenu(target, at) => {
                 self.open_menu(target, at);
+                // Paste does nothing with an empty clipboard; find out (off the UI thread)
+                // and grey it out rather than offer it.
+                if self.clip.is_none() && self.menu.is_some() {
+                    return crate::app::background(crate::actions::system_clipboard_has_files, |has| {
+                        Message::Ui(UiMsg::PasteAvailable(has))
+                    });
+                }
+                Task::none()
+            }
+            UiMsg::PasteAvailable(has) => {
+                if !has
+                    && self.clip.is_none()
+                    && let Some(menu) = self.menu.as_mut()
+                {
+                    for e in &mut menu.entries {
+                        if let Entry::Item(i) = e
+                            && i.label == "Paste"
+                        {
+                            i.msg = None;
+                        }
+                    }
+                }
                 Task::none()
             }
             UiMsg::CloseDialog => match self.dialog.take() {

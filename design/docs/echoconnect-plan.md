@@ -16,7 +16,7 @@ The laptop already speaks the KDE Connect protocol itself (`crates/phone`, no `k
 | --- | --- |
 | Name | **EchoConnect** |
 | Platform | Android only |
-| Fork KDE Connect Android? | **No.** Own app. Their source is reference only (GPL; we're GPL-3.0-or-later too) |
+| Fork KDE Connect Android? | **No.** Own app. Their source is reference only (GPL; our code is our own and MIT) |
 | Protocol | KDE Connect protocol 8 messages where they exist; our own `echofiles.*` messages for new features. Stock KDE Connect keeps working with EchoFiles as a fallback |
 | Core | **Rust**: `crates/phone` shared by laptop and phone, built for Android with `cargo-ndk` and exposed to Kotlin with UniFFI |
 | Android shell | Kotlin + Jetpack Compose, drawn from the EchoConnect design system (flat, Omarchy tokens, mono type) |

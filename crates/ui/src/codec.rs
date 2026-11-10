@@ -8,8 +8,8 @@ pub fn md5_hex(data: &[u8]) -> String {
 
 pub fn md5(data: &[u8]) -> [u8; 16] {
     const S: [u32; 64] = [
-        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4,
-        11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23,
+        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
     ];
     // K[i] = floor(abs(sin(i + 1)) × 2^32)
     let k: [u32; 64] = std::array::from_fn(|i| ((i as f64 + 1.0).sin().abs() * 4_294_967_296.0) as u32);
@@ -20,7 +20,7 @@ pub fn md5(data: &[u8]) -> [u8; 16] {
         msg.push(0);
     }
     msg.extend_from_slice(&((data.len() as u64).wrapping_mul(8)).to_le_bytes());
-    for chunk in msg.chunks_exact(64) {
+    for chunk in msg.as_chunks::<64>().0 {
         let m: [u32; 16] = std::array::from_fn(|i| u32::from_le_bytes(chunk[4 * i..4 * i + 4].try_into().unwrap()));
         let [mut a, mut b, mut c, mut d] = h;
         for i in 0..64 {
@@ -105,13 +105,18 @@ mod tests {
         assert_eq!(md5_hex(b"a"), "0cc175b9c0f1b6a831c399e269772661");
         assert_eq!(md5_hex(b"abc"), "900150983cd24fb0d6963f7d28e17f72");
         assert_eq!(md5_hex(b"message digest"), "f96b697d7cb7938d525a2f31aaf161d0");
-        assert_eq!(md5_hex(b"12345678901234567890123456789012345678901234567890123456789012345678901234567890"), "57edf4a22be3c955ac49da2e2107b67a");
+        assert_eq!(
+            md5_hex(b"12345678901234567890123456789012345678901234567890123456789012345678901234567890"),
+            "57edf4a22be3c955ac49da2e2107b67a"
+        );
         assert_eq!(md5_hex(b"file:///home/jens/photos/me.png"), "c6ee772d9e49320e97ec29a7eb5b1697");
     }
 
     #[test]
     fn base64_round_trip() {
-        for (raw, enc) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("fooba", "Zm9vYmE="), ("foobar", "Zm9vYmFy")] {
+        for (raw, enc) in
+            [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("fooba", "Zm9vYmE="), ("foobar", "Zm9vYmFy")]
+        {
             assert_eq!(base64_encode(raw.as_bytes()), enc);
             assert_eq!(base64_decode(enc).unwrap(), raw.as_bytes());
         }

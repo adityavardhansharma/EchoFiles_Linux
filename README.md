@@ -14,23 +14,13 @@ A native Linux file manager built for fast folders, quick search and hands-on fi
 
 ## Get EchoFiles
 
-### Download the package
+EchoFiles is in **alpha**. There is no desktop package yet, so build it from a clone with the steps below.
 
-Open [GitHub Releases](https://github.com/adityavardhansharma/EchoFiles_Linux/releases/latest), download the `.pkg.tar.zst` package and `SHA256SUMS`, then install it on Arch Linux or Omarchy:
+The Android companion, **EchoConnect**, is available now: download `EchoConnect.apk` from [GitHub Releases](https://github.com/adityavardhansharma/EchoFiles_Linux/releases), check `SHA256SUMS`, and install it on Android 10 or newer.
 
-```bash
-cd ~/Downloads
-sha256sum --check --ignore-missing SHA256SUMS
-sudo pacman -U ./echofiles-*-x86_64.pkg.tar.zst
-```
+### Build from a clone
 
-Open **EchoFiles** from your applications menu, or run `echofiles`. The package also installs the optional `ef` command line tool. Remove it with `sudo pacman -Rns echofiles`.
-
-The package is for Arch Linux and compatible distributions. It installs the app for everyone on the machine. It does not need AUR access. Vulkan drivers are supplied by your graphics driver package; install the driver for your GPU.
-
-### Or build it from a clone
-
-This option builds and installs EchoFiles for your user, without `sudo`:
+This builds and installs EchoFiles for your user, without `sudo`:
 
 ```bash
 git clone https://github.com/adityavardhansharma/EchoFiles_Linux.git
@@ -74,8 +64,27 @@ The installer adds the **EchoFiles** app launcher and installs `echofiles` and `
 - **Move with confidence.** Copy, move, rename, trash, undo and redo (Ctrl+Shift+Z) are built into the file manager.
 - **Connect to Windows volumes.** Inspect mounted drives, assign letters and choose when a drive can be written to.
 - **Open network places.** Connect to Windows shares (SMB), SSH servers (SFTP) and FTP/FTPS servers from the sidebar's Network section or Ctrl+Shift+S, then browse, copy and rename there like any folder. Addresses such as `smb://nas/Media` or `\\nas\Media` also work in the path bar and from other apps.
-- **Use your Android phone over Wi-Fi.** Pair it with the free KDE Connect app (Google Play or F-Droid) — nothing else to install on the laptop. Browse its files and photos, import new photos, send files both ways, share the clipboard, ring it, and see its battery, notifications and texts. See [Connect your phone](#connect-your-phone).
+- **Use your Android phone over Wi-Fi.** Pair it with **EchoConnect** (the Android companion, from GitHub Releases). Browse its files and photos, import new photos, send files both ways, share the clipboard, ring it, dictate through EchoScribe, and see its battery, notifications and texts. See [Connect your phone](#connect-your-phone).
 - **Use `ef` from the terminal.** Search an index, narrow results by extension or scope, and pipe paths into other commands.
+
+## Connect your phone
+
+1. Install **EchoConnect** from [GitHub Releases](https://github.com/adityavardhansharma/EchoFiles_Linux/releases) on Android 10 or newer, and open it. Keep the phone on the same Wi-Fi as the laptop.
+2. In EchoFiles, click **Connect phone** in the sidebar's Phone section (or Ctrl+K → *Connect phone*).
+3. Scan the QR from EchoConnect, or pick your phone and check both screens show the same code.
+4. Allow files when EchoConnect asks, so EchoFiles can browse photos and the phone's folders.
+
+If your phone doesn't appear and the firewall is on (Omarchy enables ufw), use **Allow EchoConnect…** in the dialog, or run:
+
+```bash
+sudo ufw allow 1714:1764/udp
+```
+
+```bash
+sudo ufw allow 1714:1764/tcp
+```
+
+EchoFiles pairs with EchoConnect only. Turn features off in Settings → Phone; files the phone sends save to `~/Downloads/Phone`. Dictate through EchoScribe from the EchoConnect tile or widget.
 
 ## Speed, measured against Nautilus
 
@@ -117,4 +126,4 @@ Maintainers can publish versioned Arch packages from **GitHub → Actions → Bu
 
 ## License
 
-EchoFiles Is MIT
+EchoFiles is released under the MIT licence. Vendored components retain their respective licenses.

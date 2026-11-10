@@ -56,7 +56,12 @@ pub fn client(argv: &[String], cwd: &std::path::Path, out_tty: bool) -> Option<u
     let cfg = Settings::path();
     let mut fields: Vec<&[u8]> = vec![VERSION.as_bytes(), cfg.as_os_str().as_bytes(), cwd.as_os_str().as_bytes()];
     let ls_set = std::env::var_os("LS_COLORS").is_some();
-    let flags = format!("{}{}{}", if out_tty { "t" } else { "" }, if std::env::var_os("NO_COLOR").is_some() { "n" } else { "" }, if ls_set { "l" } else { "" });
+    let flags = format!(
+        "{}{}{}",
+        if out_tty { "t" } else { "" },
+        if std::env::var_os("NO_COLOR").is_some() { "n" } else { "" },
+        if ls_set { "l" } else { "" }
+    );
     fields.push(flags.as_bytes());
     let ls = std::env::var_os("LS_COLORS").unwrap_or_default();
     fields.push(ls.as_bytes());
@@ -103,11 +108,11 @@ impl Warm {
     /// The settings, re-read only when the file changed.
     fn settings(&self) -> Arc<Settings> {
         let mtime = std::fs::metadata(Settings::path()).and_then(|m| m.modified()).ok();
-        let mut s = self.settings.lock().unwrap();
-        if s.0 != mtime {
-            if let Ok(fresh) = Settings::load() {
-                *s = (mtime, Arc::new(fresh));
-            }
+        let mut s = self.settings.lock().unwrap_or_else(|e| e.into_inner());
+        if s.0 != mtime
+            && let Ok(fresh) = Settings::load()
+        {
+            *s = (mtime, Arc::new(fresh));
         }
         s.1.clone()
     }
@@ -123,8 +128,14 @@ pub fn spawn() -> bool {
         let Ok(listener) = UnixListener::bind(&path) else { return false };
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-        let Ok(pool) = rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("ef-query-{i}")).build() else { return false };
-        let warm = Arc::new(Warm { settings: Mutex::new((None, Arc::new(Settings::load().unwrap_or_default()))), indexes: super::shared_indexes(), pool });
+        let Ok(pool) = rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("ef-query-{i}")).build() else {
+            return false;
+        };
+        let warm = Arc::new(Warm {
+            settings: Mutex::new((None, Arc::new(Settings::load().unwrap_or_default()))),
+            indexes: super::shared_indexes(),
+            pool,
+        });
         // Load now, not on the first query: index maps, users, groups, time zone.
         let w = warm.clone();
         std::thread::spawn(move || {
@@ -208,7 +219,13 @@ fn serve(stream: UnixStream, warm: &Warm) {
         served: true,
         app_running: true,
     };
-    let code = warm.pool.install(|| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| super::run(&argv, &ctx))).unwrap_or(1));
+    // The release profile unwinds (see Cargo.toml), so a panic here ends this request with
+    // an error instead of the whole app.
+    let code =
+        warm.pool.install(|| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| super::run(&argv, &ctx)))).unwrap_or_else(|_| {
+            ctx.write_err(b"ef: internal error while answering; please report it\n");
+            1
+        });
     let _ = ctx.out.lock().map(|mut o| o.flush());
     // Close our copies of the caller's output before telling it we're done, so a pipe
     // reader sees end-of-file when the caller exits.

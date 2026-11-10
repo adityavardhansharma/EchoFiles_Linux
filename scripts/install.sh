@@ -53,6 +53,10 @@ if [[ -e "$BIN/ef" || -L "$BIN/ef" ]]; then
   fi
 fi
 
+# .cargo/config.toml targets x86-64-v3 (AVX2) for the development machine; a binary
+# built that way dies with SIGILL on CPUs without AVX2. This install runs where it was
+# built, so target this CPU instead. An explicit RUSTFLAGS still wins.
+export RUSTFLAGS="${RUSTFLAGS:--C target-cpu=native}"
 cargo build --release -p echofiles -p echofiles-index --bins
 # Honour CARGO_TARGET_DIR / build.target-dir.
 TARGET="$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"

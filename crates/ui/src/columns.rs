@@ -324,8 +324,8 @@ impl App {
         }
     }
 
-    /// The width one pane gets in the window (for fitting columns).
-    fn pane_width(&self) -> f32 {
+    /// The width one pane gets in the window (for fitting columns and long paths).
+    pub(crate) fn pane_width(&self) -> f32 {
         let mut w = self.window_size.width;
         if !self.settings.sidebar.hidden {
             w -= self.settings.sidebar.width as f32 + 5.0;
@@ -375,6 +375,8 @@ impl App {
                 active: false,
                 dragging: false,
                 renaming: None,
+                rename_chars: 0,
+                highlight: "",
                 thumb: Box::new(|_| None),
                 zoom: crate::folders::DEFAULT_ZOOM,
                 compact: true,

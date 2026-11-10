@@ -3,7 +3,7 @@
 //! folder and every network mount. `--unmount` disconnects afterwards. With `scan`, lists
 //! servers nearby instead.
 
-use ef_net::{gvfs, Address, Ask, Login, Protocol, Remember};
+use ef_net::{Address, Ask, Login, Protocol, Remember, gvfs};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -20,11 +20,20 @@ fn main() {
     let t = std::time::Instant::now();
     let answer = move |ask| match ask {
         Ask::Login(l) => {
-            println!("login asked: {:?} user? {} domain? {} anon? {} save? {} retry {}", l.message, l.need_user, l.need_domain, l.can_anonymous, l.can_remember, l.retry);
+            println!(
+                "login asked: {:?} user? {} domain? {} anon? {} save? {} retry {}",
+                l.message, l.need_user, l.need_domain, l.can_anonymous, l.can_remember, l.retry
+            );
             if l.retry {
                 l.answer(None);
             } else {
-                l.answer(Some(Login { user: user.clone(), domain: l.default_domain.clone(), password: password.clone(), anonymous: user.is_empty(), remember: Remember::Never }));
+                l.answer(Some(Login {
+                    user: user.clone(),
+                    domain: l.default_domain.clone(),
+                    password: password.clone(),
+                    anonymous: user.is_empty(),
+                    remember: Remember::Never,
+                }));
             }
         }
         Ask::Question(q) => {

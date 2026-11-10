@@ -16,6 +16,7 @@
 //! exclude_paths = []
 //! exclude_names = ["node_modules", …]
 //! skip_cache_folders = true
+//! index_drives = false        # true: also index every drive mounted on this computer
 //!
 //! [agents]
 //! cli = true                  # off: `ef` refuses to run
@@ -51,7 +52,7 @@
 //! notifications = "app"       # "off", "app" (Notifications page only) or "desktop"
 //! muted_apps = []
 //! battery_warning = true
-//! auto_accept = true          # save files the phone sends without asking
+//! auto_accept = false         # true: save files the phone sends without asking
 //! save_to = "~/Downloads/Phone"
 //! picture = "photo"           # what the phone on the hub shows: "photo" or "echofiles"
 //!
@@ -79,8 +80,25 @@ use serde::{Deserialize, Serialize};
 /// Folder names whose contents search skips by default: package and toolchain stores,
 /// version-control internals and caches — where most files on a typical laptop live.
 pub const DEFAULT_EXCLUDE_NAMES: [&str; 19] = [
-    "node_modules", ".git", ".hg", ".svn", "__pycache__", ".cache", ".npm", ".pnpm-store", ".yarn",
-    ".gradle", ".m2", ".cargo", ".rustup", ".venv", ".tox", ".mypy_cache", ".pytest_cache", ".next", ".nuxt",
+    "node_modules",
+    ".git",
+    ".hg",
+    ".svn",
+    "__pycache__",
+    ".cache",
+    ".npm",
+    ".pnpm-store",
+    ".yarn",
+    ".gradle",
+    ".m2",
+    ".cargo",
+    ".rustup",
+    ".venv",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".next",
+    ".nuxt",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -154,7 +172,9 @@ pub struct SearchConfig {
     pub exclude_paths: Vec<String>,
     pub exclude_names: Vec<String>,
     pub skip_cache_folders: bool,
-    /// Also index every drive mounted on this computer (see [`drives`]).
+    /// Also index every drive mounted on this computer (see [`drives`]). Off by default:
+    /// it records the name of every file on any USB stick plugged in, and keeps external
+    /// disks busy.
     pub index_drives: bool,
 }
 
@@ -167,7 +187,7 @@ impl Default for SearchConfig {
             exclude_paths: Vec::new(),
             exclude_names: DEFAULT_EXCLUDE_NAMES.iter().map(|s| s.to_string()).collect(),
             skip_cache_folders: true,
-            index_drives: true,
+            index_drives: false,
         }
     }
 }
@@ -396,7 +416,8 @@ pub struct Phone {
     /// App names whose notifications are dropped.
     pub muted_apps: Vec<String>,
     pub battery_warning: bool,
-    /// Save files the phone sends without asking.
+    /// Save files the phone sends without asking (off by default: each file is offered
+    /// with an Accept button).
     pub auto_accept: bool,
     pub save_to: String,
     pub picture: PhonePicture,
@@ -405,14 +426,18 @@ pub struct Phone {
 impl Default for Phone {
     fn default() -> Self {
         Phone {
-            otp: false, dnd_sync: false, autolock: false, phone_index: false, backup: false,
+            otp: false,
+            dnd_sync: false,
+            autolock: false,
+            phone_index: false,
+            backup: false,
             files: true,
             clipboard: true,
             messages: false,
             notifications: PhoneNotifications::App,
             muted_apps: Vec::new(),
             battery_warning: true,
-            auto_accept: true,
+            auto_accept: false,
             save_to: "~/Downloads/Phone".into(),
             picture: PhonePicture::Photo,
         }
@@ -470,9 +495,13 @@ pub fn cloud_index_dir() -> PathBuf {
     state_dir().join("cloud-index")
 }
 
-/// `$XDG_RUNTIME_DIR/echofiles` — the rclone control socket and the Drive mounts.
+/// `$XDG_RUNTIME_DIR/echofiles` — per-login, private: phone mounts, rclone, Drive mounts.
+/// Without a runtime dir, a private folder in the config dir stands in. Created 0700.
 pub fn runtime_dir() -> PathBuf {
-    socket_path().parent().map(|p| p.join("echofiles")).unwrap_or_else(|| config_dir().join("runtime/echofiles"))
+    use std::os::unix::fs::DirBuilderExt;
+    let dir = socket_path().parent().map(|p| p.join("echofiles")).unwrap_or_else(|| config_dir().join("runtime/echofiles"));
+    let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
+    dir
 }
 
 /// `$XDG_RUNTIME_DIR/echofiles/cloud` — one folder per mounted Drive account.
@@ -491,14 +520,22 @@ pub fn phone_cache_dir() -> PathBuf {
     xdg("XDG_CACHE_HOME", ".cache").join("echofiles/phone")
 }
 
-/// `$XDG_RUNTIME_DIR/echofiles.sock` — the running app listens here.
+/// `$XDG_RUNTIME_DIR/echofiles.sock` — the running app listens here. A Unix socket path
+/// holds at most 107 bytes; when the runtime folder's path is too long for the longest
+/// socket name (`echofiles-ef.sock`), the private folder in the config dir is used, so
+/// the app doesn't fail to start with a vague error.
 pub fn socket_path() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| {
-        use std::os::unix::fs::DirBuilderExt;
-        let dir = config_dir().join("runtime");
-        let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
-        dir
-    }).join("echofiles.sock")
+    const LONGEST: usize = "/echofiles-ef.sock".len();
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && p.as_os_str().len() + LONGEST <= 107)
+        .unwrap_or_else(|| {
+            use std::os::unix::fs::DirBuilderExt;
+            let dir = config_dir().join("runtime");
+            let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
+            dir
+        })
+        .join("echofiles.sock")
 }
 
 /// The index file for one indexed folder: a stable name derived from its path.
@@ -585,10 +622,10 @@ pub fn drives_from(mountinfo: &str, home: &Path) -> Vec<PathBuf> {
     let system_dev = mounts.iter().find(|m| m.1 == Path::new("/")).map(|m| m.0);
     let mut out: Vec<(&str, PathBuf)> = Vec::new();
     for (dev, at, fs, source) in &mounts {
-        let virtual_fs = matches!(*fs, "squashfs" | "iso9660" | "udf" | "overlay" | "tmpfs" | "devtmpfs" | "ramfs") || (fs.starts_with("fuse") && *fs != "fuseblk");
-        let system_place = at == Path::new("/")
-            || SYSTEM.iter().any(|s| at.starts_with(s))
-            || (at.starts_with("/run") && !at.starts_with("/run/media"));
+        let virtual_fs = matches!(*fs, "squashfs" | "iso9660" | "udf" | "overlay" | "tmpfs" | "devtmpfs" | "ramfs")
+            || (fs.starts_with("fuse") && *fs != "fuseblk");
+        let system_place =
+            at == Path::new("/") || SYSTEM.iter().any(|s| at.starts_with(s)) || (at.starts_with("/run") && !at.starts_with("/run/media"));
         if !source.starts_with("/dev/") || virtual_fs || system_place || Some(*dev) == system_dev || at.starts_with(home) {
             continue;
         }
@@ -692,7 +729,7 @@ mod tests {
 25 22 259:8 / /boot rw - vfat /dev/nvme0n1p8 rw
 26 22 0:40 / /media/data106 rw - btrfs /dev/mapper/data106 rw
 27 22 0:40 /sub /media/data106-bind rw - btrfs /dev/mapper/data106 rw
-28 22 8:17 / /run/media/me/USB\040Stick rw - exfat /dev/sdb1 rw
+28 22 8:17 / /run/media/me/USB\\040Stick rw - exfat /dev/sdb1 rw
 29 22 0:50 / /run/user/1000/doc rw - fuse.portal portal rw
 30 22 0:51 / /mnt/nas rw - cifs //nas/share rw
 31 22 0:52 / /tmp rw - tmpfs tmpfs rw
@@ -701,18 +738,51 @@ mod tests {
 34 22 7:0 / /var/lib/snapd/snap/core rw - squashfs /dev/loop0 ro
 ";
         // Mount points that don't exist here fail the readability check, so the realistic
-        // table above can only lose entries; every rule is checked below with "/media",
-        // which exists on any test machine.
+        // table above can only lose entries. Every rule is checked below with this crate's
+        // own folder, which exists and is readable wherever the tests run (CI containers
+        // have no /media), and lies outside the system places (/tmp would be skipped).
+        let m = env!("CARGO_MANIFEST_DIR");
+        assert!(!m.contains(' '), "mountinfo escapes spaces; keep the test path simple");
         for d in drives_from(info, Path::new("/home/me")) {
-            assert!(!d.starts_with("/boot") && !d.starts_with("/home") && !d.starts_with("/tmp") && !d.starts_with("/mnt/nas") && !d.starts_with("/var"), "{d:?}");
+            assert!(
+                !d.starts_with("/boot")
+                    && !d.starts_with("/home")
+                    && !d.starts_with("/tmp")
+                    && !d.starts_with("/mnt/nas")
+                    && !d.starts_with("/var"),
+                "{d:?}"
+            );
         }
         let names = |i: &str| drives_from(i, Path::new("/home/me"));
-        assert!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n23 22 0:25 /@home /media rw - btrfs /dev/mapper/root rw\n").is_empty(), "same device as the system");
-        assert_eq!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n26 22 0:40 / /media rw - btrfs /dev/mapper/data rw\n27 22 0:40 /x /media/deeper rw - btrfs /dev/mapper/data rw\n"), vec![PathBuf::from("/media")], "one path per drive, the shortest");
-        assert!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n30 22 0:51 / /media rw - cifs //nas/share rw\n").is_empty(), "network");
-        assert!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n29 22 0:50 / /media rw - fuse.portal portal rw\n").is_empty(), "virtual");
-        assert_eq!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n33 22 8:49 / /media rw - fuseblk /dev/sdd1 rw\n"), vec![PathBuf::from("/media")], "ntfs-3g");
-        assert!(names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n25 22 259:8 / /boot rw - vfat /dev/nvme0n1p8 rw\n").is_empty(), "system places");
+        assert!(
+            names(&format!("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n23 22 0:25 /@home {m} rw - btrfs /dev/mapper/root rw\n"))
+                .is_empty(),
+            "same device as the system"
+        );
+        assert_eq!(
+            names(&format!(
+                "22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n26 22 0:40 / {m} rw - btrfs /dev/mapper/data rw\n27 22 0:40 /x {m}/src rw - btrfs /dev/mapper/data rw\n"
+            )),
+            vec![PathBuf::from(m)],
+            "one path per drive, the shortest"
+        );
+        assert!(
+            names(&format!("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n30 22 0:51 / {m} rw - cifs //nas/share rw\n")).is_empty(),
+            "network"
+        );
+        assert!(
+            names(&format!("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n29 22 0:50 / {m} rw - fuse.portal portal rw\n")).is_empty(),
+            "virtual"
+        );
+        assert_eq!(
+            names(&format!("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n33 22 8:49 / {m} rw - fuseblk /dev/sdd1 rw\n")),
+            vec![PathBuf::from(m)],
+            "ntfs-3g"
+        );
+        assert!(
+            names("22 1 0:25 /@ / rw - btrfs /dev/mapper/root rw\n25 22 259:8 / /boot rw - vfat /dev/nvme0n1p8 rw\n").is_empty(),
+            "system places"
+        );
     }
 
     #[test]
@@ -744,7 +814,13 @@ pub fn queue_state(path: PathBuf, bytes: Vec<u8>) {
     static WRITER: std::sync::OnceLock<std::sync::mpsc::Sender<(PathBuf, Vec<u8>)>> = std::sync::OnceLock::new();
     let tx = WRITER.get_or_init(|| {
         let (tx, rx) = std::sync::mpsc::channel::<(PathBuf, Vec<u8>)>();
-        std::thread::spawn(move || for (path, bytes) in rx { if let Err(e) = atomic_write(&path, &bytes) { eprintln!("Couldn't save {}: {e}", path.display()); } });
+        std::thread::spawn(move || {
+            for (path, bytes) in rx {
+                if let Err(e) = atomic_write(&path, &bytes) {
+                    eprintln!("Couldn't save {}: {e}", path.display());
+                }
+            }
+        });
         tx
     });
     let _ = tx.send((path, bytes));
@@ -755,10 +831,21 @@ mod review_regressions {
     use super::*;
     #[test]
     fn competing_settings_writers_publish_valid_complete_snapshots() {
-        let root = tempfile::tempdir().unwrap(); let file = root.path().join("settings.toml");
-        std::thread::scope(|scope| for n in 0..8 { let file = &file; scope.spawn(move || {
-            let mut s = Settings::default(); s.sidebar.width = 200 + n;
-            for _ in 0..20 { s.save_to(file).unwrap(); let loaded = Settings::load_from(file).unwrap(); assert!((200..208).contains(&loaded.sidebar.width)); }
-        }); });
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("settings.toml");
+        std::thread::scope(|scope| {
+            for n in 0..8 {
+                let file = &file;
+                scope.spawn(move || {
+                    let mut s = Settings::default();
+                    s.sidebar.width = 200 + n;
+                    for _ in 0..20 {
+                        s.save_to(file).unwrap();
+                        let loaded = Settings::load_from(file).unwrap();
+                        assert!((200..208).contains(&loaded.sidebar.width));
+                    }
+                });
+            }
+        });
     }
 }

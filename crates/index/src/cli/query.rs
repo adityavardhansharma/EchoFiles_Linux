@@ -130,7 +130,9 @@ pub fn apply(text: &str, a: &mut FindArgs) -> Result<(), String> {
                         "link" | "symlink" => a.types.add("l")?,
                         "exe" | "executable" | "program" => a.types.add("x")?,
                         "empty" => a.types.add("e")?,
-                        other => a.types.add(other).map_err(|_| format!("type: use file, folder, link, executable or empty, not '{other}'"))?,
+                        other => {
+                            a.types.add(other).map_err(|_| format!("type: use file, folder, link, executable or empty, not '{other}'"))?
+                        }
                     }
                 }
                 a.types.finish();
@@ -142,11 +144,13 @@ pub fn apply(text: &str, a: &mut FindArgs) -> Result<(), String> {
                 a.older = o.or(a.older.take());
             }
             "after" | "since" => {
-                units::parse_time(v, std::time::SystemTime::now()).ok_or_else(|| format!("after: can't read '{v}' (try 2026-01-05 or 7d)"))?;
+                units::parse_time(v, std::time::SystemTime::now())
+                    .ok_or_else(|| format!("after: can't read '{v}' (try 2026-01-05 or 7d)"))?;
                 a.newer = Some(v.to_string());
             }
             "before" | "until" => {
-                units::parse_time(v, std::time::SystemTime::now()).ok_or_else(|| format!("before: can't read '{v}' (try 2026-01-05 or 7d)"))?;
+                units::parse_time(v, std::time::SystemTime::now())
+                    .ok_or_else(|| format!("before: can't read '{v}' (try 2026-01-05 or 7d)"))?;
                 a.older = Some(v.to_string());
             }
             "in" | "path" | "folder" => a.paths.push(v.to_string()),
@@ -189,8 +193,32 @@ pub fn apply(text: &str, a: &mut FindArgs) -> Result<(), String> {
 /// Whether `text` uses any filter key (so `ef find` knows to read it as a query).
 pub fn has_filters(text: &str) -> bool {
     const KEYS: &[&str] = &[
-        "ext", "extension", "type", "kind", "size", "modified", "changed", "mod", "date", "after", "since", "before", "until", "in", "path", "folder",
-        "depth", "owner", "user", "hidden", "ignored", "gitignored", "case", "re", "regex", "glob",
+        "ext",
+        "extension",
+        "type",
+        "kind",
+        "size",
+        "modified",
+        "changed",
+        "mod",
+        "date",
+        "after",
+        "since",
+        "before",
+        "until",
+        "in",
+        "path",
+        "folder",
+        "depth",
+        "owner",
+        "user",
+        "hidden",
+        "ignored",
+        "gitignored",
+        "case",
+        "re",
+        "regex",
+        "glob",
     ];
     tokens(text).iter().any(|t| t.split_once(':').is_some_and(|(k, v)| !v.is_empty() && KEYS.contains(&k.to_ascii_lowercase().as_str())))
 }

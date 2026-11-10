@@ -30,12 +30,15 @@ fn unescape(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'\\' && i + 4 <= b.len() && b[i + 1..i + 4].iter().all(u8::is_ascii_digit)
-            && let Ok(v) = std::str::from_utf8(&b[i + 1..i + 4]).unwrap_or("").parse::<u8>() {
-                out.push(v);
-                i += 4;
-                continue;
-            }
+        if b[i] == b'\\'
+            && i + 4 <= b.len()
+            && b[i + 1..i + 4].iter().all(u8::is_ascii_digit)
+            && let Ok(v) = std::str::from_utf8(&b[i + 1..i + 4]).unwrap_or("").parse::<u8>()
+        {
+            out.push(v);
+            i += 4;
+            continue;
+        }
         out.push(b[i]);
         i += 1;
     }

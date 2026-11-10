@@ -4,19 +4,19 @@
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use ef_config::Scope;
+use ef_core::Listing;
 use ef_core::listing;
 use ef_core::sort::{self, NameKeys, SortBy, SortSpec};
 use ef_core::volume::{self, FsInfo};
-use ef_core::Listing;
-use iced::futures::channel::mpsc;
 use iced::Task;
+use iced::futures::channel::mpsc;
 
-use crate::app::{background, Message};
+use crate::app::{Message, background};
 use crate::file_list;
 use crate::search::Results;
 
@@ -242,7 +242,28 @@ impl Pane {
                 Ok(fd) => fd,
                 Err(e) => return send(Message::LoadFailed { generation, error: describe(&dir, &e) }),
             };
-            let mut names = match listing::read_names(&dir, &fd) {
+            // A slow folder (the phone, over Wi-Fi) paints what's been read so far every
+            // quarter second instead of waiting for its last entry.
+            let partial = |names: &Listing| {
+                let names = names.clone();
+                let keys = Arc::new(NameKeys::build(&names));
+                let order = Arc::new(sort::order(&names, &keys, spec, show_hidden));
+                let hidden = (0..names.len()).filter(|&i| names.is_hidden(i)).count();
+                send(Message::Loaded {
+                    generation,
+                    loaded: Arc::new(Loaded {
+                        listing: names,
+                        keys,
+                        metadata_ready: false,
+                        hidden,
+                        names_ms: ms(t0),
+                        meta_ms: 0.0,
+                        sort_ms: 0.0,
+                    }),
+                    order,
+                });
+            };
+            let mut names = match listing::read_names_with(&dir, &fd, Duration::from_millis(250), partial) {
                 Ok(l) => l,
                 Err(e) => return send(Message::LoadFailed { generation, error: describe(&dir, &e) }),
             };
@@ -258,7 +279,15 @@ impl Pane {
             let mut full = names.clone();
             send(Message::Loaded {
                 generation,
-                loaded: Arc::new(Loaded { listing: names, keys: keys.clone(), metadata_ready: false, hidden, names_ms, meta_ms: 0.0, sort_ms }),
+                loaded: Arc::new(Loaded {
+                    listing: names,
+                    keys: keys.clone(),
+                    metadata_ready: false,
+                    hidden,
+                    names_ms,
+                    meta_ms: 0.0,
+                    sort_ms,
+                }),
                 order: order.clone(),
             });
             let t2 = Instant::now();
@@ -268,8 +297,16 @@ impl Pane {
             }
             let hidden = (0..full.len()).filter(|&i| full.is_hidden(i)).count();
             let meta_ms = ms(t2);
-            let order = if matches!(spec.by, SortBy::Size | SortBy::Modified) || windows { Arc::new(sort::order(&full, &keys, spec, show_hidden)) } else { order };
-            send(Message::Loaded { generation, loaded: Arc::new(Loaded { listing: full, keys, metadata_ready: true, hidden, names_ms, meta_ms, sort_ms }), order });
+            let order = if matches!(spec.by, SortBy::Size | SortBy::Modified) || windows {
+                Arc::new(sort::order(&full, &keys, spec, show_hidden))
+            } else {
+                order
+            };
+            send(Message::Loaded {
+                generation,
+                loaded: Arc::new(Loaded { listing: full, keys, metadata_ready: true, hidden, names_ms, meta_ms, sort_ms }),
+                order,
+            });
         });
         Task::run(rx, |m| m)
     }
@@ -297,7 +334,7 @@ impl Pane {
             self.marking = false;
         }
         let keep_sel: HashSet<OsString> = if same_dir { self.selected_names().into_iter().collect() } else { HashSet::new() };
-        if first {
+        if first && self.pending {
             self.pending = false;
             self.skeleton = false;
             self.first_paint_ms = ms(self.nav_started);
@@ -406,6 +443,21 @@ impl Pane {
         self.anchor = Some(pos);
     }
 
+    /// Drop selected entries that the current order (the search filter) doesn't show.
+    pub fn retain_visible_selection(&mut self) {
+        if self.selected.iter().all(|&w| w == 0) {
+            return;
+        }
+        let mut visible = vec![0u64; self.selected.len()];
+        for &i in self.order.iter() {
+            let i = i as usize;
+            if file_list::is_selected(&self.selected, i) {
+                file_list::set_bit(&mut visible, i, true);
+            }
+        }
+        self.selected = visible;
+    }
+
     pub fn select_all(&mut self) {
         for p in 0..self.order.len() {
             let i = self.order[p] as usize;
@@ -418,7 +470,9 @@ impl Pane {
         self.selected.iter().enumerate().flat_map(|(word, &bits)| {
             let mut bits = bits;
             std::iter::from_fn(move || {
-                if bits == 0 { return None; }
+                if bits == 0 {
+                    return None;
+                }
                 let bit = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
                 Some(word * 64 + bit)
@@ -438,8 +492,18 @@ impl Pane {
 
     /// What an action applies to: the selection, else the entry under the cursor.
     pub fn targets(&self) -> Vec<PathBuf> {
-        if self.special() { return Vec::new(); }
-        if self.everywhere() { return self.results.as_ref().and_then(|r| self.result_cursor.and_then(|c| r.hits.get(c))).filter(|h| h.path.is_absolute()).map(|h| vec![h.path.clone()]).unwrap_or_default(); }
+        if self.special() {
+            return Vec::new();
+        }
+        if self.everywhere() {
+            return self
+                .results
+                .as_ref()
+                .and_then(|r| self.result_cursor.and_then(|c| r.hits.get(c)))
+                .filter(|h| h.path.is_absolute())
+                .map(|h| vec![h.path.clone()])
+                .unwrap_or_default();
+        }
         let Some(l) = self.loaded.as_ref() else { return Vec::new() };
         let sel = self.selected_entries();
         if !sel.is_empty() {
@@ -565,10 +629,7 @@ mod tests {
                 pane.set_bit(i, true);
             }
         }
-        pane.loaded = Some(Arc::new(Loaded {
-            listing, keys, metadata_ready: true, hidden: 0,
-            names_ms: 0.0, meta_ms: 0.0, sort_ms: 0.0,
-        }));
+        pane.loaded = Some(Arc::new(Loaded { listing, keys, metadata_ready: true, hidden: 0, names_ms: 0.0, meta_ms: 0.0, sort_ms: 0.0 }));
         // A marquee has no keyboard cursor. Menu and shortcut actions use these targets.
         assert!(pane.cursor.is_none());
         let selected = pane.targets();
@@ -602,15 +663,31 @@ mod review_tests {
     use super::*;
     #[test]
     fn visible_targets_and_cleared_search_generation() {
-        let dir = tempfile::tempdir().unwrap(); std::fs::write(dir.path().join("important"), b"keep").unwrap();
-        let fd = listing::open_dir(dir.path()).unwrap(); let listing = listing::read_names(dir.path(), &fd).unwrap(); let keys = Arc::new(NameKeys::build(&listing));
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("important"), b"keep").unwrap();
+        let fd = listing::open_dir(dir.path()).unwrap();
+        let listing = listing::read_names(dir.path(), &fd).unwrap();
+        let keys = Arc::new(NameKeys::build(&listing));
         let mut p = Pane::new(dir.path().into(), Scope::Folder);
-        p.apply_loaded(Arc::new(Loaded { listing, keys, metadata_ready: true, hidden: 0, names_ms: 0., meta_ms: 0., sort_ms: 0. }), Arc::new(vec![0])); p.select_only(0);
+        p.apply_loaded(
+            Arc::new(Loaded { listing, keys, metadata_ready: true, hidden: 0, names_ms: 0., meta_ms: 0., sort_ms: 0. }),
+            Arc::new(vec![0]),
+        );
+        p.select_only(0);
         assert_eq!(p.targets().len(), 1);
-        p.phone = Some(crate::phone::PhonePage::Hub); assert!(p.targets().is_empty());
-        p.phone = None; p.drives = true; assert!(p.targets().is_empty()); p.drives = false;
-        p.scope = Scope::Everywhere; p.query = "other".into(); p.results = Some(Results { query: "other".into(), hits: Vec::new(), total: 0, from_index: true, index_updated: None, note: None });
+        p.phone = Some(crate::phone::PhonePage::Hub);
         assert!(p.targets().is_empty());
-        p.search_generation = next_id(); let old = p.search_generation; p.clear_search(); assert_ne!(old, p.search_generation);
+        p.phone = None;
+        p.drives = true;
+        assert!(p.targets().is_empty());
+        p.drives = false;
+        p.scope = Scope::Everywhere;
+        p.query = "other".into();
+        p.results = Some(Results { query: "other".into(), hits: Vec::new(), total: 0, from_index: true, index_updated: None, note: None });
+        assert!(p.targets().is_empty());
+        p.search_generation = next_id();
+        let old = p.search_generation;
+        p.clear_search();
+        assert_ne!(old, p.search_generation);
     }
 }

@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::config;
 use super::Ctx;
+use crate::config;
 use crate::filter::{FType, Hit};
 use crate::gitignore::{DirRules, Globals, IgnoreOptions, Stack, Verdict};
 use crate::units;
@@ -23,8 +23,6 @@ fn fail(ctx: &Ctx, msg: impl std::fmt::Display) -> u8 {
     errln!(ctx, "ef: {msg}");
     1
 }
-
-
 
 /// The default place for project-scoped commands: the project around the current folder,
 /// else the current folder.
@@ -80,7 +78,17 @@ pub fn why(args: &[String], ctx: &Ctx) -> u8 {
     let meta = std::fs::symlink_metadata(&path);
     let say = |s: String| outln!(ctx, "{s}");
     match &meta {
-        Ok(m) => say(format!("{}: {}", config::tilde(&path), if m.is_dir() { "folder" } else if m.file_type().is_symlink() { "symlink" } else { "file" })),
+        Ok(m) => say(format!(
+            "{}: {}",
+            config::tilde(&path),
+            if m.is_dir() {
+                "folder"
+            } else if m.file_type().is_symlink() {
+                "symlink"
+            } else {
+                "file"
+            }
+        )),
         Err(_) => {
             say(format!("{}: doesn't exist", config::tilde(&path)));
             return 1;
@@ -92,7 +100,10 @@ pub fn why(args: &[String], ctx: &Ctx) -> u8 {
     let index = crate::find::index_for(&path, &idx);
     let root = match value(args, "--in") {
         Some(r) => std::fs::canonicalize(ctx.abs(r)).unwrap_or_else(|_| ctx.abs(r)),
-        None => index.map(|m| std::fs::canonicalize(m.root()).unwrap_or_else(|_| m.root().to_path_buf())).or_else(|| project_root(&parent)).unwrap_or(parent.clone()),
+        None => index
+            .map(|m| std::fs::canonicalize(m.root()).unwrap_or_else(|_| m.root().to_path_buf()))
+            .or_else(|| project_root(&parent))
+            .unwrap_or(parent.clone()),
     };
     let Ok(rel) = path.strip_prefix(&root) else {
         say(format!("not inside {}", config::tilde(&root)));
@@ -101,7 +112,8 @@ pub fn why(args: &[String], ctx: &Ctx) -> u8 {
     let mut verdicts = Vec::new();
     // Hidden.
     if let Some(c) = rel.components().find(|c| c.as_os_str().as_bytes().starts_with(b".")) {
-        verdicts.push(format!("hidden: '{}' starts with a dot — searches skip it unless you add -H (or -u)", c.as_os_str().to_string_lossy()));
+        verdicts
+            .push(format!("hidden: '{}' starts with a dot — searches skip it unless you add -H (or -u)", c.as_os_str().to_string_lossy()));
     }
     // Ignore rules, folder by folder from the root down.
     let globals = Arc::new(Globals::new(IgnoreOptions::default(), &root, &[], &[]));
@@ -118,21 +130,34 @@ pub fn why(args: &[String], ctx: &Ctx) -> u8 {
         match stack.check(here.as_os_str().as_bytes(), d) {
             Verdict::Ignore(set, rule) => {
                 let whom = if last { "it".to_string() } else { format!("its folder {}", config::tilde(&here)) };
-                verdicts.push(format!("ignored: {whom} matches '{}' ({}:{}) — add -I (or -u) to include ignored files", rule.pattern(), config::tilde(&set.source), rule.line));
+                verdicts.push(format!(
+                    "ignored: {whom} matches '{}' ({}:{}) — add -I (or -u) to include ignored files",
+                    rule.pattern(),
+                    config::tilde(&set.source),
+                    rule.line
+                ));
                 break;
             }
-            Verdict::Whitelist(set, rule) if last => verdicts.push(format!("re-included by '!{}' ({}:{})", rule.pattern(), config::tilde(&set.source), rule.line)),
+            Verdict::Whitelist(set, rule) if last => {
+                verdicts.push(format!("re-included by '!{}' ({}:{})", rule.pattern(), config::tilde(&set.source), rule.line))
+            }
             _ => {}
         }
         dir = here;
     }
     // The index.
     match index {
-        None if settings.search.index => verdicts.push("not in an indexed folder: `ef find` reads it live when you pass a folder (--in or a path)".into()),
+        None if settings.search.index => {
+            verdicts.push("not in an indexed folder: `ef find` reads it live when you pass a folder (--in or a path)".into())
+        }
         None => verdicts.push("the search index is off: searches read the disk live".into()),
         Some(m) => {
             if m.lookup(&path).is_some() {
-                verdicts.push(format!("indexed (index of {} saved {})", config::tilde(m.root()), Indexes::age(m.root()).map(|d| units::ago(SystemTime::now() - d, SystemTime::now())).unwrap_or_default()));
+                verdicts.push(format!(
+                    "indexed (index of {} saved {})",
+                    config::tilde(m.root()),
+                    Indexes::age(m.root()).map(|d| units::ago(SystemTime::now() - d, SystemTime::now())).unwrap_or_default()
+                ));
             } else {
                 let opts = m.options();
                 let mut reason = None;
@@ -141,9 +166,13 @@ pub fn why(args: &[String], ctx: &Ctx) -> u8 {
                     if opts.excludes_path(&p) {
                         reason = Some(format!("{} is excluded in Settings → Search", config::tilde(&p)));
                     } else if p != path && p.file_name().is_some_and(|n| opts.exclude_names.iter().any(|e| e.as_slice() == n.as_bytes())) {
-                        reason = Some(format!("the index skips the contents of '{}' folders (Settings → Search)", p.file_name().unwrap().to_string_lossy()));
+                        reason = Some(format!(
+                            "the index skips the contents of '{}' folders (Settings → Search)",
+                            p.file_name().unwrap().to_string_lossy()
+                        ));
                     } else if p != path && opts.skip_cache_tagged && p.join("CACHEDIR.TAG").exists() {
-                        reason = Some(format!("{} is a cache folder (it has CACHEDIR.TAG); the index skips its contents", config::tilde(&p)));
+                        reason =
+                            Some(format!("{} is a cache folder (it has CACHEDIR.TAG); the index skips its contents", config::tilde(&p)));
                     }
                     if reason.is_some() || up == m.root() {
                         break;
@@ -152,7 +181,10 @@ pub fn why(args: &[String], ctx: &Ctx) -> u8 {
                 }
                 verdicts.push(match reason {
                     Some(r) => format!("not in the index: {r}. Searches still read it live when they'd show it."),
-                    None => "not in the index yet: it's newer than the last index update (EchoFiles updates it within a minute while running)".into(),
+                    None => {
+                        "not in the index yet: it's newer than the last index update (EchoFiles updates it within a minute while running)"
+                            .into()
+                    }
                 });
             }
         }
@@ -244,7 +276,13 @@ pub fn map(args: &[String], ctx: &Ctx) -> u8 {
                 break;
             }
             let last = i + 1 == total.min(show);
-            out.push_str(&format!("{prefix}{}{}/  {} files, {}\n", if last { "└─ " } else { "├─ " }, String::from_utf8_lossy(name), k.files, units::human_size(k.bytes)));
+            out.push_str(&format!(
+                "{prefix}{}{}/  {} files, {}\n",
+                if last { "└─ " } else { "├─ " },
+                String::from_utf8_lossy(name),
+                k.files,
+                units::human_size(k.bytes)
+            ));
             *lines += 1;
             if level + 1 < depth {
                 let p = format!("{prefix}{}", if last { "   " } else { "│  " });
@@ -399,7 +437,10 @@ pub fn related(args: &[String], ctx: &Ctx) -> u8 {
     if stem.len() < 2 {
         return fail(ctx, format!("'{name}' is too short a name to find relatives of"));
     }
-    let root = value(args, "--in").map(|r| ctx.abs(r)).or_else(|| project_root(file.parent().unwrap_or(Path::new("/")))).unwrap_or_else(|| file.parent().unwrap_or(Path::new("/")).to_path_buf());
+    let root = value(args, "--in")
+        .map(|r| ctx.abs(r))
+        .or_else(|| project_root(file.parent().unwrap_or(Path::new("/"))))
+        .unwrap_or_else(|| file.parent().unwrap_or(Path::new("/")).to_path_buf());
     let fargs = vec![stem.clone(), root.to_string_lossy().into_owned(), "--files".into()];
     let a = match args::parse(Flavor::Ef, &fargs) {
         Ok(a) => a,
@@ -507,7 +548,13 @@ pub fn wait(args: &[String], ctx: &Ctx) -> u8 {
 
 fn humanize(d: Duration) -> String {
     let s = d.as_secs();
-    if s < 120 { format!("{s} s") } else if s < 7200 { format!("{} min", s / 60) } else { format!("{} h", s / 3600) }
+    if s < 120 {
+        format!("{s} s")
+    } else if s < 7200 {
+        format!("{} min", s / 60)
+    } else {
+        format!("{} h", s / 3600)
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -519,7 +566,10 @@ fn marks_dir() -> PathBuf {
 }
 
 /// One snapshot line: kind, size, mtime (ns), path; NUL-terminated.
-fn snapshot(root: &Path, ctx: &Ctx, all: bool) -> Result<Vec<(Vec<u8>, char, u64, u128)>, String> {
+/// (path, kind, size, modified in ns) for every entry below a root.
+type Snapshot = Vec<(Vec<u8>, char, u64, u128)>;
+
+fn snapshot(root: &Path, ctx: &Ctx, all: bool) -> Result<Snapshot, String> {
     let mut fargs = vec![String::new(), root.to_string_lossy().into_owned(), "--live".into(), "--json".into()];
     if all {
         fargs.push("-u".into());
@@ -624,7 +674,20 @@ pub fn changed(args: &[String], ctx: &Ctx) -> u8 {
     }
     changes.sort_by(|a, b| a.1.cmp(&b.1));
     if flag(args, "--json") {
-        let list: Vec<String> = changes.iter().map(|(c, p)| format!("{{\"change\":\"{}\",\"path\":{}}}", match c { '+' => "added", '-' => "removed", _ => "modified" }, output::json_str(p.as_bytes()))).collect();
+        let list: Vec<String> = changes
+            .iter()
+            .map(|(c, p)| {
+                format!(
+                    "{{\"change\":\"{}\",\"path\":{}}}",
+                    match c {
+                        '+' => "added",
+                        '-' => "removed",
+                        _ => "modified",
+                    },
+                    output::json_str(p.as_bytes())
+                )
+            })
+            .collect();
         outln!(ctx, "{{\"root\":{},\"changes\":[{}]}}", output::json_str(root.as_os_str().as_bytes()), list.join(","));
     } else {
         for (c, p) in &changes {
@@ -830,7 +893,7 @@ pub fn dupes(args: &[String], ctx: &Ctx) -> u8 {
             out
         })
         .collect();
-    groups.sort_by(|a, b| (b.0 * (b.1.len() as u64 - 1)).cmp(&(a.0 * (a.1.len() as u64 - 1))));
+    groups.sort_by_key(|g| std::cmp::Reverse(g.0 * (g.1.len() as u64 - 1)));
     let waste: u64 = groups.iter().map(|(s, v)| s * (v.len() as u64 - 1)).sum();
     for (size, paths) in &groups {
         outln!(ctx, "{} × {}:", paths.len(), units::human_size(*size));
@@ -851,13 +914,27 @@ pub fn dupes(args: &[String], ctx: &Ctx) -> u8 {
 pub fn status(ctx: &Ctx) -> u8 {
     let settings = &*ctx.settings;
     outln!(ctx, "Index: {}", if settings.search.index { "on" } else { "off (searches read the disk)" });
-    outln!(ctx, "EchoFiles app: {}", if ctx.app_running { "running — it keeps the index current and answers ef from memory" } else { "not running — ef reads small folders live and marks indexed answers as possibly stale" });
+    outln!(
+        ctx,
+        "EchoFiles app: {}",
+        if ctx.app_running {
+            "running — it keeps the index current and answers ef from memory"
+        } else {
+            "not running — ef reads small folders live and marks indexed answers as possibly stale"
+        }
+    );
     for root in settings.search.roots() {
         let file = config::index_file_for(&root);
         match crate::MappedIndex::open(&file) {
             Ok(idx) => {
                 let age = std::fs::metadata(&file).and_then(|m| m.modified()).map(|t| units::ago(t, SystemTime::now())).unwrap_or_default();
-                outln!(ctx, "  {}: {} entries, {:.1} MB, saved {age}", config::tilde(&root), idx.len() - 1, idx.mapped_bytes() as f64 / 1e6);
+                outln!(
+                    ctx,
+                    "  {}: {} entries, {:.1} MB, saved {age}",
+                    config::tilde(&root),
+                    idx.len() - 1,
+                    idx.mapped_bytes() as f64 / 1e6
+                );
             }
             Err(_) => outln!(ctx, "  {}: not indexed yet", config::tilde(&root)),
         }
@@ -883,7 +960,14 @@ pub fn index(args: &[String], ctx: &Ctx) -> u8 {
         if let Err(e) = std::fs::create_dir_all(config::index_dir()).and_then(|_| idx.save(&file)) {
             return fail(ctx, format!("Couldn't save the index to {}: {e}", file.display()));
         }
-        errln!(ctx, "Indexed {} entries in {} ({} folders' contents skipped) in {:.0} ms", idx.len() - 1, config::tilde(&root), idx.stats().excluded, t.elapsed().as_secs_f64() * 1000.0);
+        errln!(
+            ctx,
+            "Indexed {} entries in {} ({} folders' contents skipped) in {:.0} ms",
+            idx.len() - 1,
+            config::tilde(&root),
+            idx.stats().excluded,
+            t.elapsed().as_secs_f64() * 1000.0
+        );
     }
     0
 }

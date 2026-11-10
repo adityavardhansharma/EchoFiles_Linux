@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The "full" (sideloaded, GitHub release) build adds the permissions Google Play
+     restricts. Every feature using them checks at run time and is simply unavailable in
+     the "store" build, which declares none of these. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Texts -->
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_MMS" />
+    <!-- The caller's number for incoming calls -->
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <!-- Browse every file from the laptop -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
+    <!-- Automatic clipboard (READ_LOGS is granted once from the laptop over adb) -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.READ_LOGS" tools:ignore="ProtectedPermissions" />
+</manifest>

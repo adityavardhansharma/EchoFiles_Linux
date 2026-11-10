@@ -225,6 +225,14 @@ fn from_uri(s: &str) -> Option<PathBuf> {
 
 /// Offer the files to other apps too: GTK/Qt file managers read
 /// `x-special/gnome-copied-files`; browsers and chat apps read `text/uri-list`.
+/// Whether another app's clipboard holds files (only the type list is read).
+pub(crate) fn system_clipboard_has_files() -> bool {
+    std::process::Command::new("wl-paste")
+        .arg("--list-types")
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l == "x-special/gnome-copied-files" || l == "text/uri-list"))
+}
+
 fn write_system_clipboard(paths: &[PathBuf], cut: bool) {
     let uris: Vec<String> = paths.iter().map(|p| uri(p)).collect();
     let gnome = format!("{}\n{}", if cut { "cut" } else { "copy" }, uris.join("\n"));
@@ -500,7 +508,7 @@ impl App {
             FileMsg::RenameDraft(v) => {
                 let windows = self.rename.as_ref().is_some_and(|r| r.path.parent().is_some_and(|d| self.is_windows_fs(d)));
                 let Some(r) = self.rename.as_mut() else { return Task::none() };
-                r.error = ops::name_problem(&v).map(String::from);
+                r.error = ops::name_problem(&v).map(String::from).or_else(|| taken_name(&r.path, &v));
                 r.fixed = None;
                 if r.error.is_none() && windows && let Some((why, fixed)) = ops::windows_name(&v) {
                     r.error = Some(format!("{why} Press Enter to use “{fixed}”."));
@@ -525,7 +533,7 @@ impl App {
                     return Task::none();
                 }
                 let from = r.path.clone();
-                background(move || ops::rename(&from, &name).map(|to| (from.clone(), to)).map_err(|e| e.to_string()), |res| Message::File(FileMsg::Renamed(res)))
+                background(move || ops::rename(&from, &name).map(|to| (from.clone(), to)).map_err(|e| rename_problem(&e, &name)), |res| Message::File(FileMsg::Renamed(res)))
             }
             FileMsg::Renamed(Ok((from, to))) => {
                 self.push_undo(Undo::Rename { from: from.clone(), to: to.clone() });
@@ -982,6 +990,31 @@ impl App {
             let letter = v.letter?;
             Some(format!("{letter}:\\{}", rest.to_string_lossy().replace('/', "\\")))
         })
+    }
+}
+
+/// Another entry already has this name in the same folder (a case-only change of the
+/// same file is fine).
+fn taken_name(path: &Path, name: &str) -> Option<String> {
+    let original = path.file_name()?.to_str()?;
+    if name.is_empty() || name == original {
+        return None;
+    }
+    let other = path.with_file_name(name);
+    let there = std::fs::symlink_metadata(&other).ok()?;
+    let me = std::fs::symlink_metadata(path).ok()?;
+    (there.dev() != me.dev() || there.ino() != me.ino()).then(|| format!("“{name}” already exists in this folder."))
+}
+
+/// A rename failure in words, not "os error 17".
+fn rename_problem(e: &std::io::Error, name: &str) -> String {
+    match e.kind() {
+        std::io::ErrorKind::AlreadyExists => format!("“{name}” already exists in this folder."),
+        std::io::ErrorKind::PermissionDenied => "You don't have permission to rename this.".into(),
+        std::io::ErrorKind::NotFound => "It no longer exists.".into(),
+        std::io::ErrorKind::ReadOnlyFilesystem => "The drive is read-only.".into(),
+        std::io::ErrorKind::InvalidInput => e.to_string(),
+        _ => format!("Couldn't rename: {e}."),
     }
 }
 

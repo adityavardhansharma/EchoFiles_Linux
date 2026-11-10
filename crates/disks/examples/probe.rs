@@ -15,7 +15,14 @@ fn main() {
     match ef_disks::linux_volumes() {
         Ok(vols) => {
             for v in vols {
-                println!("  {} ({}, partition name {:?}, label {:?}){}", v.display_name(), v.device, v.part_name, v.label, if v.locked { " — locked" } else { "" });
+                println!(
+                    "  {} ({}, partition name {:?}, label {:?}){}",
+                    v.display_name(),
+                    v.device,
+                    v.part_name,
+                    v.label,
+                    if v.locked { " — locked" } else { "" }
+                );
             }
         }
         Err(e) => eprintln!("{e}"),

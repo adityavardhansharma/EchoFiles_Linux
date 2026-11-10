@@ -42,8 +42,16 @@ pub fn search(root: &Path, q: &Query, cancel: &AtomicBool, on_hits: &(dyn Fn(&[P
     search_with(root, q, &crate::Options::everything(), cancel, on_hits)
 }
 
-pub fn search_with(root: &Path, q: &Query, opts: &crate::Options, cancel: &AtomicBool, on_hits: &(dyn Fn(&[PathBuf]) + Sync)) -> io::Result<Vec<PathBuf>> {
-    if opts.excludes_path(root) { return Ok(Vec::new()); }
+pub fn search_with(
+    root: &Path,
+    q: &Query,
+    opts: &crate::Options,
+    cancel: &AtomicBool,
+    on_hits: &(dyn Fn(&[PathBuf]) + Sync),
+) -> io::Result<Vec<PathBuf>> {
+    if opts.excludes_path(root) {
+        return Ok(Vec::new());
+    }
     drop(open_dir(root.as_os_str().as_bytes(), true)?);
     let Some(m) = Matcher::new(q) else {
         return Ok(Vec::new());
@@ -65,8 +73,12 @@ fn walk<'s>(path: Vec<u8>, root: bool, w: &'s Walk<'s>, scope: &rayon::Scope<'s>
         return;
     }
     let p = Path::new(std::ffi::OsStr::from_bytes(&path));
-    if w.opts.excludes_path(p) { return; }
-    if !root && w.opts.skip_cache_tagged && std::fs::symlink_metadata(p.join("CACHEDIR.TAG")).is_ok() { return; }
+    if w.opts.excludes_path(p) {
+        return;
+    }
+    if !root && w.opts.skip_cache_tagged && std::fs::symlink_metadata(p.join("CACHEDIR.TAG")).is_ok() {
+        return;
+    }
     let Ok(fd) = open_dir(&path, root) else { return };
     let mut buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); 64 * 1024];
     let mut raw = RawDir::new(&fd, &mut buf);
@@ -93,7 +105,9 @@ fn walk<'s>(path: Vec<u8>, root: bool, w: &'s Walk<'s>, scope: &rayon::Scope<'s>
             p.extend_from_slice(name);
             p
         };
-        if w.opts.excludes_path(Path::new(std::ffi::OsStr::from_bytes(&full()))) { continue; }
+        if w.opts.excludes_path(Path::new(std::ffi::OsStr::from_bytes(&full()))) {
+            continue;
+        }
         folded.clear();
         fold::fold_into(name, &mut folded);
         if w.m.accepts(&folded, kind) {

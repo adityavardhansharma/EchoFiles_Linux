@@ -724,6 +724,8 @@ impl App {
                 active,
                 dragging: self.drag.is_some(),
                 renaming,
+                rename_chars: self.rename.as_ref().map(|r| r.value.chars().count()).unwrap_or(0),
+                highlight: if pane.everywhere() { "" } else { pane.query.trim() },
                 thumb,
                 zoom: pane.zoom,
                 compact: false,
@@ -805,7 +807,11 @@ impl App {
             let content = row![
                 iced::widget::svg(self.icons.color(icon)).width(style::ICON_ROW).height(style::ICON_ROW),
                 container(text(h.name.clone()).size(style::BODY).font(style::FONT).color(color(if active { p.ink_strong } else { p.ink })).wrapping(text::Wrapping::None)).width(Length::FillPortion(3)).clip(true),
-                container(meta(if h.gone { "No longer on Google Drive".to_string() } else { h.location.clone() })).width(Length::FillPortion(4)).clip(true),
+                container(meta(if h.gone {
+                    "No longer on Google Drive".to_string()
+                } else {
+                    fit_start(&h.location, self.pane_width() * 0.4, style::META)
+                })).width(Length::FillPortion(4)).clip(true),
                 container(meta(size)).width(style::COL_SIZE).align_x(Alignment::End),
                 meta(date).width(style::COL_DATE),
             ]
@@ -982,4 +988,28 @@ impl App {
         }
         w::fill(bar, p.bg_deep).height(style::STATUSBAR).padding([0, 16]).align_y(Alignment::Center).width(Length::Fill).into()
     }
+}
+
+/// `s` if it fits in `width` pixels at `size` (the monospace UI font), else "…" and as much
+/// of its end as fits.
+pub(crate) fn fit_start(s: &str, width: f32, size: f32) -> String {
+    let max = (width / (size * 0.6)).floor().max(4.0) as usize;
+    let n = s.chars().count();
+    if n <= max {
+        return s.to_string();
+    }
+    let tail: String = s.chars().skip(n - (max - 1)).collect();
+    format!("…{tail}")
+}
+
+/// `s` if it fits in `width` pixels at `size` (the monospace UI font), else as much of its
+/// start as fits and "…".
+#[allow(dead_code)]
+pub(crate) fn fit_end(s: &str, width: f32, size: f32) -> String {
+    let max = (width / (size * 0.6)).floor().max(4.0) as usize;
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max - 1).collect();
+    format!("{}…", head.trim_end())
 }

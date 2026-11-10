@@ -69,7 +69,9 @@ fn hir_upper(h: &Hir) -> bool {
             Err(_) => l.0.iter().any(|&b| char::from(b).is_uppercase()),
         },
         HirKind::Class(Class::Unicode(c)) => c.ranges().iter().any(|r| r.start().is_uppercase() || r.end().is_uppercase()),
-        HirKind::Class(Class::Bytes(c)) => c.ranges().iter().any(|r| char::from(r.start()).is_uppercase() || char::from(r.end()).is_uppercase()),
+        HirKind::Class(Class::Bytes(c)) => {
+            c.ranges().iter().any(|r| char::from(r.start()).is_uppercase() || char::from(r.end()).is_uppercase())
+        }
         HirKind::Capture(c) => hir_upper(&c.sub),
         HirKind::Repetition(r) => hir_upper(&r.sub),
         HirKind::Concat(v) | HirKind::Alternation(v) => v.iter().any(hir_upper),
@@ -291,7 +293,9 @@ mod tests {
 
     #[test]
     fn literals() {
-        let lit = |s: &str| Pattern::new(s, Syntax::Regex, Case::Smart, false).unwrap().prefilter().map(|l| String::from_utf8(l.to_vec()).unwrap());
+        let lit = |s: &str| {
+            Pattern::new(s, Syntax::Regex, Case::Smart, false).unwrap().prefilter().map(|l| String::from_utf8(l.to_vec()).unwrap())
+        };
         assert_eq!(lit("^foo(bar)+baz$").as_deref(), Some("foo"));
         assert_eq!(lit("a|b"), None);
         assert_eq!(lit("x?yy"), Some("yy".into()));

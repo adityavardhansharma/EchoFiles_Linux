@@ -1,9 +1,20 @@
 name: Rust regression tests
-# Manual only: Actions → Rust regression tests → Run workflow.
+# Every push to main and every pull request, plus Actions → Rust regression tests → Run workflow.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+  # The checked-in .cargo/config.toml targets the maintainer's AVX2 CPU; CI runners
+  # and their caches must not depend on that.
+  RUSTFLAGS: -C target-cpu=x86-64
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -11,5 +22,33 @@ jobs:
     steps:
       - run: pacman -Syu --noconfirm git nodejs python rust pkgconf fontconfig libxkbcommon wayland libx11 libxcursor libxi libxrandr vulkan-icd-loader
       - uses: actions/checkout@v4
-      - run: cargo test --workspace --locked
-      - run: cargo clippy --workspace --all-targets --locked
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --locked --no-fail-fast
+
+  lint:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - run: pacman -Syu --noconfirm git nodejs python rust pkgconf fontconfig libxkbcommon wayland libx11 libxcursor libxi libxrandr vulkan-icd-loader
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  audit:
+    # Known vulnerabilities and yanked crates in Cargo.lock (RustSec advisory database).
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The action reports its findings as a check run.
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # RUSTSEC-2023-0071 (rsa, Marvin timing attack; no fixed release exists). rsa comes
+          # in through russh, but EchoConnect's SFTP server only uses an Ed25519 host key and
+          # password logins, so no RSA private-key operation ever runs. Revisit when russh
+          # or rsa ships a fix.
+          ignore: RUSTSEC-2023-0071

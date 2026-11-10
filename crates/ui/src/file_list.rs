@@ -37,6 +37,8 @@ const TILE_PAD_W: f32 = 16.0;
 const TILE_PAD_H: f32 = 44.0;
 /// List icon sizes per zoom step (the row height caps them).
 const ROW_ICONS: [f32; 5] = [14.0, 16.0, 18.0, 22.0, 26.0];
+/// Widest the grid's rename field grows for a long name.
+const GRID_EDITOR_MAX: f32 = 320.0;
 /// Pointer travel before a press becomes a drag.
 const DRAG_START: f32 = 6.0;
 /// Hovering a folder this long during a drag opens it (spring-loading).
@@ -107,6 +109,10 @@ pub struct Model<'a> {
     pub dragging: bool,
     /// Position being renamed; the editor child sits over its name.
     pub renaming: Option<usize>,
+    /// How many characters are in the rename field (grid editor grows with the name).
+    pub rename_chars: usize,
+    /// The search box's filter text: where it matches, a name is highlighted.
+    pub highlight: &'a str,
     /// Decoded thumbnail for an entry, if ready.
     pub thumb: Box<dyn Fn(usize) -> Option<aimage::Handle> + 'a>,
     /// Icon size step, an index into `folders::ZOOMS`.
@@ -366,7 +372,14 @@ impl<'a, Message> FileList<'a, Message> {
     fn editor_rect(&self, state: &State, body: Rectangle, bounds: Rectangle, pos: usize) -> Rectangle {
         let r = self.item_rect(state, body, pos);
         if self.model.grid {
-            Rectangle { x: r.x - 8.0, y: r.y + self.thumb() + 6.0, width: r.width + 16.0, height: 26.0 }
+            // Sized to the name, centred under the picture and kept inside the pane.
+            let name = self.model.order.get(pos).map(|&i| self.model.listing.name_bytes(i as usize)).unwrap_or_default();
+            let cells = String::from_utf8_lossy(name).chars().count().max(self.model.rename_chars) + 2;
+            let lo = body.x + 2.0;
+            let hi = body.x + body.width - SCROLLBAR - 2.0;
+            let width = (cells as f32 * style::META * 0.6 + 14.0).min(GRID_EDITOR_MAX).min(hi - lo).max(r.width);
+            let x = (r.center_x() - width / 2.0).min(hi - width).max(lo);
+            Rectangle { x, y: r.y + self.thumb() + 7.0, width, height: 24.0 }
         } else {
             let cols = self.columns_for(bounds);
             Rectangle { x: cols.name - 6.0, y: r.y + (r.height - 24.0) / 2.0, width: cols.name_w + 12.0, height: 24.0 }
@@ -904,7 +917,10 @@ impl<'a, Message> FileList<'a, Message> {
     /// The colour icon for entry `i`: the folder's own when one was chosen.
     fn icon_for(&self, i: usize) -> iced::advanced::svg::Handle {
         let l = self.model.listing;
-        (self.model.decor)(i).unwrap_or_else(|| self.icons.color(kinds::icon(l.name_bytes(i), l.kind[i])))
+        (self.model.decor)(i).unwrap_or_else(|| {
+            let kind = if l.is_folderish(i) { Kind::Dir } else { l.kind[i] };
+            self.icons.color(kinds::icon(l.name_bytes(i), kind))
+        })
     }
 
     fn editor_rect_in(&self, state: &State, bounds: Rectangle, pos: usize) -> Rectangle {
@@ -1094,6 +1110,28 @@ impl<'a, Message> FileList<'a, Message> {
             let name_clip = Rectangle { x: cols.name, y, width: cols.name_w, height: rh };
             let clip = name_clip.intersection(&body).unwrap_or(name_clip);
             let stem_cells: usize = stem.chars().map(cols_of).sum();
+            let q = self.model.highlight.as_bytes();
+            let shown = format!("{stem}{ext}");
+            if !q.is_empty()
+                && shown.is_ascii()
+                && let Some(at) = shown.as_bytes().windows(q.len()).position(|w| w.eq_ignore_ascii_case(q))
+            {
+                let mark = Rectangle {
+                    x: cols.name + at as f32 * ADVANCE - 1.0,
+                    y: cy - 9.0,
+                    width: q.len() as f32 * ADVANCE + 2.0,
+                    height: 18.0,
+                };
+                if let Some(m) = mark.intersection(&clip) {
+                    let mut c = color(p.accent);
+                    c.a = 0.28 * alpha;
+                    iced::advanced::Renderer::fill_quad(
+                        renderer,
+                        Quad { bounds: m, border: Border { radius: 2.0.into(), ..Border::default() }, ..Quad::default() },
+                        c,
+                    );
+                }
+            }
             for (content, x, c) in [(stem, cols.name, ink), (ext, cols.name + stem_cells as f32 * ADVANCE, ink_ext)] {
                 if !content.is_empty() {
                     self.text(renderer, content, Point::new(x, cy), style::BODY, style::FONT, c, text::Alignment::Left, clip);
@@ -1113,16 +1151,22 @@ impl<'a, Message> FileList<'a, Message> {
             self.text(renderer, s, Point::new(x, cy), style::META, style::FONT, color(p.ink_muted), if right { text::Alignment::Right } else { text::Alignment::Left }, clip.intersection(&body).unwrap_or(clip));
         };
         let stated = l.flags[i] & flags::STATED != 0;
-        if l.is_dir(i) || google.is_some() {
+        if l.is_folderish(i) || l.kind[i] == Kind::Symlink || google.is_some() {
             buf.push('—');
         } else if stated {
             fmt::size(l.size[i], &mut buf);
         }
         meta(renderer, buf.clone(), cols.size_right, true, style::COL_SIZE);
         buf.clear();
-        match google {
-            Some(g) => buf.push_str(g.label()),
-            None => kinds::label(name, l.kind[i], &mut buf),
+        if l.is_broken_link(i) {
+            buf.push_str("Broken link");
+        } else if l.is_folderish(i) && l.kind[i] == Kind::Symlink {
+            buf.push_str("Link to folder");
+        } else {
+            match google {
+                Some(g) => buf.push_str(g.label()),
+                None => kinds::label(name, l.kind[i], &mut buf),
+            }
         }
         if cols.show_kind {
             meta(renderer, buf.clone(), cols.kind, false, style::COL_KIND);
@@ -1239,7 +1283,7 @@ mod tests {
             listing: &listing, order: &[4, 1, 3, 0, 2], selected: &[0], cut: &[],
             cursor: None, generation: 0, sort: SortSpec::default(), skeleton: false,
             empty: None, row_h: 30.0, grid, keys: true, active: true, dragging: false,
-            renaming: None, thumb: Box::new(|_| None),
+            renaming: None, rename_chars: 0, highlight: "", thumb: Box::new(|_| None),
             zoom: crate::folders::DEFAULT_ZOOM, compact: false, decor: Box::new(|_| None), peek: false,
         };
         run(FileList::new(model, &palette, &icons, &dates, |a| a));

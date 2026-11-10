@@ -122,7 +122,13 @@ fn write_atomically(path: &Path, parent: &Path, bytes: &[u8]) -> io::Result<()> 
     for _ in 0..16 {
         let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tmp = parent.join(format!(".{name}.{}.{n}.tmp", std::process::id()));
-        let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(rustix::fs::OFlags::CLOEXEC.bits() as i32).open(&tmp) {
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(rustix::fs::OFlags::CLOEXEC.bits() as i32)
+            .open(&tmp)
+        {
             Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
@@ -156,7 +162,8 @@ impl Map {
         }
         // SAFETY: a fresh private read-only mapping of an open file; no existing memory is
         // affected.
-        let ptr = unsafe { rustix::mm::mmap(std::ptr::null_mut(), len, rustix::mm::ProtFlags::READ, rustix::mm::MapFlags::SHARED, file, 0)? };
+        let ptr =
+            unsafe { rustix::mm::mmap(std::ptr::null_mut(), len, rustix::mm::ProtFlags::READ, rustix::mm::MapFlags::SHARED, file, 0)? };
         Ok(Map { ptr, len })
     }
 }
@@ -202,7 +209,12 @@ impl MappedIndex {
         }
         let rd = |at: usize| u64::from_le_bytes(map[at..at + 8].try_into().unwrap()) as usize;
         let (n, folded_len, orig_len, root_len, excl_len, skip) = (rd(8), rd(16), rd(24), rd(32), rd(40), rd(48));
-        let parent_at = root_len.checked_add(excl_len).and_then(|v| v.checked_add(3)).map(|v| v & !3).and_then(|v| v.checked_add(HEADER)).ok_or_else(bad)?;
+        let parent_at = root_len
+            .checked_add(excl_len)
+            .and_then(|v| v.checked_add(3))
+            .map(|v| v & !3)
+            .and_then(|v| v.checked_add(HEADER))
+            .ok_or_else(bad)?;
         let need = n
             .checked_mul(17)
             .and_then(|v| parent_at.checked_add(4).and_then(|p| v.checked_add(p)))
@@ -335,12 +347,16 @@ impl MappedIndex {
 fn same_contents(path: &Path, bytes: &[u8]) -> bool {
     use std::io::Read;
     let Ok(mut file) = std::fs::File::open(path) else { return false };
-    if file.metadata().map(|m| m.len()).ok() != Some(bytes.len() as u64) { return false; }
+    if file.metadata().map(|m| m.len()).ok() != Some(bytes.len() as u64) {
+        return false;
+    }
     let mut buf = vec![0u8; 1 << 20];
     let mut at = 0;
     while at < bytes.len() {
         let want = buf.len().min(bytes.len() - at);
-        if file.read_exact(&mut buf[..want]).is_err() || buf[..want] != bytes[at..at + want] { return false; }
+        if file.read_exact(&mut buf[..want]).is_err() || buf[..want] != bytes[at..at + want] {
+            return false;
+        }
         at += want;
     }
     true

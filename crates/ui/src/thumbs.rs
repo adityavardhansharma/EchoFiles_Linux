@@ -11,13 +11,16 @@ use std::io::BufWriter;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{OnceLock, Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 pub type Job = (PathBuf, i64, Arc<AtomicBool>);
 
 use iced::advanced::image::Handle;
 
 const SIZE: u32 = 128;
-const MAX_JOBS: usize = 2;
+const MAX_JOBS: usize = 4;
 // Every cached handle is at most SIZE² RGBA bytes (32 MiB at this entry budget).
 const KEEP: usize = 512;
 
@@ -58,7 +61,9 @@ impl Thumbs {
         // What's on screen now matters more than what was on screen before.
         self.queue.clear();
         for (path, cancel) in &self.cancels {
-            if !items.iter().any(|(p, m)| p == path && self.map.get(path).is_some_and(|(old, _)| old == m)) { cancel.store(true, Ordering::Relaxed); }
+            if !items.iter().any(|(p, m)| p == path && self.map.get(path).is_some_and(|(old, _)| old == m)) {
+                cancel.store(true, Ordering::Relaxed);
+            }
         }
         for (p, m) in items {
             // A changed file (new mtime) gets a new thumbnail.
@@ -88,9 +93,14 @@ impl Thumbs {
     /// A job finished; returns the next jobs to start.
     pub fn done(&mut self, path: PathBuf, mtime: i64, token: &Arc<AtomicBool>, px: Option<Pixels>) -> Vec<Job> {
         self.running = self.running.saturating_sub(1);
-        if !self.cancels.get(&path).is_some_and(|c| Arc::ptr_eq(c, token)) { return self.start(); }
+        if !self.cancels.get(&path).is_some_and(|c| Arc::ptr_eq(c, token)) {
+            return self.start();
+        }
         self.cancels.remove(&path);
-        if token.load(Ordering::Relaxed) { self.map.remove(&path); return self.start(); }
+        if token.load(Ordering::Relaxed) {
+            self.map.remove(&path);
+            return self.start();
+        }
         let slot = match px {
             Some(px) => Slot::Ready(Handle::from_rgba(px.width, px.height, (*px.rgba).clone())),
             None => Slot::Failed,
@@ -214,12 +224,20 @@ fn thumbnailer_for(mime: &str) -> Option<&'static str> {
 /// Read a cached PNG if it's for this version of the file.
 fn read_cached(file: &Path, mtime: i64) -> Option<Pixels> {
     let f = std::fs::File::open(file).ok()?;
-    if f.metadata().ok()?.len() > 8 << 20 { return None; }
+    if f.metadata().ok()?.len() > 8 << 20 {
+        return None;
+    }
     let mut dec = png::Decoder::new(std::io::BufReader::new(f));
     dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = dec.read_info().ok()?;
-    if reader.info().width > SIZE || reader.info().height > SIZE { return None; }
-    let fresh = reader.info().uncompressed_latin1_text.iter().any(|t| t.keyword == "Thumb::MTime" && t.text.trim().parse::<i64>().ok() == Some(mtime));
+    if reader.info().width > SIZE || reader.info().height > SIZE {
+        return None;
+    }
+    let fresh = reader
+        .info()
+        .uncompressed_latin1_text
+        .iter()
+        .any(|t| t.keyword == "Thumb::MTime" && t.text.trim().parse::<i64>().ok() == Some(mtime));
     if !fresh {
         return None;
     }
@@ -252,6 +270,26 @@ fn write_cached(file: &Path, px: &Pixels, uri: &str, mtime: i64) {
     } else {
         drop(tmp);
     }
+}
+
+/// A small picture file (the phone's own thumbnail) as a grid thumbnail.
+pub(crate) fn small_image(file: &Path) -> Option<Pixels> {
+    let t = image::open(file).ok()?.thumbnail(SIZE, SIZE).to_rgba8();
+    Some(Pixels { width: t.width(), height: t.height(), rgba: std::sync::Arc::new(t.into_raw()) })
+}
+
+/// The camera's preview embedded in a JPEG, read from its first 128 KB only (a phone
+/// photo is several MB over Wi-Fi). None for other files or when it has no preview.
+pub(crate) fn head_preview(p: &Path) -> Option<Pixels> {
+    use std::io::Read;
+    if !matches!(ext(p).as_str(), "jpg" | "jpeg" | "jfif") {
+        return None;
+    }
+    let mut data = Vec::with_capacity(128 << 10);
+    std::fs::File::open(p).ok()?.take(128 << 10).read_to_end(&mut data).ok()?;
+    let t = image::load_from_memory_with_format(crate::jpeg::exif_thumbnail(&data)?, image::ImageFormat::Jpeg).ok()?;
+    let t = t.thumbnail(SIZE, SIZE).to_rgba8();
+    Some(Pixels { width: t.width(), height: t.height(), rgba: std::sync::Arc::new(t.into_raw()) })
 }
 
 fn decode(p: &Path) -> Option<Pixels> {
@@ -287,29 +325,94 @@ fn decode(p: &Path) -> Option<Pixels> {
     Some(Pixels { width: t.width(), height: t.height(), rgba: std::sync::Arc::new(t.into_raw()) })
 }
 
+/// `bwrap`, when bubblewrap is installed.
+fn bwrap() -> Option<&'static Path> {
+    static BWRAP: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    BWRAP.get_or_init(|| ["/usr/bin/bwrap", "/bin/bwrap"].iter().map(PathBuf::from).find(|p| p.is_file())).as_deref()
+}
+
+/// The thumbnailer command, inside a bubblewrap sandbox like GNOME's: a thumbnailer parses
+/// whatever file was just downloaded, so it gets no network, no home folder except the one
+/// file it reads, a private /tmp with only its output folder writable, and no capabilities.
+/// Without bubblewrap it runs as before.
+fn sandboxed(args: &[String], input: &Path, work: &Path) -> Option<Command> {
+    let (prog, rest) = args.split_first()?;
+    let Some(bwrap) = bwrap() else {
+        let mut cmd = Command::new(prog);
+        cmd.args(rest);
+        return Some(cmd);
+    };
+    let mut cmd = Command::new(bwrap);
+    cmd.args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", "/run"]);
+    cmd.arg("--tmpfs").arg(ef_config::home());
+    cmd.arg("--ro-bind").arg(input).arg(input);
+    cmd.arg("--bind").arg(work).arg(work);
+    cmd.args(["--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--"]);
+    cmd.arg(prog).args(rest);
+    Some(cmd)
+}
+
 fn run_thumbnailer(p: &Path, uri: &str, cancel: &AtomicBool) -> Option<Pixels> {
     let exec = thumbnailer_for(mime(&ext(p))?)?;
     let work = tempfile::Builder::new().prefix("ef-thumb-").tempdir().ok()?;
     let out = work.path().join("result.png");
-    let args: Vec<String> = parse_exec(exec)?.into_iter()
-        .map(|a| expand_codes(&a, p, uri, &out)).collect();
-    let (prog, rest) = args.split_first()?;
-    let mut child = Command::new(prog).args(rest).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().ok()?;
+    let args: Vec<String> = parse_exec(exec)?.into_iter().map(|a| expand_codes(&a, p, uri, &out)).collect();
+    let mut cmd = sandboxed(&args, p, work.path())?;
+    let mut child =
+        cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().ok()?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return status.success().then(|| decode(&out)).flatten(),
-            Err(_) => { let _ = child.kill(); let _ = child.wait(); return None; },
-            Ok(None) => {},
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => {}
         }
-        if cancel.load(Ordering::Relaxed) || std::time::Instant::now() >= deadline { let _ = child.kill(); let _ = child.wait(); return None; }
+        if cancel.load(Ordering::Relaxed) || std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
 
 /// Produce a thumbnail for `p` (blocking; run on a worker thread).
+/// A very tall or wide picture (a long screenshot, a 50×2000 strip) becomes a sliver a
+/// pixel or two across; show its middle at 1:3 at most. Only what EchoFiles draws is
+/// cropped: the shared thumbnail cache keeps the whole picture for other apps.
+fn crop_extreme(px: Pixels) -> Pixels {
+    let (w, h) = (px.width as usize, px.height as usize);
+    if h > w * 3 && w > 0 {
+        let ch = w * 3;
+        let top = (h - ch) / 2;
+        let rgba = px.rgba[top * w * 4..(top + ch) * w * 4].to_vec();
+        Pixels { width: px.width, height: ch as u32, rgba: std::sync::Arc::new(rgba) }
+    } else if w > h * 3 && h > 0 {
+        let cw = h * 3;
+        let left = (w - cw) / 2;
+        let mut rgba = Vec::with_capacity(cw * h * 4);
+        for row in 0..h {
+            let start = (row * w + left) * 4;
+            rgba.extend_from_slice(&px.rgba[start..start + cw * 4]);
+        }
+        Pixels { width: cw as u32, height: px.height, rgba: std::sync::Arc::new(rgba) }
+    } else {
+        px
+    }
+}
+
 pub fn load_cancellable(p: &Path, mtime: i64, cancel: &AtomicBool) -> Option<Pixels> {
-    if cancel.load(Ordering::Relaxed) { return None; }
+    load_uncropped(p, mtime, cancel).map(crop_extreme)
+}
+
+fn load_uncropped(p: &Path, mtime: i64, cancel: &AtomicBool) -> Option<Pixels> {
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
     let u = uri(p);
     let name = format!("{}.png", crate::codec::md5_hex(u.as_bytes()));
     let base = cache_dir();
@@ -323,10 +426,19 @@ pub fn load_cancellable(p: &Path, mtime: i64, cancel: &AtomicBool) -> Option<Pix
     if std::fs::read_to_string(&fail).is_ok_and(|m| m.trim().parse::<i64>().ok() == Some(mtime)) {
         return None;
     }
-    let px = if DECODE.contains(&ext(p).as_str()) { decode(p) } else { run_thumbnailer(p, &u, cancel) };
-    if cancel.load(Ordering::Relaxed) { return None; }
+    // On the phone: its own thumbnail, never the whole file over Wi-Fi.
+    let (px, phone) = match crate::phone::phone_thumb(p, cancel) {
+        Some(px) => (px, true),
+        None => (if DECODE.contains(&ext(p).as_str()) { decode(p) } else { run_thumbnailer(p, &u, cancel) }, false),
+    };
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
     match &px {
         Some(px) => write_cached(&base.join("normal").join(&name), px, &u, mtime),
+        // A phone thumbnail can fail for now (older EchoConnect, phone asleep) and work
+        // later: no failure record for those.
+        None if phone => {}
         None => {
             let _ = std::fs::create_dir_all(base.join("fail/echofiles"));
             let _ = std::fs::write(&fail, mtime.to_string());
@@ -342,16 +454,39 @@ fn parse_exec(line: &str) -> Option<Vec<String>> {
     let mut escaped = false;
     let mut started = false;
     for c in line.chars() {
-        if escaped { word.push(c); escaped = false; started = true; continue; }
+        if escaped {
+            word.push(c);
+            escaped = false;
+            started = true;
+            continue;
+        }
         match c {
-            '\\' => { escaped = true; started = true; },
-            '\"' => { quoted = !quoted; started = true; },
-            c if c.is_whitespace() && !quoted => { if started { args.push(std::mem::take(&mut word)); started = false; } },
-            c => { word.push(c); started = true; },
+            '\\' => {
+                escaped = true;
+                started = true;
+            }
+            '\"' => {
+                quoted = !quoted;
+                started = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if started {
+                    args.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            c => {
+                word.push(c);
+                started = true;
+            }
         }
     }
-    if quoted || escaped { return None; }
-    if started { args.push(word); }
+    if quoted || escaped {
+        return None;
+    }
+    if started {
+        args.push(word);
+    }
     Some(args)
 }
 
@@ -359,11 +494,21 @@ fn expand_codes(arg: &str, path: &Path, uri: &str, out: &Path) -> String {
     let mut result = String::new();
     let mut chars = arg.chars();
     while let Some(c) = chars.next() {
-        if c != '%' { result.push(c); continue; }
+        if c != '%' {
+            result.push(c);
+            continue;
+        }
         match chars.next() {
-            Some('s') => result.push_str(&SIZE.to_string()), Some('u') => result.push_str(uri),
-            Some('i') => result.push_str(&path.to_string_lossy()), Some('o') => result.push_str(&out.to_string_lossy()),
-            Some('%') => result.push('%'), Some(c) => { result.push('%'); result.push(c); }, None => result.push('%'),
+            Some('s') => result.push_str(&SIZE.to_string()),
+            Some('u') => result.push_str(uri),
+            Some('i') => result.push_str(&path.to_string_lossy()),
+            Some('o') => result.push_str(&out.to_string_lossy()),
+            Some('%') => result.push('%'),
+            Some(c) => {
+                result.push('%');
+                result.push(c);
+            }
+            None => result.push('%'),
         }
     }
     result
@@ -374,7 +519,10 @@ mod review_tests {
     use super::*;
     #[test]
     fn quoted_helpers_and_field_codes() {
-        assert_eq!(parse_exec("\"/opt/My Helper/bin\" --name \"a b\" %i %o").unwrap(), vec!["/opt/My Helper/bin", "--name", "a b", "%i", "%o"]);
+        assert_eq!(
+            parse_exec("\"/opt/My Helper/bin\" --name \"a b\" %i %o").unwrap(),
+            vec!["/opt/My Helper/bin", "--name", "a b", "%i", "%o"]
+        );
         assert!(parse_exec("\"unterminated").is_none());
         assert_eq!(expand_codes("%i", Path::new("/tmp/literal%o"), "unused", Path::new("output")), "/tmp/literal%o");
         assert_eq!(expand_codes("%%", Path::new(""), "", Path::new("")), "%");

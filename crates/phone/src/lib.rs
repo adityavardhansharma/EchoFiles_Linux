@@ -1,10 +1,13 @@
-//! Android phones over Wi-Fi, speaking the KDE Connect protocol (version 8) ourselves —
-//! nothing from KDE runs on the laptop; the phone runs the stock KDE Connect app.
+//! The link between EchoFiles and EchoConnect, its Android app: discovery, pairing, TLS and
+//! packets, written here and used on both ends (the phone runs this crate through
+//! `echoconnect-core`). The wire format is the KDE Connect protocol (version 8), but only
+//! EchoFiles and EchoConnect link with each other; other KDE Connect devices are turned
+//! away.
 //!
 //! [`Service::start`] listens for phones (UDP 1716 and a TCP port in 1716–1764), keeps one
 //! TLS link per phone, and turns their packets into [`Event`]s. Methods on [`Service`]
-//! send requests: pair, ring, clipboard, notifications, texts, files and the phone's SFTP
-//! server (which the app then opens through GVfs like any network place).
+//! send requests: pair, ring, clipboard, notifications, texts, files and the phone's file
+//! server (which the app shows as a folder through `ef_phonefs`).
 
 mod identity;
 mod service;
@@ -12,14 +15,14 @@ mod tls;
 
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
-pub use identity::{dir as config_dir, host_name, Trusted};
-pub use serde_json::{json, Value};
-pub use service::{trace_to, Role, Service, Source};
+pub use identity::{Trusted, dir as config_dir, host_name};
+pub use serde_json::{Value, json};
+pub use service::{Role, Service, Source, trace_to};
 
-/// Lowest and highest TCP port KDE Connect uses.
+/// Lowest and highest TCP port the link uses.
 pub const PORT_MIN: u16 = 1714;
 pub const PORT_MAX: u16 = 1764;
 /// The UDP discovery port.
@@ -57,7 +60,8 @@ impl Device {
         self.accepts.iter().any(|t| t == packet_type)
     }
 
-    /// Runs EchoConnect (our own app), not stock KDE Connect.
+    /// Runs EchoConnect or EchoFiles (lists `echofiles.*` packets) — the only peers the
+    /// link accepts.
     pub fn echoconnect(&self) -> bool {
         self.sends.iter().any(|t| t.starts_with("echofiles."))
     }
@@ -113,8 +117,10 @@ pub struct Sftp {
 #[derive(Debug, Clone)]
 pub enum Event {
     /// Listening on this TCP port.
-    Started { port: u16 },
-    /// Couldn't start (ports taken — is KDE Connect itself running?).
+    Started {
+        port: u16,
+    },
+    /// Couldn't start (ports taken — is a KDE Connect daemon running on this computer?).
     Failed(String),
     /// A phone is connected (paired or not), or its details changed.
     Device(Device),
@@ -122,31 +128,86 @@ pub enum Event {
     Gone(String),
     /// The phone asks to pair; both screens show `code`. Answer with
     /// [`Service::accept_pair`] or [`Service::reject_pair`].
-    PairRequested { id: String, code: String },
+    PairRequested {
+        id: String,
+        code: String,
+    },
     /// We asked to pair; the phone shows `code` and waits for its owner.
-    PairCode { id: String, code: String },
+    PairCode {
+        id: String,
+        code: String,
+    },
     Paired(Device),
     /// A paired device's link is up and the first requests went out.
     Ready(String),
     PairRejected(String),
     Unpaired(String),
-    Battery { id: String, level: i32, charging: bool },
-    Clipboard { id: String, text: String, sensitive: bool },
-    Notification { id: String, notification: Notification },
-    NotificationGone { id: String, key: String },
-    Sms { id: String, messages: Vec<Sms> },
-    Sftp { id: String, result: Result<Sftp, String> },
+    Battery {
+        id: String,
+        level: i32,
+        charging: bool,
+    },
+    Clipboard {
+        id: String,
+        text: String,
+        sensitive: bool,
+    },
+    Notification {
+        id: String,
+        notification: Notification,
+    },
+    NotificationGone {
+        id: String,
+        key: String,
+    },
+    Sms {
+        id: String,
+        messages: Vec<Sms>,
+    },
+    Sftp {
+        id: String,
+        result: Result<Sftp, String>,
+    },
     /// Shared from the phone: some text, or a link.
-    Text { id: String, text: String },
-    Url { id: String, url: String },
+    Text {
+        id: String,
+        text: String,
+    },
+    Url {
+        id: String,
+        url: String,
+    },
     /// The other side offers a payload (a shared file, a thumbnail…) with packet `kind`;
     /// answer with [`Service::accept_file`] or [`Service::reject_file`].
-    Incoming { id: String, transfer: u64, name: String, size: u64, kind: String, body: Value },
-    TransferStarted { id: String, transfer: u64, name: String, size: u64, upload: bool, done: Arc<AtomicU64> },
+    Incoming {
+        id: String,
+        transfer: u64,
+        name: String,
+        size: u64,
+        kind: String,
+        body: Value,
+    },
+    TransferStarted {
+        id: String,
+        transfer: u64,
+        name: String,
+        size: u64,
+        upload: bool,
+        done: Arc<AtomicU64>,
+    },
     /// A download finished (the file's path) or an upload did (the sent file).
-    TransferDone { id: String, transfer: u64, upload: bool, result: Result<PathBuf, String> },
+    TransferDone {
+        id: String,
+        transfer: u64,
+        upload: bool,
+        result: Result<PathBuf, String>,
+    },
     /// Any other packet from a paired device (requests a phone would answer).
-    Other { id: String, kind: String, body: Value },
+    Other {
+        id: String,
+        kind: String,
+        body: Value,
+    },
 }
 
 /// Phones paired with this computer.

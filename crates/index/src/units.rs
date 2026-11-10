@@ -69,7 +69,13 @@ pub fn human_size(n: u64) -> String {
         v /= 1000.0;
         i += 1;
     }
-    if i == 0 { format!("{n} B") } else if v < 10.0 { format!("{v:.1} {}", U[i]) } else { format!("{v:.0} {}", U[i]) }
+    if i == 0 {
+        format!("{n} B")
+    } else if v < 10.0 {
+        format!("{v:.1} {}", U[i])
+    } else {
+        format!("{v:.0} {}", U[i])
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -445,7 +451,8 @@ fn parse_posix(s: &str) -> Option<PosixTz> {
         return Some(PosixTz { std_off: -std_west, dst: None });
     }
     name(&mut i)?;
-    let dst_west = if matches!(b.get(i), Some(c) if c.is_ascii_digit() || *c == b'+' || *c == b'-') { offset(&mut i)? } else { std_west - 3600 };
+    let dst_west =
+        if matches!(b.get(i), Some(c) if c.is_ascii_digit() || *c == b'+' || *c == b'-') { offset(&mut i)? } else { std_west - 3600 };
     let date = |i: &mut usize| -> Option<(RuleDate, i64)> {
         if b.get(*i) != Some(&b',') {
             return None;
@@ -560,7 +567,13 @@ impl OwnerFilter {
             };
             Ok(Some(IdMatch { id, negated }))
         };
-        let f = OwnerFilter { uid: part(u, users(), "user")?, gid: match g { Some(g) => part(g, groups(), "group")?, None => None } };
+        let f = OwnerFilter {
+            uid: part(u, users(), "user")?,
+            gid: match g {
+                Some(g) => part(g, groups(), "group")?,
+                None => None,
+            },
+        };
         if f.uid.is_none() && f.gid.is_none() {
             return Err(format!("'{s}' names no user or group"));
         }

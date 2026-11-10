@@ -38,7 +38,9 @@ pub fn read(hive_path: &Path) -> Result<HashMap<String, char>, String> {
     for v in values.flatten() {
         let Ok(name) = v.name() else { continue };
         let name = name.to_string_lossy();
-        let Some(letter) = name.strip_prefix("\\DosDevices\\").and_then(|r| r.strip_suffix(':')).and_then(|r| r.chars().next()) else { continue };
+        let Some(letter) = name.strip_prefix("\\DosDevices\\").and_then(|r| r.strip_suffix(':')).and_then(|r| r.chars().next()) else {
+            continue;
+        };
         let Ok(data) = v.data().and_then(|d| d.into_vec()) else { continue };
         if data.len() == 24 && data.starts_with(b"DMIO:ID:") {
             out.insert(guid(&data[8..24]), letter.to_ascii_uppercase());

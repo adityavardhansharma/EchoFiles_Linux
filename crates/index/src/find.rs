@@ -229,7 +229,11 @@ fn verify(s: &Search, hits: &mut Vec<Hit>) -> usize {
 
 /// A folder's entry names, sorted (empty if it can't be read).
 fn list_names(dir: &[u8]) -> Vec<Vec<u8>> {
-    let Ok(fd) = rustix::fs::open(OsStr::from_bytes(dir), rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC, rustix::fs::Mode::empty()) else {
+    let Ok(fd) = rustix::fs::open(
+        OsStr::from_bytes(dir),
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) else {
         return Vec::new();
     };
     let mut buf: Vec<std::mem::MaybeUninit<u8>> = vec![std::mem::MaybeUninit::uninit(); 32 * 1024];
@@ -396,7 +400,7 @@ fn index_walk(
     let w = IndexWalk { s, v, opts, holes: tally.holes };
     let f = &s.filters;
     let root_stack = w.rules(scope, scope_abs, &base);
-    let states = vec![DirState { id: scope, end: v.end[scope as usize], abs: scope_abs.to_vec(), depth: 0, stack: root_stack, open: true }];
+    let states = [DirState { id: scope, end: v.end[scope as usize], abs: scope_abs.to_vec(), depth: 0, stack: root_stack, open: true }];
     for name in w.missing_children(scope_abs).into_iter().filter(|_| w.holes) {
         holes.push(Hole { path: scope_abs.to_vec(), entry: Some(name), depth: 0, stack: states[0].stack.clone() });
     }
@@ -412,9 +416,15 @@ fn index_walk(
         .patterns
         .iter()
         .filter_map(|p| p.prefilter().map(<[u8]>::to_vec))
-        .chain(f.exts.iter().filter(|e| e.is_ascii()).map(|e| [b".".as_slice(), &e.to_ascii_lowercase()].concat()).take((f.exts.len() == 1) as usize))
+        .chain(
+            f.exts
+                .iter()
+                .filter(|e| e.is_ascii())
+                .map(|e| [b".".as_slice(), &e.to_ascii_lowercase()].concat())
+                .take((f.exts.len() == 1) as usize),
+        )
         .max_by_key(Vec::len);
-    let finder = literal.as_ref().map(|l| memchr::memmem::Finder::new(l));
+    let finder = literal.as_ref().map(memchr::memmem::Finder::new);
     // Split the id range into chunks searched in parallel; each finds its own candidates
     // (names containing the literal, one SIMD scan of its slice of the folded arena) and
     // rebuilds the folder states it needs from the scope down, so chunks are independent.

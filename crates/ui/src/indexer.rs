@@ -1,12 +1,13 @@
 //! The search index inside the app (docs/threading-freshness-and-next-optimizations.md,
 //! Part 2): saved index files open instantly, crawls run on a low-priority pool, and a
-//! watcher on the folders where new files land triggers a re-crawl within seconds. A full
-//! re-crawl every minute catches everything else.
+//! watcher on the folders where new files land re-crawls just those folders within a
+//! minute. A periodic safety net re-crawls the configured roots every 30 minutes and
+//! mounted drives every 6 hours, so an idle disk can spin down.
 
 use std::mem::MaybeUninit;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime};
 
 use ef_config::{self as config, SearchConfig};
@@ -79,65 +80,171 @@ pub fn open_existing(cfg: &SearchConfig) -> Vec<RootIndex> {
             let file = config::index_file_for(&root);
             let updated = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
             match MappedIndex::open(&file) {
-                Ok(m) if m.options() == &Options::from_search(cfg, &root) => RootIndex { root, map: Some(Arc::new(m)), updated, error: None },
+                Ok(m) if m.options() == &Options::from_search(cfg, &root) => {
+                    RootIndex { root, map: Some(Arc::new(m)), updated, error: None }
+                }
                 _ => RootIndex { root, map: None, updated: None, error: None },
             }
         })
         .collect()
 }
 
-/// Crawl every indexed folder, save, and map the new files. Runs on the background pool.
+/// What a crawl covers.
+#[derive(Clone, Debug, Default)]
+pub struct Scope {
+    /// Only these roots (`None`: every root).
+    pub roots: Option<Vec<PathBuf>>,
+    /// Folders known to have changed. A root holding any of them is updated by re-crawling
+    /// just those folders ([`Index::rescan`]) instead of the whole root.
+    pub folders: Vec<PathBuf>,
+}
+
+impl Scope {
+    pub fn all() -> Scope {
+        Scope::default()
+    }
+
+    /// Exactly these roots, crawled in full.
+    pub fn roots(roots: Vec<PathBuf>) -> Scope {
+        Scope { roots: Some(roots), folders: Vec::new() }
+    }
+
+    /// The roots (of `all`) holding the changed `folders`, updated folder by folder.
+    pub fn changed(folders: Vec<PathBuf>, all: &[PathBuf]) -> Scope {
+        let mut roots: Vec<PathBuf> = folders.iter().filter_map(|f| root_of(f, all)).cloned().collect();
+        roots.sort();
+        roots.dedup();
+        Scope { roots: Some(roots), folders }
+    }
+
+    fn includes(&self, root: &Path) -> bool {
+        self.roots.as_ref().is_none_or(|r| r.iter().any(|x| x == root))
+    }
+
+    /// Changed folders whose closest root is `root`.
+    fn folders_in(&self, root: &Path, all: &[PathBuf]) -> Vec<&PathBuf> {
+        self.folders.iter().filter(|f| root_of(f, all).is_some_and(|r| r == root)).collect()
+    }
+
+    fn to_json(&self, cfg: &SearchConfig) -> Option<Vec<u8>> {
+        let bytes = |v: &[PathBuf]| v.iter().map(|p| p.as_os_str().as_encoded_bytes().to_vec()).collect::<Vec<_>>();
+        serde_json::to_vec(
+            &serde_json::json!({ "search": cfg, "roots": self.roots.as_deref().map(bytes), "folders": bytes(&self.folders) }),
+        )
+        .ok()
+    }
+
+    fn from_json(input: &[u8]) -> Option<(SearchConfig, Scope)> {
+        use std::os::unix::ffi::OsStringExt;
+        let v: serde_json::Value = serde_json::from_slice(input).ok()?;
+        let cfg = serde_json::from_value(v["search"].clone()).ok()?;
+        let paths = |v: &serde_json::Value| -> Option<Vec<PathBuf>> {
+            serde_json::from_value::<Vec<Vec<u8>>>(v.clone())
+                .ok()
+                .map(|l| l.into_iter().map(|b| PathBuf::from(std::ffi::OsString::from_vec(b))).collect())
+        };
+        let roots = if v["roots"].is_null() { None } else { Some(paths(&v["roots"])?) };
+        Some((cfg, Scope { roots, folders: paths(&v["folders"]).unwrap_or_default() }))
+    }
+}
+
+/// The deepest root `folder` lies in.
+fn root_of<'a>(folder: &Path, all: &'a [PathBuf]) -> Option<&'a PathBuf> {
+    all.iter().filter(|r| folder.starts_with(r)).max_by_key(|r| r.as_os_str().len())
+}
+
+/// Crawl the indexed folders `scope` covers, save, and map the new files. Runs on the
+/// background pool. Roots outside the scope come back without a map; the caller keeps
+/// the one it has.
 ///
 /// The crawl itself runs in a short-lived child process (`echofiles --index-worker`): its
 /// peak memory (about 100 bytes per entry) then goes back to the system when the child
 /// exits, instead of staying in this long-running process's allocator. If the child can't
 /// run, the crawl happens here.
-pub fn build_all(cfg: &SearchConfig, generation: u64) -> Vec<RootIndex> {
+pub fn build_all(cfg: &SearchConfig, generation: u64, scope: &Scope) -> Vec<RootIndex> {
     let cfg = cfg.clone();
     let child = {
         let _publication = PUBLICATION.lock().unwrap();
-        build_in_child(&cfg).map(|ok| ok && GENERATION.load(Ordering::Acquire) == generation)
+        build_in_child(&cfg, scope).map(|ok| ok && GENERATION.load(Ordering::Acquire) == generation)
     };
+    let untouched = |root: PathBuf| RootIndex { root, map: None, updated: None, error: None };
     match child {
-        Some(true) => cfg.roots().into_iter().map(|root| {
-            match MappedIndex::open(&config::index_file_for(&root)) {
-                Ok(m) => RootIndex { root, map: Some(Arc::new(m)), updated: Some(SystemTime::now()), error: None },
-                Err(e) => RootIndex { root: root.clone(), map: None, updated: None, error: Some(format!("Couldn't index {}: {e}", config::tilde(&root))) },
-            }
-        }).collect(),
-        Some(false) if GENERATION.load(Ordering::Acquire) != generation => cfg.roots().into_iter().map(|root| RootIndex { root, map: None, updated: None, error: Some("index settings changed during the crawl".into()) }).collect(),
-        _ => build_here(&cfg, generation),
+        Some(true) => cfg
+            .roots()
+            .into_iter()
+            .map(|root| {
+                if !scope.includes(&root) {
+                    return untouched(root);
+                }
+                match MappedIndex::open(&config::index_file_for(&root)) {
+                    Ok(m) => RootIndex { root, map: Some(Arc::new(m)), updated: Some(SystemTime::now()), error: None },
+                    Err(e) => RootIndex {
+                        root: root.clone(),
+                        map: None,
+                        updated: None,
+                        error: Some(format!("Couldn't index {}: {e}", config::tilde(&root))),
+                    },
+                }
+            })
+            .collect(),
+        Some(false) if GENERATION.load(Ordering::Acquire) != generation => cfg
+            .roots()
+            .into_iter()
+            .map(|root| RootIndex { root, map: None, updated: None, error: Some("index settings changed during the crawl".into()) })
+            .collect(),
+        _ => build_here(&cfg, generation, scope),
     }
 }
 
 /// Run the index worker; `None` if it couldn't be started, else whether it succeeded.
-fn build_in_child(cfg: &SearchConfig) -> Option<bool> {
+fn build_in_child(cfg: &SearchConfig, scope: &Scope) -> Option<bool> {
     use std::io::Write;
     use std::process::{Command, Stdio};
     let exe = std::env::current_exe().ok()?;
+    let input = scope.to_json(cfg)?;
     let mut child = Command::new(exe).arg("--index-worker").stdin(Stdio::piped()).stdout(Stdio::null()).spawn().ok()?;
-    let config = serde_json::to_vec(cfg).ok()?;
-    let sent = child.stdin.take().map(|mut s| s.write_all(&config));
+    let sent = child.stdin.take().map(|mut s| s.write_all(&input));
     let status = child.wait().ok()?;
     Some(matches!(sent, Some(Ok(()))) && status.success())
 }
 
-/// The worker's side: read the search settings on stdin, crawl and save every root (an
-/// unchanged index file is left alone), exit non-zero on any failure.
+/// Bring one root's index file up to date: re-crawl only the changed `folders` when the
+/// saved index matches the settings, the whole root otherwise.
+fn update_root(cfg: &SearchConfig, root: &Path, folders: &[&PathBuf]) -> std::io::Result<()> {
+    let file = config::index_file_for(root);
+    let opts = Options::from_search(cfg, root);
+    if !folders.is_empty()
+        && let Ok(mut idx) = Index::load(&file)
+        && idx.root() == root
+        && idx.options() == &opts
+        && folders.iter().all(|f| idx.rescan(f).is_ok())
+    {
+        return idx.save_if_changed(&file).map(drop);
+    }
+    Index::build_with(root, &opts).and_then(|idx| idx.save_if_changed(&file)).map(drop)
+}
+
+/// The worker's side: read the search settings and scope on stdin, update and save every
+/// root in scope (an unchanged index file is left alone), exit non-zero on any failure.
 pub fn worker_main() -> std::process::ExitCode {
     use std::io::Read;
     let mut input = Vec::new();
-    let Ok(cfg) = std::io::stdin().read_to_end(&mut input).map_err(|e| e.to_string()).and_then(|_| serde_json::from_slice::<SearchConfig>(&input).map_err(|e| e.to_string())) else {
+    let Some((cfg, scope)) = std::io::stdin().read_to_end(&mut input).ok().and_then(|_| Scope::from_json(&input)) else {
         eprintln!("index worker: invalid settings on stdin");
         return std::process::ExitCode::FAILURE;
     };
     let mut ok = true;
     let _ = std::fs::create_dir_all(config::index_dir());
-    for root in cfg.roots() {
-        let result = Index::build_with(&root, &Options::from_search(&cfg, &root)).and_then(|idx| idx.save_if_changed(&config::index_file_for(&root)));
-        if let Err(e) = result { eprintln!("index worker: {}: {e}", root.display()); ok = false; }
+    let all = cfg.roots();
+    for root in all.iter().filter(|r| scope.includes(r)) {
+        if let Err(e) = update_root(&cfg, root, &scope.folders_in(root, &all)) {
+            eprintln!("index worker: {}: {e}", root.display());
+            ok = false;
+        }
     }
-    remove_stale_files(&cfg);
+    if scope.roots.is_none() {
+        remove_stale_files(&cfg);
+    }
     if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
 }
 
@@ -150,35 +257,48 @@ fn remove_stale_files(cfg: &SearchConfig) {
         for e in dir.flatten() {
             let p = e.path();
             let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > week);
-            if p.extension().is_some_and(|x| x == "efidx") && !keep.contains(&p) && old { let _ = std::fs::remove_file(&p); }
+            if p.extension().is_some_and(|x| x == "efidx") && !keep.contains(&p) && old {
+                let _ = std::fs::remove_file(&p);
+            }
         }
     }
-    if let Some(legacy) = config::index_dir().parent().map(|d| d.join("home.efidx")) { let _ = std::fs::remove_file(legacy); }
+    if let Some(legacy) = config::index_dir().parent().map(|d| d.join("home.efidx")) {
+        let _ = std::fs::remove_file(legacy);
+    }
 }
 
 /// The crawl in this process (fallback when the worker can't run).
-fn build_here(cfg: &SearchConfig, generation: u64) -> Vec<RootIndex> {
+fn build_here(cfg: &SearchConfig, generation: u64, scope: &Scope) -> Vec<RootIndex> {
     let cfg = cfg.clone();
     background_pool().install(move || {
         cfg.roots()
             .into_iter()
             .map(|root| {
+                if !scope.includes(&root) {
+                    return RootIndex { root, map: None, updated: None, error: None };
+                }
                 let file = config::index_file_for(&root);
-                let built = Index::build_with(&root, &Options::from_search(&cfg, &root))
-                    .and_then(|idx| {
-                        let _publication = PUBLICATION.lock().unwrap();
-                        if GENERATION.load(Ordering::Acquire) != generation { return Err(std::io::Error::other("index settings changed during the crawl")); }
-                        std::fs::create_dir_all(config::index_dir())?;
-                        idx.save_if_changed(&file)?;
-                        if GENERATION.load(Ordering::Acquire) != generation {
-                            let _ = std::fs::remove_file(&file);
-                            return Err(std::io::Error::other("index settings changed during publication"));
-                        }
-                        MappedIndex::open(&file)
-                    });
+                let built = Index::build_with(&root, &Options::from_search(&cfg, &root)).and_then(|idx| {
+                    let _publication = PUBLICATION.lock().unwrap();
+                    if GENERATION.load(Ordering::Acquire) != generation {
+                        return Err(std::io::Error::other("index settings changed during the crawl"));
+                    }
+                    std::fs::create_dir_all(config::index_dir())?;
+                    idx.save_if_changed(&file)?;
+                    if GENERATION.load(Ordering::Acquire) != generation {
+                        let _ = std::fs::remove_file(&file);
+                        return Err(std::io::Error::other("index settings changed during publication"));
+                    }
+                    MappedIndex::open(&file)
+                });
                 match built {
                     Ok(m) => RootIndex { root, map: Some(Arc::new(m)), updated: Some(SystemTime::now()), error: None },
-                    Err(e) => RootIndex { root: root.clone(), map: None, updated: None, error: Some(format!("Couldn't index {}: {e}", config::tilde(&root))) },
+                    Err(e) => RootIndex {
+                        root: root.clone(),
+                        map: None,
+                        updated: None,
+                        error: Some(format!("Couldn't index {}: {e}", config::tilde(&root))),
+                    },
                 }
             })
             .collect()
@@ -188,7 +308,9 @@ fn build_here(cfg: &SearchConfig, generation: u64) -> Vec<RootIndex> {
 /// Delete the index files (search index turned off).
 pub fn remove_files(cfg: &SearchConfig, generation: u64) {
     let _publication = PUBLICATION.lock().unwrap();
-    if GENERATION.load(Ordering::Acquire) != generation { return; }
+    if GENERATION.load(Ordering::Acquire) != generation {
+        return;
+    }
     for root in cfg.roots() {
         let _ = std::fs::remove_file(config::index_file_for(&root));
     }
@@ -289,7 +411,15 @@ impl Watcher {
     /// The fixed set: where new files usually land.
     pub fn watch_landing_folders(&self) {
         let home = config::home();
-        for p in [home.clone(), home.join("Downloads"), home.join("Desktop"), home.join("Documents"), home.join("Pictures"), home.join("Videos"), home.join("Music")] {
+        for p in [
+            home.clone(),
+            home.join("Downloads"),
+            home.join("Desktop"),
+            home.join("Documents"),
+            home.join("Pictures"),
+            home.join("Videos"),
+            home.join("Music"),
+        ] {
             if p.is_dir() {
                 self.add(&p);
             }
@@ -303,7 +433,9 @@ impl Watcher {
         let landing = |wd: i32| {
             let home = config::home();
             self.watches.lock().unwrap().iter().any(|(w, p)| {
-                *w == wd && (p == &home || ["Downloads", "Desktop", "Documents", "Pictures", "Videos", "Music"].iter().any(|n| p == &home.join(n)))
+                *w == wd
+                    && (p == &home
+                        || ["Downloads", "Desktop", "Documents", "Pictures", "Videos", "Music"].iter().any(|n| p == &home.join(n)))
             })
         };
         let wanted: Vec<i32> = paths.iter().filter_map(|p| self.add(p)).collect();

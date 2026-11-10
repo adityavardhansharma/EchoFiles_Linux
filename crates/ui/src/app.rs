@@ -162,6 +162,7 @@ pub struct App {
     pub(crate) settings: Settings,
     pub(crate) settings_ui: SettingsUi,
     pub(crate) palette: Palette,
+    iced_theme: iced::Theme,
     pub(crate) icons: Icons,
     pub(crate) dates: DateFormatter,
     theme_stamp: Option<SystemTime>,
@@ -175,6 +176,7 @@ pub struct App {
     drive_trashes: Vec<PathBuf>,
     pub(crate) root_fs: Option<FsInfo>,
     pub(crate) volume_fs: Vec<Option<FsInfo>>,
+    pub(crate) space_checked: Option<Instant>,
     pub(crate) drive_state: HashMap<String, DriveState>,
     pub(crate) net: NetState,
     pub(crate) phone: PhoneState,
@@ -191,6 +193,8 @@ pub struct App {
     /// at most once a minute (a busy Downloads folder must not crawl ~ continuously).
     index_stale: Option<Instant>,
     last_index_build: Option<Instant>,
+    /// Watched folders whose names changed; the next refresh recrawls just these.
+    index_changed: Vec<PathBuf>,
     watcher: Option<Arc<Watcher>>,
     // files
     pub(crate) clip: Option<Clip>,
@@ -247,6 +251,46 @@ pub struct App {
 fn theme_stamp() -> Option<SystemTime> {
     let dir = ef_theme::omarchy_theme_dir()?;
     std::fs::metadata(dir.join("colors.toml")).and_then(|m| m.modified()).ok()
+}
+
+fn iced_theme(p: &Palette) -> iced::Theme {
+    use crate::style::color;
+    iced::Theme::custom(
+        p.name.clone(),
+        iced::theme::Palette {
+            background: color(p.bg),
+            text: color(p.ink),
+            primary: color(p.accent),
+            success: color(p.success.base),
+            warning: color(p.warning.base),
+            danger: color(p.danger.base),
+        },
+    )
+}
+
+fn media_dirs() -> &'static (PathBuf, PathBuf) {
+    static DIRS: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
+    DIRS.get_or_init(|| {
+        let home = config::home();
+        let text = std::fs::read_to_string(config::config_dir().with_file_name("user-dirs.dirs")).unwrap_or_default();
+        let get = |key: &str, fallback: &str| {
+            text.lines()
+                .find_map(|l| l.strip_prefix(key)?.strip_prefix('=').map(|v| v.trim().trim_matches('"').replace("$HOME", &home.to_string_lossy())))
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(fallback))
+        };
+        (get("XDG_PICTURES_DIR", "Pictures"), get("XDG_VIDEOS_DIR", "Videos"))
+    })
+}
+
+/// A photo or video, by extension.
+fn is_media_name(name: &std::ffi::OsStr) -> bool {
+    let ext = Path::new(name).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "heic" | "heif" | "avif" | "tif" | "tiff" | "jxl" | "raw" | "dng" | "cr2"
+            | "nef" | "arw" | "mp4" | "mkv" | "mov" | "webm" | "avi" | "m4v" | "3gp"
+    )
 }
 
 /// Stream of folder changes from the watcher thread.
@@ -345,7 +389,8 @@ impl App {
             window: None,
             mode: if args.iter().any(|a| a == "--settings") { Mode::Settings } else { Mode::Files },
             settings_ui: SettingsUi::new(settings_error),
-            palette,
+            palette: palette.clone(),
+            iced_theme: iced_theme(&palette),
             icons,
             dates: DateFormatter::new(),
             theme_stamp: theme_stamp(),
@@ -357,6 +402,7 @@ impl App {
             drive_trashes: Vec::new(),
             root_fs: None,
             volume_fs: Vec::new(),
+            space_checked: None,
             drive_state: HashMap::new(),
             net: NetState { recent: crate::network::load_recent(), ..Default::default() },
             phone: crate::phone::load_state(),
@@ -370,6 +416,7 @@ impl App {
             index_dirty: None,
             index_stale: None,
             last_index_build: None,
+            index_changed: Vec::new(),
             watcher,
             clip: None,
             undo: Vec::new(),
@@ -438,6 +485,11 @@ impl App {
             Mode::Settings => "Settings — EchoFiles".into(),
             Mode::Files => format!("{} — EchoFiles", self.pane_title(self.pane())),
         }
+    }
+
+    /// The theme for every window (see [`iced_theme`]).
+    pub fn theme(&self, _window: window::Id) -> iced::Theme {
+        self.iced_theme.clone()
     }
 
     /// A pane's name for tabs and the window title; network roots use the name people
@@ -533,8 +585,40 @@ impl App {
         }
         let home = config::home();
         let name = dir.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
-        let pictures = dir == home.join("Pictures") || dir == home.join("Videos") || matches!(name.as_str(), "dcim" | "camera" | "screenshots" | "photos" | "wallpapers");
-        if pictures { Layout::Grid } else { Layout::List }
+        let (pictures, videos) = media_dirs();
+        let media = dir == pictures
+            || dir == videos
+            || dir == home.join("Pictures")
+            || dir == home.join("Videos")
+            || matches!(name.as_str(), "dcim" | "camera" | "screenshots" | "photos" | "wallpapers");
+        if media { Layout::Grid } else { Layout::List }
+    }
+
+    /// Automatic view, after listing: a folder that is mostly photos and videos (at least
+    /// 4 files, 60 % of them media) opens as a grid even without a telling name.
+    fn auto_grid_by_content(&mut self, generation: u64) {
+        if self.settings.appearance.view != config::DefaultView::Auto {
+            return;
+        }
+        let modes = &self.view_modes;
+        let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.generation == generation) else { return };
+        if pane.layout != Layout::List || modes.contains_key(&pane.location) {
+            return;
+        }
+        let Some(l) = pane.loaded.as_ref() else { return };
+        let (mut files, mut media) = (0usize, 0usize);
+        for i in 0..l.listing.len() {
+            if l.listing.is_dir(i) {
+                continue;
+            }
+            files += 1;
+            if is_media_name(l.listing.name(i)) {
+                media += 1;
+            }
+        }
+        if files >= 4 && media * 10 >= files * 6 {
+            pane.layout = Layout::Grid;
+        }
     }
 
     /// The default view changed: forget per-folder choices and re-apply it everywhere.
@@ -657,16 +741,55 @@ impl App {
     // ------------------------------------------------------------------ index
 
     pub(crate) fn build_index(&mut self) -> Task<Message> {
+        self.build_index_in(indexer::Scope::all())
+    }
+
+    /// Re-crawl only the watched folders that changed, in the roots holding them.
+    pub(crate) fn refresh_index(&mut self) -> Task<Message> {
+        let folders = std::mem::take(&mut self.index_changed);
+        if folders.is_empty() {
+            self.index_stale = None;
+            return Task::none();
+        }
+        let scope = indexer::Scope::changed(folders, &self.settings.search.roots());
+        // Changes outside every indexed root (an open folder elsewhere) need no crawl.
+        if scope.roots.as_ref().is_some_and(Vec::is_empty) {
+            self.index_stale = None;
+            return Task::none();
+        }
+        self.build_index_in(scope)
+    }
+
+    /// The periodic safety net for changes no watch saw: the configured roots, plus the
+    /// mounted drives not crawled for 6 hours (so an idle disk is left to spin down).
+    pub(crate) fn safety_net_index(&mut self) -> Task<Message> {
+        let configured: Vec<PathBuf> = self.settings.search.roots.iter().map(|r| ef_config::expand(r)).collect();
+        let old = |root: &PathBuf| {
+            self.roots
+                .iter()
+                .find(|r| &r.root == root)
+                .and_then(|r| r.updated)
+                .and_then(|t| t.elapsed().ok())
+                .is_none_or(|age| age >= Duration::from_secs(6 * 3600))
+        };
+        let roots = self.settings.search.roots().into_iter().filter(|r| configured.contains(r) || old(r)).collect();
+        self.build_index_in(indexer::Scope::roots(roots))
+    }
+
+    pub(crate) fn build_index_in(&mut self, scope: indexer::Scope) -> Task<Message> {
         if !self.settings.search.index || self.index_state == IndexState::Building {
             return Task::none();
         }
         self.index_state = IndexState::Building;
         self.index_dirty = None;
         self.index_stale = None;
+        if scope.roots.is_none() {
+            self.index_changed.clear();
+        }
         self.last_index_build = Some(Instant::now());
         let generation = self.index_generation;
         let cfg = self.settings.search.clone();
-        background(move || indexer::build_all(&cfg, generation), move |roots| Message::IndexBuilt(generation, roots))
+        background(move || indexer::build_all(&cfg, generation, &scope), move |roots| Message::IndexBuilt(generation, roots))
     }
 
     /// Settings that change what's indexed: rebuild soon (debounced).
@@ -851,6 +974,7 @@ impl App {
                 let id = pane.id;
                 let t = pane.reorder(hidden);
                 self.refresh_cut();
+                self.auto_grid_by_content(generation);
                 let r = self.resume_rename(id);
                 // Drive folders: which entries are Google Docs (their kind and icon).
                 let c = if ready && config::is_cloud_path(&dir) { self.cloud_listed(&dir) } else { Task::none() };
@@ -860,6 +984,7 @@ impl App {
                 if let Some(pane) = self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()).find(|p| p.generation == generation) {
                     if pane.order_revision.load(Ordering::Relaxed) != revision { return Task::none(); }
                     pane.set_order(order);
+                    pane.retain_visible_selection();
                 }
                 Task::none()
             }
@@ -1308,18 +1433,20 @@ impl App {
                 if stamp != self.theme_stamp {
                     self.theme_stamp = stamp;
                     self.palette = ef_theme::load_active();
+                    self.iced_theme = iced_theme(&self.palette);
                     self.icons = Icons::new(&self.palette);
                 }
                 self.expire_toasts();
                 self.phone_tick();
+                let space = self.refresh_drive_space();
                 let cloud = self.cloud_tick();
                 if indexer::settled(self.index_dirty, 1500) && self.index_state != IndexState::Building {
-                    return Task::batch([cloud, self.build_index()]);
+                    return Task::batch([space, cloud, self.build_index()]);
                 }
                 if indexer::settled(self.index_stale, 10_000) && self.index_state != IndexState::Building && self.last_index_build.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
-                    return Task::batch([cloud, self.build_index()]);
+                    return Task::batch([space, cloud, self.refresh_index()]);
                 }
-                cloud
+                Task::batch([space, cloud])
             }
             Message::MouseMove(p) => {
                 self.mouse = p;
@@ -1374,12 +1501,19 @@ impl App {
                 }
                 Task::none()
             }
-            Message::IndexTick => self.build_index(),
+            Message::IndexTick => self.safety_net_index(),
             Message::FsChanged(change) => {
                 if self.preview_want.as_ref().is_some_and(|p| p.parent() == Some(change.folder.as_path())) { self.preview_want = None; self.preview_generation += 1; }
                 if change.names_changed && self.settings.search.index {
-                    // The settings didn't change: don't invalidate the index, just refresh it.
-                    self.index_stale.get_or_insert_with(Instant::now);
+                    // Don't invalidate: recrawl the folder that changed. Empty folder: watch overflowed.
+                    if change.folder.as_os_str().is_empty() {
+                        self.index_dirty.get_or_insert_with(Instant::now);
+                    } else {
+                        if !self.index_changed.contains(&change.folder) {
+                            self.index_changed.push(change.folder.clone());
+                        }
+                        self.index_stale.get_or_insert_with(Instant::now);
+                    }
                 }
                 if self.drive_trashes.contains(&change.folder) && change.names_changed {
                     self.refresh_trashes();

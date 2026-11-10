@@ -5,11 +5,11 @@
 //! `~/.config/echofiles/settings.toml`, which `ef` reads too.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ef_config::{self as config, DefaultView, Density, OpenTo, Scope, SearchConfig};
-use iced::widget::{column, container, row, scrollable, text, text_input, Space};
+use iced::widget::{Space, column, container, row, scrollable, text, text_input};
 use iced::{Alignment, Background, Border, Element, Length, Padding, Task};
 
 use crate::app::{App, Message, Mode};
@@ -97,6 +97,9 @@ pub struct SettingsUi {
     /// Validation message under one field.
     error: Option<(Field, String)>,
     save: SaveState,
+    /// When the last change was saved: "Saved" shows for a few seconds after a change,
+    /// not forever (it read as if something had just happened).
+    saved_at: Option<std::time::Instant>,
     /// A problem applying a setting to the system (autostart file, skill link).
     problem: Option<String>,
     skill_installed: bool,
@@ -110,6 +113,7 @@ impl SettingsUi {
             drafts: Default::default(),
             error: None,
             save: load_error.map_or(SaveState::Saved, SaveState::Failed),
+            saved_at: None,
             problem: None,
             skill_installed: system::skill_installed(),
             starts_at_login: system::starts_at_login(),
@@ -153,7 +157,9 @@ fn validate(cfg: &SearchConfig, field: Field, raw: &str) -> Result<String, Strin
                 return Err(format!("“{raw}” isn't a full path. Start it with “/” or “~/”."));
             }
             if !path.is_dir() {
-                return Err(format!("“{raw}” isn't a folder on this computer. Check the spelling, or open the folder and use Add current folder."));
+                return Err(format!(
+                    "“{raw}” isn't a folder on this computer. Check the spelling, or open the folder and use Add current folder."
+                ));
             }
             let list = if field == Field::Roots { &cfg.roots } else { &cfg.exclude_paths };
             if list.iter().any(|p| config::expand(p) == path) {
@@ -366,9 +372,14 @@ impl App {
                 self.update(Message::Navigate(target))
             }
             SettingsMsg::Saved(r) => {
-                if let Err(e) = &r { self.notice = Some(format!("Settings were not saved: {e}")); }
+                if let Err(e) = &r {
+                    self.notice = Some(format!("Settings were not saved: {e}"));
+                }
                 self.settings_ui.save = match r {
-                    Ok(()) => SaveState::Saved,
+                    Ok(()) => {
+                        self.settings_ui.saved_at = Some(std::time::Instant::now());
+                        SaveState::Saved
+                    }
                     Err(e) => SaveState::Failed(e),
                 };
                 Task::none()
@@ -395,26 +406,44 @@ impl App {
             Page::Appearance => self.page_appearance(),
             Page::About => self.page_about(),
         };
-        let content = scrollable(container(container(page).max_width(720)).width(Length::Fill).padding([28, 40]).align_x(Alignment::Center)).height(Length::Fill);
+        let content =
+            scrollable(container(container(page).max_width(720)).width(Length::Fill).padding([28, 40]).align_x(Alignment::Center))
+                .height(Length::Fill);
         let body = row![self.settings_nav(), w::vline(p.line), content].height(Length::Fill);
         w::fill(column![self.settings_bar(), w::hline(p.line), body], p.bg).width(Length::Fill).height(Length::Fill).into()
     }
 
     fn settings_bar(&self) -> Element<'_, Message> {
         let p = &self.palette;
+        let recent = self.settings_ui.saved_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3));
         let status: Element<'_, Message> = match &self.settings_ui.save {
-            SaveState::Saved => row![w::glyph(&self.icons, "check", 14.0, color(p.success.ink)), text("Saved").size(style::META).font(style::FONT).color(color(p.ink_muted))]
-                .spacing(style::SPACE_1 + 2.0)
-                .align_y(Alignment::Center)
-                .into(),
+            SaveState::Saved if !recent => Space::new().into(),
+            SaveState::Saved => row![
+                w::glyph(&self.icons, "check", 14.0, color(p.success.ink)),
+                text("Saved").size(style::META).font(style::FONT).color(color(p.ink_muted))
+            ]
+            .spacing(style::SPACE_1 + 2.0)
+            .align_y(Alignment::Center)
+            .into(),
             SaveState::Saving => text("Saving…").size(style::META).font(style::FONT).color(color(p.ink_muted)).into(),
-            SaveState::Failed(e) => row![w::glyph(&self.icons, "error", 14.0, color(p.danger.ink)), text(e.clone()).size(style::META).font(style::FONT).color(color(p.danger.ink))]
-                .spacing(style::SPACE_1 + 2.0)
-                .align_y(Alignment::Center)
-                .into(),
+            SaveState::Failed(e) => row![
+                w::glyph(&self.icons, "error", 14.0, color(p.danger.ink)),
+                text(e.clone()).size(style::META).font(style::FONT).color(color(p.danger.ink))
+            ]
+            .spacing(style::SPACE_1 + 2.0)
+            .align_y(Alignment::Center)
+            .into(),
         };
         let bar = row![
-            w::text_button(p, &self.icons, "Files", Some("arrow-left"), Some("Esc"), Variant::Ghost, Some(Message::Settings(SettingsMsg::Close))),
+            w::text_button(
+                p,
+                &self.icons,
+                "Files",
+                Some("arrow-left"),
+                Some("Esc"),
+                Variant::Ghost,
+                Some(Message::Settings(SettingsMsg::Close))
+            ),
             container(Space::new()).width(1).height(18).style({
                 let c = color(p.line);
                 move |_| container::Style { background: Some(Background::Color(c)), ..Default::default() }
@@ -435,11 +464,20 @@ impl App {
             let active = self.settings_ui.page == page;
             let r = row![
                 w::glyph(&self.icons, icon, 16.0, color(if active { p.accent_ink } else { p.ink_muted })),
-                text(label).size(style::BODY).font(if active { style::FONT_BOLD } else { style::FONT }).color(color(if active { p.ink_strong } else { p.ink })).wrapping(text::Wrapping::None),
+                text(label)
+                    .size(style::BODY)
+                    .font(if active { style::FONT_BOLD } else { style::FONT })
+                    .color(color(if active { p.ink_strong } else { p.ink }))
+                    .wrapping(text::Wrapping::None),
             ]
             .spacing(style::SPACE_4)
             .align_y(Alignment::Center);
-            col = col.push(w::row_button(p, container(r).height(32).align_y(Alignment::Center).into(), active, Some(Message::Settings(SettingsMsg::Page(page)))));
+            col = col.push(w::row_button(
+                p,
+                container(r).height(32).align_y(Alignment::Center).into(),
+                active,
+                Some(Message::Settings(SettingsMsg::Page(page))),
+            ));
         }
         w::fill(col, p.bg_sunken).width(style::SIDEBAR).height(Length::Fill).padding([12, 8]).into()
     }
@@ -473,7 +511,9 @@ impl App {
             border: Border { color: edge, width: 1.0, radius: 4.0.into() },
             ..Default::default()
         });
-        column![text(title.to_uppercase()).size(style::LABEL).font(style::FONT_BOLD).color(color(p.ink_muted)), boxed].spacing(style::SPACE_3).into()
+        column![text(title.to_uppercase()).size(style::LABEL).font(style::FONT_BOLD).color(color(p.ink_muted)), boxed]
+            .spacing(style::SPACE_3)
+            .into()
     }
 
     /// Label + description on the left, control on the right.
@@ -504,9 +544,12 @@ impl App {
 
     pub(crate) fn note<'a>(&self, tone: ef_theme::Semantic, icon: &str, msg: String, action: Option<(&str, SettingsMsg)>) -> Element<'a, Message> {
         let p = &self.palette;
-        let mut r = row![w::glyph(&self.icons, icon, 16.0, color(tone.ink)), text(msg).size(style::META).font(style::FONT).color(color(p.ink)).width(Length::Fill)]
-            .spacing(style::SPACE_4)
-            .align_y(Alignment::Center);
+        let mut r = row![
+            w::glyph(&self.icons, icon, 16.0, color(tone.ink)),
+            text(msg).size(style::META).font(style::FONT).color(color(p.ink)).width(Length::Fill)
+        ]
+        .spacing(style::SPACE_4)
+        .align_y(Alignment::Center);
         if let Some((label, m)) = action {
             r = r.push(w::text_button(p, &self.icons, label, None, None, Variant::Secondary, Some(Message::Settings(m))));
         }
@@ -514,7 +557,11 @@ impl App {
         container(r)
             .padding([10, 14])
             .width(Length::Fill)
-            .style(move |_| container::Style { background: Some(Background::Color(bg)), border: Border { color: iced::Color { a: 0.5, ..edge }, width: 1.0, radius: 4.0.into() }, ..Default::default() })
+            .style(move |_| container::Style {
+                background: Some(Background::Color(bg)),
+                border: Border { color: iced::Color { a: 0.5, ..edge }, width: 1.0, radius: 4.0.into() },
+                ..Default::default()
+            })
             .into()
     }
 
@@ -522,10 +569,13 @@ impl App {
         let p = &self.palette;
         let (ef, e) = self.settings_ui.error.as_ref()?;
         (*ef == f).then(|| {
-            row![w::glyph(&self.icons, "error", 14.0, color(p.danger.ink)), text(e.clone()).size(style::META).font(style::FONT).color(color(p.danger.ink))]
-                .spacing(style::SPACE_1 + 2.0)
-                .align_y(Alignment::Center)
-                .into()
+            row![
+                w::glyph(&self.icons, "error", 14.0, color(p.danger.ink)),
+                text(e.clone()).size(style::META).font(style::FONT).color(color(p.danger.ink))
+            ]
+            .spacing(style::SPACE_1 + 2.0)
+            .align_y(Alignment::Center)
+            .into()
         })
     }
 
@@ -541,7 +591,12 @@ impl App {
             let exists = config::expand(item).is_dir();
             let mut r = row![
                 w::glyph(&self.icons, "folder", 16.0, color(p.ink_muted)),
-                text(item.clone()).size(style::BODY).font(style::FONT).color(color(p.ink)).width(Length::Fill).wrapping(text::Wrapping::None),
+                text(item.clone())
+                    .size(style::BODY)
+                    .font(style::FONT)
+                    .color(color(p.ink))
+                    .width(Length::Fill)
+                    .wrapping(text::Wrapping::None),
             ]
             .spacing(style::SPACE_4)
             .align_y(Alignment::Center);
@@ -549,7 +604,13 @@ impl App {
                 r = r.push(w::pill(p, "Missing", Some(p.warning)));
             }
             r = r.push(w::icon_button(p, &self.icons, "close", Some(Message::Settings(SettingsMsg::Remove(f, i))), false));
-            rows.push(container(r).padding([4, 8]).padding(iced::Padding { left: 16.0, top: 4.0, bottom: 4.0, right: 8.0 }).width(Length::Fill).into());
+            rows.push(
+                container(r)
+                    .padding([4, 8])
+                    .padding(iced::Padding { left: 16.0, top: 4.0, bottom: 4.0, right: 8.0 })
+                    .width(Length::Fill)
+                    .into(),
+            );
         }
         let draft = &self.settings_ui.drafts[slot(f)];
         let invalid = self.settings_ui.error.as_ref().is_some_and(|(ef, _)| *ef == f);
@@ -560,13 +621,23 @@ impl App {
             .font(style::FONT)
             .padding([5, 10])
             .style(w::field_style(p, invalid));
-        let mut add = column![row![
-            input,
-            w::text_button(p, &self.icons, "Add", Some("plus"), None, Variant::Secondary, Some(Message::Settings(SettingsMsg::Add(f)))),
-            w::text_button(p, &self.icons, "Add current folder", Some("folder-plus"), None, Variant::Ghost, Some(Message::Settings(SettingsMsg::AddCurrent(f)))),
+        let mut add = column![
+            row![
+                input,
+                w::text_button(p, &self.icons, "Add", Some("plus"), None, Variant::Secondary, Some(Message::Settings(SettingsMsg::Add(f)))),
+                w::text_button(
+                    p,
+                    &self.icons,
+                    "Add current folder",
+                    Some("folder-plus"),
+                    None,
+                    Variant::Ghost,
+                    Some(Message::Settings(SettingsMsg::AddCurrent(f)))
+                ),
+            ]
+            .spacing(style::SPACE_3)
+            .align_y(Alignment::Center)
         ]
-        .spacing(style::SPACE_3)
-        .align_y(Alignment::Center)]
         .spacing(style::SPACE_3);
         if let Some(e) = self.field_error(f) {
             add = add.push(e);
@@ -602,7 +673,11 @@ impl App {
             .padding(iced::Padding { left: 8.0, right: 0.0, top: 0.0, bottom: 0.0 })
             .height(24)
             .align_y(Alignment::Center)
-            .style(move |_| container::Style { background: Some(Background::Color(bg)), border: Border { color: edge, width: 1.0, radius: 2.0.into() }, ..Default::default() });
+            .style(move |_| container::Style {
+                background: Some(Background::Color(bg)),
+                border: Border { color: edge, width: 1.0, radius: 2.0.into() },
+                ..Default::default()
+            });
             chips = chips.push(chip);
         }
         lines = lines.push(chips);
@@ -614,13 +689,31 @@ impl App {
             .font(style::FONT)
             .padding([5, 10])
             .style(w::field_style(p, invalid));
-        let mut add = column![row![
-            input,
-            w::text_button(p, &self.icons, "Add", Some("plus"), None, Variant::Secondary, Some(Message::Settings(SettingsMsg::Add(Field::Names)))),
-            w::text_button(p, &self.icons, "Reset to recommended", Some("undo"), None, Variant::Ghost, Some(Message::Settings(SettingsMsg::ResetExclusions))),
+        let mut add = column![
+            row![
+                input,
+                w::text_button(
+                    p,
+                    &self.icons,
+                    "Add",
+                    Some("plus"),
+                    None,
+                    Variant::Secondary,
+                    Some(Message::Settings(SettingsMsg::Add(Field::Names)))
+                ),
+                w::text_button(
+                    p,
+                    &self.icons,
+                    "Reset to recommended",
+                    Some("undo"),
+                    None,
+                    Variant::Ghost,
+                    Some(Message::Settings(SettingsMsg::ResetExclusions))
+                ),
+            ]
+            .spacing(style::SPACE_3)
+            .align_y(Alignment::Center)
         ]
-        .spacing(style::SPACE_3)
-        .align_y(Alignment::Center)]
         .spacing(style::SPACE_3);
         if let Some(e) = self.field_error(Field::Names) {
             add = add.push(e);
@@ -634,7 +727,12 @@ impl App {
         for (cmd, what) in lines {
             col = col.push(
                 row![
-                    text(cmd.to_string()).size(style::META).font(style::FONT).color(color(p.ink_strong)).width(Length::FillPortion(5)).wrapping(text::Wrapping::None),
+                    text(cmd.to_string())
+                        .size(style::META)
+                        .font(style::FONT)
+                        .color(color(p.ink_strong))
+                        .width(Length::FillPortion(5))
+                        .wrapping(text::Wrapping::None),
                     text(what.to_string()).size(style::META).font(style::FONT).color(color(p.ink_muted)).width(Length::FillPortion(4)),
                 ]
                 .spacing(style::SPACE_4),
@@ -644,7 +742,11 @@ impl App {
         container(col)
             .padding([12, 14])
             .width(Length::Fill)
-            .style(move |_| container::Style { background: Some(Background::Color(bg)), border: Border { color: edge, width: 1.0, radius: 4.0.into() }, ..Default::default() })
+            .style(move |_| container::Style {
+                background: Some(Background::Color(bg)),
+                border: Border { color: edge, width: 1.0, radius: 4.0.into() },
+                ..Default::default()
+            })
             .into()
     }
 
@@ -675,9 +777,17 @@ impl App {
                 ),
                 self.setting_with(
                     "Start at login",
-                    if g.background { "Starts hidden when you log in, so even the first window is instant." } else { "Needs Keep running in the background." },
+                    if g.background {
+                        "Starts hidden when you log in, so even the first window is instant."
+                    } else {
+                        "Needs Keep running in the background."
+                    },
                     !g.background,
-                    w::switch(p, login_on, g.background.then(|| Box::new(|b| Message::Settings(SettingsMsg::StartAtLogin(b))) as Box<dyn Fn(bool) -> Message>)),
+                    w::switch(
+                        p,
+                        login_on,
+                        g.background.then(|| Box::new(|b| Message::Settings(SettingsMsg::StartAtLogin(b))) as Box<dyn Fn(bool) -> Message>),
+                    ),
                 ),
             ],
         );
@@ -689,11 +799,18 @@ impl App {
                     "Where EchoFiles starts when you open it without a folder.",
                     w::segmented(
                         p,
-                        &[("Home", Message::Settings(SettingsMsg::OpenTo(OpenTo::Home))), ("Last folder", Message::Settings(SettingsMsg::OpenTo(OpenTo::Last)))],
+                        &[
+                            ("Home", Message::Settings(SettingsMsg::OpenTo(OpenTo::Home))),
+                            ("Last folder", Message::Settings(SettingsMsg::OpenTo(OpenTo::Last))),
+                        ],
                         if g.open_to == OpenTo::Home { 0 } else { 1 },
                     ),
                 ),
-                self.setting("Show hidden files", "Dotfiles and dot-folders. Ctrl+H switches it for the open window.", self.toggle(g.show_hidden, SettingsMsg::ShowHidden)),
+                self.setting(
+                    "Show hidden files",
+                    "Dotfiles and dot-folders. Ctrl+H switches it for the open window.",
+                    self.toggle(g.show_hidden, SettingsMsg::ShowHidden),
+                ),
             ],
         );
         let keyboard = self.group(
@@ -713,12 +830,23 @@ impl App {
         let bytes: u64 = self.roots.iter().map(|r| r.bytes()).sum();
         let updated = self.roots.iter().filter_map(|r| r.updated).min();
         let (pill, detail) = match self.index_state {
-            IndexState::Off => (w::pill(p, "Off", None), "Everywhere search walks your folders live instead — slower on big folders.".to_string()),
+            IndexState::Off => {
+                (w::pill(p, "Off", None), "Everywhere search walks your folders live instead — slower on big folders.".to_string())
+            }
             IndexState::Opening => (w::pill(p, "Opening", Some(p.info)), "Loading the saved index…".to_string()),
-            IndexState::Building if entries == 0 => (w::pill(p, "Indexing", Some(p.info)), "Building the index for the first time. Search works live meanwhile.".to_string()),
-            IndexState::Building => (w::pill(p, "Updating", Some(p.info)), format!("{} items · {} · updating now", fmt_count(entries), mb(bytes))),
-            IndexState::Ready if self.index_error.is_some() => (w::pill(p, "Problem", Some(p.warning)), self.index_error.clone().unwrap_or_default()),
-            IndexState::Ready => (w::pill(p, "Ready", Some(p.success)), format!("{} items · {} on disk · updated {}", fmt_count(entries), mb(bytes), indexer::ago(updated))),
+            IndexState::Building if entries == 0 => {
+                (w::pill(p, "Indexing", Some(p.info)), "Building the index for the first time. Search works live meanwhile.".to_string())
+            }
+            IndexState::Building => {
+                (w::pill(p, "Updating", Some(p.info)), format!("{} items · {} · updating now", fmt_count(entries), mb(bytes)))
+            }
+            IndexState::Ready if self.index_error.is_some() => {
+                (w::pill(p, "Problem", Some(p.warning)), self.index_error.clone().unwrap_or_default())
+            }
+            IndexState::Ready => (
+                w::pill(p, "Ready", Some(p.success)),
+                format!("{} items · {} on disk · updated {}", fmt_count(entries), mb(bytes), indexer::ago(updated)),
+            ),
         };
         let building = self.index_state == IndexState::Building;
         let rebuild = w::text_button(
@@ -731,13 +859,9 @@ impl App {
             (!building && self.settings.search.index).then_some(Message::Settings(SettingsMsg::Rebuild)),
         );
         container(
-            row![
-                pill,
-                text(detail).size(style::META).font(style::FONT).color(color(p.ink_muted)).width(Length::Fill),
-                rebuild,
-            ]
-            .spacing(style::SPACE_4)
-            .align_y(Alignment::Center),
+            row![pill, text(detail).size(style::META).font(style::FONT).color(color(p.ink_muted)).width(Length::Fill), rebuild,]
+                .spacing(style::SPACE_4)
+                .align_y(Alignment::Center),
         )
         .padding([10, 16])
         .width(Length::Fill)
@@ -749,7 +873,7 @@ impl App {
         let p = &self.palette;
         let mut index_rows = vec![self.setting(
             "Search index",
-            "A list of file names kept on disk so Everywhere search answers instantly and AI agents can use ef. Updates within seconds in Downloads, Desktop and Documents and every minute elsewhere. Turning it off deletes the index.",
+            "A list of file names kept on disk so Everywhere search answers instantly and AI agents can use ef. Updates within a minute in Downloads, Desktop, Documents and the folder you have open, every 30 minutes elsewhere, and every 6 hours on other drives. Turning it off deletes the index.",
             self.toggle(s.index, SettingsMsg::Index),
         )];
         index_rows.push(self.index_status());
@@ -770,15 +894,23 @@ impl App {
                 "What the search box searches when a window opens. Ctrl+E switches it any time.",
                 w::segmented(
                     p,
-                    &[("This folder", Message::Settings(SettingsMsg::DefaultScope(Scope::Folder))), ("Everywhere", Message::Settings(SettingsMsg::DefaultScope(Scope::Everywhere)))],
+                    &[
+                        ("This folder", Message::Settings(SettingsMsg::DefaultScope(Scope::Folder))),
+                        ("Everywhere", Message::Settings(SettingsMsg::DefaultScope(Scope::Everywhere))),
+                    ],
                     if s.default_scope == Scope::Folder { 0 } else { 1 },
                 ),
             )],
         );
 
-        let mut roots = vec![self.block(
-            text("Everywhere search and ef cover these folders and everything inside them.").size(style::META).font(style::FONT).color(color(p.ink_muted)),
-        )];
+        let mut roots = vec![
+            self.block(
+                text("Everywhere search and ef cover these folders and everything inside them.")
+                    .size(style::META)
+                    .font(style::FONT)
+                    .color(color(p.ink_muted)),
+            ),
+        ];
         roots.extend(self.path_list(Field::Roots, &s.roots, "", "Folder path, like ~/Projects"));
         let roots = self.group("Indexed folders", roots);
 
@@ -798,9 +930,14 @@ impl App {
         }
         let drives = self.group("Drives", drives);
 
-        let mut never = vec![self.block(
-            text("Folders that never appear in search results — private or noisy places. Their contents aren't indexed at all.").size(style::META).font(style::FONT).color(color(p.ink_muted)),
-        )];
+        let mut never = vec![
+            self.block(
+                text("Folders that never appear in search results — private or noisy places. Their contents aren't indexed at all.")
+                    .size(style::META)
+                    .font(style::FONT)
+                    .color(color(p.ink_muted)),
+            ),
+        ];
         never.extend(self.path_list(Field::Exclude, &s.exclude_paths, "Nothing excluded.", "Folder path, like ~/Private"));
         let never = self.group("Never show in search", never);
 
@@ -818,7 +955,10 @@ impl App {
         skip.extend(self.name_chips());
         let skip = self.group("Skip contents of", skip);
 
-        self.page(self.page_head("Search & index", "What search covers, and the index that makes it instant."), vec![index, search, roots, drives, never, skip])
+        self.page(
+            self.page_head("Search & index", "What search covers, and the index that makes it instant."),
+            vec![index, search, roots, drives, never, skip],
+        )
     }
 
     fn page_agents(&self) -> Element<'_, Message> {
@@ -831,7 +971,12 @@ impl App {
         };
         let mut groups = Vec::new();
         if !self.settings.search.index && a.cli {
-            groups.push(self.note(p.warning, "alert", "ef answers from the search index, which is off. Agents will be told to turn it on.".into(), Some(("Go to Search & index", SettingsMsg::Page(Page::Search)))));
+            groups.push(self.note(
+                p.warning,
+                "alert",
+                "ef answers from the search index, which is off. Agents will be told to turn it on.".into(),
+                Some(("Go to Search & index", SettingsMsg::Page(Page::Search))),
+            ));
         }
         groups.push(self.group(
             "Command line",
@@ -886,7 +1031,15 @@ impl App {
     fn page_appearance(&self) -> Element<'_, Message> {
         let p = &self.palette;
         let mut swatches = row![].spacing(6);
+        // Themes reuse colours across roles (accent and warning are often one orange); show
+        // each colour once.
+        let mut seen: Vec<ef_theme::Rgb> = Vec::new();
         for c in [p.bg, p.bg_raised, p.ink, p.accent, p.world_linux, p.world_windows, p.success.base, p.warning.base, p.danger.base] {
+            let close = |a: &ef_theme::Rgb| (a.r - c.r).abs() + (a.g - c.g).abs() + (a.b - c.b).abs() < 0.03;
+            if seen.iter().any(close) {
+                continue;
+            }
+            seen.push(c);
             let edge = color(p.line_strong);
             swatches = swatches.push(container(Space::new()).width(18).height(18).style(move |_| container::Style {
                 background: Some(Background::Color(color(c))),
@@ -896,13 +1049,11 @@ impl App {
         }
         let theme = self.group(
             "Theme",
-            vec![
-                self.setting(
-                    &format!("Omarchy theme · {}", if p.name.is_empty() { "default" } else { &p.name }),
-                    "EchoFiles follows your Omarchy theme and font and switches with them. Change the theme from the Omarchy menu.",
-                    swatches.into(),
-                ),
-            ],
+            vec![self.setting(
+                &format!("Omarchy theme · {}", if p.name.is_empty() { "default" } else { &p.name }),
+                "EchoFiles follows your Omarchy theme and font and switches with them. Change the theme from the Omarchy menu.",
+                swatches.into(),
+            )],
         );
         let d = self.settings.appearance.density;
         let layout = self.group(
@@ -925,7 +1076,7 @@ impl App {
                 ),
             ), self.setting(
                 "Folders open as",
-                "Automatic uses a grid in Pictures, Videos and camera folders and a list everywhere else. Columns opens each folder in a new column. Changing this resets views you switched by hand (Ctrl+1, Ctrl+2, Ctrl+3).",
+                "Automatic uses a grid in Pictures, Videos, camera folders and any folder that is mostly photos or videos, and a list everywhere else. Columns opens each folder in a new column. Changing this resets views you switched by hand (Ctrl+1, Ctrl+2, Ctrl+3).",
                 w::segmented(
                     p,
                     &[
@@ -973,19 +1124,64 @@ impl App {
         let s = &self.settings.phone;
         let mut groups = Vec::new();
         let this = match self.phone_id() {
-            None => vec![self.setting("No phone yet", "Pair your Android phone over Wi-Fi with the free KDE Connect app.", w::text_button(p, &self.icons, "Connect phone", Some("phone"), None, Variant::Primary, Some(ph(PhoneMsg::Dialog(true)))))],
+            None => vec![self.setting(
+                "No phone yet",
+                "Pair your Android phone over Wi-Fi with the EchoConnect app.",
+                w::text_button(p, &self.icons, "Connect phone", Some("phone"), None, Variant::Primary, Some(ph(PhoneMsg::Dialog(true)))),
+            )],
             Some(id) => {
                 let name = self.phone_name(&id);
-                let state = if self.phone_online(&id) { "Connected over Wi-Fi".to_string() } else { self.phone.seen.get(&id).map(|s| format!("Not nearby · last seen {}", crate::phone::ago(*s))).unwrap_or_else(|| "Not nearby".into()) };
-                let who = row![self.phone_device(&id, 34.0), column![text(name.clone()).size(style::BODY).font(style::FONT).color(color(p.ink_strong)), text(state).size(style::META).font(style::FONT).color(color(p.ink_muted))].spacing(3).width(Length::Fill)]
-                    .spacing(style::SPACE_4)
-                    .align_y(Alignment::Center);
+                let state = if self.phone_online(&id) {
+                    "Connected over Wi-Fi".to_string()
+                } else {
+                    self.phone
+                        .seen
+                        .get(&id)
+                        .map(|s| format!("Not nearby · last seen {}", crate::phone::ago(*s)))
+                        .unwrap_or_else(|| "Not nearby".into())
+                };
+                let who = row![
+                    self.phone_device(&id, 34.0),
+                    column![
+                        text(name.clone()).size(style::BODY).font(style::FONT).color(color(p.ink_strong)),
+                        text(state).size(style::META).font(style::FONT).color(color(p.ink_muted))
+                    ]
+                    .spacing(3)
+                    .width(Length::Fill)
+                ]
+                .spacing(style::SPACE_4)
+                .align_y(Alignment::Center);
                 vec![
-                    container(row![who, w::text_button(p, &self.icons, "Forget phone", Some("unlink"), None, Variant::Ghost, Some(ph(PhoneMsg::Forget(id.clone()))))].spacing(style::SPACE_4).align_y(Alignment::Center)).padding([12, 16]).width(Length::Fill).into(),
+                    container(
+                        row![
+                            who,
+                            w::text_button(
+                                p,
+                                &self.icons,
+                                "Forget phone",
+                                Some("unlink"),
+                                None,
+                                Variant::Ghost,
+                                Some(ph(PhoneMsg::Forget(id.clone())))
+                            )
+                        ]
+                        .spacing(style::SPACE_4)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([12, 16])
+                    .width(Length::Fill)
+                    .into(),
                     self.setting(
                         "Phone picture",
                         "What the phone on the hub shows on its screen.",
-                        w::segmented(p, &[("Latest photo", ph(PhoneMsg::SetPicture(PhonePicture::Photo))), ("EchoFiles", ph(PhoneMsg::SetPicture(PhonePicture::Echofiles)))], usize::from(s.picture == PhonePicture::Echofiles)),
+                        w::segmented(
+                            p,
+                            &[
+                                ("Latest photo", ph(PhoneMsg::SetPicture(PhonePicture::Photo))),
+                                ("EchoFiles", ph(PhoneMsg::SetPicture(PhonePicture::Echofiles))),
+                            ],
+                            usize::from(s.picture == PhonePicture::Echofiles),
+                        ),
                     ),
                 ]
             }
@@ -994,17 +1190,58 @@ impl App {
         groups.push(self.group(
             "Features",
             vec![
-                self.setting("Files and photos", "Browse the phone in the sidebar and copy both ways. Needs Filesystem expose on in KDE Connect.", sw(s.files, PhoneMsg::SetFiles)),
-                self.setting("Shared clipboard", "Copy on one, paste on the other. Works while EchoFiles is open.", sw(s.clipboard, PhoneMsg::SetClipboard)),
-                self.setting("Messages", "Read and send texts from the laptop. The phone asks for SMS permission the first time.", sw(s.messages, PhoneMsg::SetMessages)),
-                self.setting("Low battery warning", "A notice when the phone drops to 15%.", sw(s.battery_warning, PhoneMsg::SetBatteryWarning)),
+                self.setting(
+                    "Files and photos",
+                    "Browse the phone in the sidebar and copy both ways. EchoConnect needs All files access on the phone.",
+                    sw(s.files, PhoneMsg::SetFiles),
+                ),
+                self.setting(
+                    "Shared clipboard",
+                    "Copy on one, paste on the other. Works while EchoFiles is open.",
+                    sw(s.clipboard, PhoneMsg::SetClipboard),
+                ),
+                self.setting(
+                    "Messages",
+                    "Read and send texts from the laptop. The phone asks for SMS permission the first time.",
+                    sw(s.messages, PhoneMsg::SetMessages),
+                ),
+                self.setting(
+                    "Low battery warning",
+                    "A notice when the phone drops to 15%.",
+                    sw(s.battery_warning, PhoneMsg::SetBatteryWarning),
+                ),
+            ],
+        ));
+        // EchoConnect's extras, here as well as on the hub, so every phone setting has a
+        // home in Settings.
+        let extra = |on: bool, key: &'static str| w::switch(p, on, Some(Box::new(move |_| Message::Phone(PhoneMsg::Extra(key.into())))));
+        groups.push(self.group(
+            "EchoConnect",
+            vec![
+                self.setting("Sync Do Not Disturb", "The laptop and the phone go quiet together.", extra(s.dnd_sync, "dnd-sync")),
+                self.setting("Copy one-time codes", "Codes from texts land on the laptop's clipboard.", extra(s.otp, "otp")),
+                self.setting("Lock laptop when away", "Locks this session when the phone leaves the Wi-Fi.", extra(s.autolock, "autolock")),
+                self.setting(
+                    "Index phone files",
+                    "Phone file names show in Everywhere search, even offline.",
+                    extra(s.phone_index, "index"),
+                ),
+                self.setting("Receive camera backup", "New camera photos save to ~/Pictures/Phone/Backup.", extra(s.backup, "backup")),
             ],
         ));
         groups.push(self.group(
             "Receiving files",
             vec![
-                self.setting("Accept files automatically", "Files you share to this laptop save straight away. Turn off to approve each one.", sw(s.auto_accept, PhoneMsg::SetAutoAccept)),
-                self.setting("Save to", &s.save_to, w::text_button(p, &self.icons, "Change…", Some("folder"), None, Variant::Ghost, Some(ph(PhoneMsg::ChangeSaveTo)))),
+                self.setting(
+                    "Accept files automatically",
+                    "Files you share to this laptop save straight away. Turn off to approve each one.",
+                    sw(s.auto_accept, PhoneMsg::SetAutoAccept),
+                ),
+                self.setting(
+                    "Save to",
+                    &s.save_to,
+                    w::text_button(p, &self.icons, "Change…", Some("folder"), None, Variant::Ghost, Some(ph(PhoneMsg::ChangeSaveTo))),
+                ),
             ],
         ));
         let mut notif = vec![self.setting(
@@ -1027,29 +1264,58 @@ impl App {
         for (i, a) in s.muted_apps.iter().enumerate() {
             let (bg, edge) = (color(p.bg_deep), color(p.line_strong));
             chips = chips.push(
-                container(row![text(a.clone()).size(style::META).font(style::FONT).color(color(p.ink)), w::icon_button(p, &self.icons, "close", Some(ph(PhoneMsg::MuteRemove(i))), false)].spacing(2).align_y(Alignment::Center))
-                    .padding(Padding { left: 8.0, ..Padding::ZERO })
-                    .style(move |_| container::Style { background: Some(Background::Color(bg)), border: Border { color: edge, width: 1.0, radius: 2.0.into() }, ..Default::default() }),
+                container(
+                    row![
+                        text(a.clone()).size(style::META).font(style::FONT).color(color(p.ink)),
+                        w::icon_button(p, &self.icons, "close", Some(ph(PhoneMsg::MuteRemove(i))), false)
+                    ]
+                    .spacing(2)
+                    .align_y(Alignment::Center),
+                )
+                .padding(Padding { left: 8.0, ..Padding::ZERO })
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(bg)),
+                    border: Border { color: edge, width: 1.0, radius: 2.0.into() },
+                    ..Default::default()
+                }),
             );
         }
-        notif.push(self.block(column![
-            text("Never show notifications from").size(style::META).font(style::FONT).color(color(p.ink_muted)),
-            chips.wrap(),
-            row![
-                text_input("App name, like Instagram", &self.phone.mute_draft).on_input(|t| Message::Phone(PhoneMsg::MuteDraft(t))).on_submit(Message::Phone(PhoneMsg::MuteAdd)).size(style::BODY).font(style::FONT).padding([5, 10]).style(w::field_style(p, false)),
-                w::text_button(p, &self.icons, "Add", Some("plus"), None, Variant::Secondary, Some(ph(PhoneMsg::MuteAdd))),
-            ]
-            .spacing(style::SPACE_3)
-            .align_y(Alignment::Center),
-        ]
-        .spacing(style::SPACE_3)));
+        notif.push(
+            self.block(
+                column![
+                    text("Never show notifications from").size(style::META).font(style::FONT).color(color(p.ink_muted)),
+                    chips.wrap(),
+                    row![
+                        text_input("App name, like Instagram", &self.phone.mute_draft)
+                            .on_input(|t| Message::Phone(PhoneMsg::MuteDraft(t)))
+                            .on_submit(Message::Phone(PhoneMsg::MuteAdd))
+                            .size(style::BODY)
+                            .font(style::FONT)
+                            .padding([5, 10])
+                            .style(w::field_style(p, false)),
+                        w::text_button(p, &self.icons, "Add", Some("plus"), None, Variant::Secondary, Some(ph(PhoneMsg::MuteAdd))),
+                    ]
+                    .spacing(style::SPACE_3)
+                    .align_y(Alignment::Center),
+                ]
+                .spacing(style::SPACE_3),
+            ),
+        );
         groups.push(self.group("Notifications", notif));
-        self.page(self.page_head("Phone", "Your Android phone over Wi-Fi, through the KDE Connect app. Features you turn off stop on both devices."), groups)
+        self.page(
+            self.page_head(
+                "Phone",
+                "Your Android phone over Wi-Fi, through the EchoConnect app. Features you turn off stop on both devices.",
+            ),
+            groups,
+        )
     }
 
     fn page_about(&self) -> Element<'_, Message> {
         let p = &self.palette;
-        let open = |path: PathBuf| w::text_button(p, &self.icons, "Show", Some("folder"), None, Variant::Ghost, Some(Message::Settings(SettingsMsg::Reveal(path))));
+        let open = |path: PathBuf| {
+            w::text_button(p, &self.icons, "Show", Some("folder"), None, Variant::Ghost, Some(Message::Settings(SettingsMsg::Reveal(path))))
+        };
         let info = self.group(
             "EchoFiles",
             vec![
@@ -1092,11 +1358,18 @@ pub(crate) fn persist(s: config::Settings) -> Task<Message> {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     static WRITTEN: Mutex<u64> = Mutex::new(0);
     let generation = NEXT.fetch_add(1, Ordering::Relaxed);
-    crate::app::background(move || {
-        let mut written = WRITTEN.lock().unwrap();
-        if *written > generation { return Ok(()); }
-        let r = s.save().map_err(|e| e.to_string());
-        if r.is_ok() { *written = generation; }
-        r
-    }, |r| Message::Settings(SettingsMsg::Saved(r)))
+    crate::app::background(
+        move || {
+            let mut written = WRITTEN.lock().unwrap();
+            if *written > generation {
+                return Ok(());
+            }
+            let r = s.save().map_err(|e| e.to_string());
+            if r.is_ok() {
+                *written = generation;
+            }
+            r
+        },
+        |r| Message::Settings(SettingsMsg::Saved(r)),
+    )
 }

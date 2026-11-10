@@ -1,360 +1,291 @@
 package app.echoconnect.ui
 
 import android.Manifest
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.*
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.echoconnect.*
 import app.echoconnect.clipboard.ClipboardSync
 import app.echoconnect.scribe.Scribe
-import kotlin.math.PI
-import kotlin.math.cos
+import kotlin.math.abs
 import kotlin.math.sin
-import kotlin.random.Random
 
-/** Words a phase is called on screen, and the tone of its pill. */
-private fun phaseLabel(p: String): Pair<String, String?> = when (p) {
-    "listening" -> "Listening" to "danger"
-    "paused" -> "Paused" to "warning"
-    "transcribing" -> "Hearing it" to "info"
-    "cleaning" -> "Polishing" to "info"
-    "working" -> "Working" to "info"
-    "done" -> "Typed" to "success"
-    "error" -> "Didn't land" to "danger"
-    "busy" -> "Busy" to "warning"
-    else -> "Ready" to null
+private val MODES = listOf("dictate", "edit", "note")
+
+/** The laptop's word for what it's doing, and the light for it. */
+private fun phase(p: String, recording: Boolean): Pair<String, LedState> = when {
+    recording && p == "paused" -> "Paused" to LedState.Warn
+    recording -> "On air" to LedState.Signal
+    p == "transcribing" -> "Hearing it" to LedState.Warn
+    p == "cleaning" -> "Polishing" to LedState.Warn
+    p == "working" -> "Working" to LedState.Warn
+    p == "done" -> "Typed" to LedState.Live
+    p == "error" -> "Didn't land" to LedState.Bad
+    else -> "Standing by" to LedState.Off
 }
 
 /**
- * Dictate on the laptop with this phone: hold the mic and talk, let go to send; a quick tap
- * locks it hands-free (tap again to send). Words stream back while you speak, and the text
- * lands wherever the laptop's cursor is.
+ * Dictation on the laptop, in the Relay language: the carbon half is the laptop (where the
+ * words land, live, in its type), the seam is your voice crossing over, and the paper half is
+ * this phone — one big signal key to hold and talk, the mode, the switches, and remote keys.
  */
 @Composable fun DictateScreen(s: UiState, host: Host, back: () -> Unit) {
     val ctx = host.context
+    val r = relay()
+    val view = LocalView.current
     host.revision
     val d by Scribe.state.collectAsStateWithLifecycle()
     val l = s.laptop
-    val haptic = LocalHapticFeedback.current
-    LaunchedEffect(l?.connected) { if (l?.connected == true) Scribe.hello() }
+    val connected = l?.connected == true
+    LaunchedEffect(connected) { if (connected) Scribe.hello() }
     // The screen stays on while this phone is the microphone.
-    val view = LocalView.current
     DisposableEffect(d.recording) {
         view.keepScreenOn = d.recording
         onDispose { view.keepScreenOn = false }
     }
+    // The last few seconds of your voice, for the seam.
+    val levels = remember { mutableStateListOf<Float>().apply { repeat(48) { add(0f) } } }
+    LaunchedEffect(d.level, d.recording) { if (d.recording) { levels.removeAt(0); levels.add(d.level) } }
 
-    // Session stats: when this dictation started, and the last one's pace.
     var since by remember { mutableLongStateOf(0L) }
     var wpm by remember { mutableIntStateOf(0) }
-    var sparks by remember { mutableIntStateOf(0) }
     var locked by remember { mutableStateOf(false) }
-    var lastPhase by remember { mutableStateOf(d.phase) }
+    var last by remember { mutableStateOf(d.phase) }
     LaunchedEffect(d.phase) {
-        if (d.phase == "done" && lastPhase != "done") {
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            sparks++
+        if (d.phase == "done" && last != "done") {
+            Haptics.confirm(view)
             val secs = ((System.currentTimeMillis() - since) / 1000.0).coerceAtLeast(1.0)
             if (since > 0) wpm = (d.text.split(Regex("\\s+")).count { it.isNotBlank() } * 60 / secs).toInt()
         }
-        if (d.phase == "error" && lastPhase != "error") haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        if (d.phase == "error" && last != "error") Haptics.reject(view)
         if (d.phase !in setOf("listening", "paused")) locked = false
-        lastPhase = d.phase
+        last = d.phase
     }
-
-    val connected = l?.connected == true
     val ready = connected && d.available && Scribe.canRecord(ctx) && Prefs.on(ctx, "dictation")
-    val (pill, tone) = phaseLabel(if (d.recording && d.phase == "idle") "listening" else d.phase)
+    val working = d.phase in setOf("transcribing", "cleaning", "working")
+    val (status, led) = phase(d.phase, d.recording)
 
-    Column {
-        AppBar("Dictate", back, sub = when {
-            !connected -> "Laptop not nearby"
-            !d.available -> "Waiting for EchoScribe on ${l?.name}"
-            d.app.isNotBlank() -> "Into ${d.app}${if (d.persona.isNotBlank()) " · ${d.persona}" else ""}"
-            else -> "Types where ${l?.name}'s cursor is"
-        })
-        ScreenBody {
-            when {
-                l == null -> Banner("Pair a laptop first.", "Dictation types on a laptop running EchoFiles and EchoScribe.", "warning") { Button("Pair", size = BtnSize.Sm) { host.go("pair") } }
-                !connected -> Banner("Not nearby.", "Open ${l.name} on the same Wi-Fi, or keep it in Bluetooth range.", "info")
-                !Prefs.on(ctx, "dictation") -> Banner("Dictation is off.", "Turn it on to use this phone's mic with EchoScribe.", "warning") { Button("Turn on", size = BtnSize.Sm) { Prefs.set(ctx, "dictation", true); host.refresh(); Scribe.hello() } }
-                !Scribe.canRecord(ctx) -> Banner("Microphone needed.", "EchoConnect only listens while you hold the mic, or when the laptop asks and you allow it.", "warning") { Button("Allow", size = BtnSize.Sm) { host.request(Manifest.permission.RECORD_AUDIO) } }
-                !d.available && d.asked -> Banner("EchoScribe isn't answering.", d.error.ifBlank { "Start EchoScribe on ${l.name}; EchoFiles connects them on its own." }, "info") { Button("Retry", size = BtnSize.Sm) { Scribe.hello() } }
-            }
-
-            // ---------------------------------------------------------------- stage
-            Column(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).background(token("bg-sunken")).border(1.dp, token("line"), RoundedCornerShape(4.dp)).padding(vertical = 22.dp, horizontal = 16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatePill(pill, tone, small = true)
-                    if (d.laptopAsked && d.recording) StatePill("${l?.name ?: "Laptop"} asked", "info", "laptop", small = true)
-                    if (d.hinglish) StatePill("Hinglish", "warning", small = true)
-                    if (d.code == "on") StatePill("Code", "info", "code", small = true)
-                }
-                Box(contentAlignment = Alignment.Center) {
-                    Orb(
-                        level = d.level,
-                        live = d.recording,
-                        busy = d.phase in setOf("transcribing", "cleaning", "working"),
-                        enabled = ready || d.recording,
-                        sparks = sparks,
-                        onPress = {
-                            if (!Scribe.state.value.recording) {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                since = System.currentTimeMillis()
-                                if (!Scribe.start(ctx, d.mode)) host.snack(Snack("Couldn't reach ${l?.name ?: "the laptop"}", "danger", "error"))
-                            }
-                        },
-                        // Read the scribe's state directly: `d` only catches up on the next frame.
-                        onRelease = { heldMs ->
-                            when {
-                                // A quick tap starts hands-free; the next tap sends.
-                                heldMs < 300 && !locked && Scribe.state.value.recording -> { locked = true; haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
-                                locked && heldMs < 300 && Scribe.state.value.recording && System.currentTimeMillis() - since > 600 -> { locked = false; Scribe.stop() }
-                                !locked -> Scribe.stop()
-                            }
-                        },
-                    )
-                }
-                if (d.recording) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button("Cancel", Variant.Ghost, BtnSize.Sm, icon = "close") { locked = false; Scribe.cancel(); haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
-                    if (locked) Button("Send", Variant.Primary, BtnSize.Sm, icon = "send") { locked = false; Scribe.stop() }
-                }
-                Txt(
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        // ------------------------------------------------------------ carbon: the laptop
+        Head(back) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Led(led, blink = d.recording && d.phase != "paused")
+                Lbl(
                     when {
-                        d.recording && locked -> "Hands-free · tap to send"
-                        d.recording -> "Let go to send"
-                        ready -> "Hold to talk · tap for hands-free"
-                        else -> " "
+                        !connected -> "No signal"
+                        !d.available -> "EchoScribe · not running"
+                        d.app.isNotBlank() -> "$status · ${d.app}${if (d.persona.isNotBlank()) " · ${d.persona}" else ""}"
+                        else -> "$status · EchoScribe"
                     },
-                    muted = true, size = 13, line = 18,
+                    ink(2), Modifier.weight(1f),
                 )
-
-                // Live words, then the result.
-                val shown = when {
-                    d.recording || d.phase == "listening" || d.phase == "paused" -> d.live
-                    d.phase == "done" -> d.text
-                    d.phase == "error" -> d.error
-                    d.phase in setOf("transcribing", "cleaning", "working") -> d.live.ifBlank { d.detail }
-                    else -> ""
-                }
-                AnimatedContent(targetState = shown, transitionSpec = { fadeIn(tween(160)) togetherWith fadeOut(tween(120)) }, label = "words") { t ->
-                    Text(
-                        t.ifBlank { if (ready) "Your words show up here as you speak." else "" },
-                        color = when {
-                            t.isBlank() -> token("ink-faint")
-                            d.phase == "error" -> token("danger-ink")
-                            d.phase == "done" -> token("ink-strong")
-                            else -> token("ink")
-                        },
-                        fontSize = if (t.length > 160) 15.sp else 18.sp,
-                        lineHeight = if (t.length > 160) 22.sp else 26.sp,
-                        textAlign = TextAlign.Center,
-                        maxLines = 8,
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
-                    )
-                }
-                if (d.phase == "done" && wpm > 0) Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Stat("$wpm", "wpm")
-                    Stat("${d.text.split(Regex("\\s+")).count { it.isNotBlank() }}", "words")
-                    Stat("${d.history.size}", "this session")
-                }
+                if (d.laptopAsked && d.recording) Lbl("${l?.name ?: "Laptop"} asked", r.sig)
             }
-
-            // ---------------------------------------------------------------- mode and switches
-            Segmented(listOf("dictate" to "Dictate", "edit" to "Edit selection", "note" to "Note"), d.mode, "Mode") { Scribe.setMode(it) }
-            ListGroup("Switches", foot = "These change EchoScribe on the laptop too.") {
-                ListRow("Hinglish", "Indic model, Latin script, whatever the app", icon = "message", trailing = { Switch(d.hinglish, "Hinglish", enabled = d.available) { Scribe.command("hinglish") } })
-                ListRow(
-                    "Code mode",
-                    when (d.code) { "on" -> "Everywhere: camelCase, symbols, repo names"; "off" -> "Off"; else -> "In editors and terminals" },
-                    icon = "code",
-                    trailing = { Button(when (d.code) { "on" -> "Everywhere"; "off" -> "Off"; else -> "Auto" }, size = BtnSize.Sm, enabled = d.available) { Scribe.command("code") } },
-                )
-                ListRow("Personality", d.persona.ifBlank { "Follows the app" }, icon = "user", trailing = { Button("Next", size = BtnSize.Sm, enabled = d.available) { Scribe.command("persona") } })
+            Title(l?.name ?: "No laptop", if (d.recording) "is listening." else "types here.", size = 32)
+            // The words, as they land.
+            val shown = when {
+                d.recording || d.phase == "listening" || d.phase == "paused" -> d.live
+                d.phase == "done" -> d.text
+                d.phase == "error" -> d.error
+                working -> d.live.ifBlank { d.detail }
+                else -> ""
             }
-
-            // ---------------------------------------------------------------- remote keys
-            val keys = listOf(
-                KeyAction("send", "Enter", true) { Scribe.command("key") { put("key", "Return") } },
-                KeyAction("arrow-right", "Tab", true) { Scribe.command("key") { put("key", "Tab") } },
-                KeyAction("pause", if (d.phase == "paused") "Resume" else "Pause", d.recording) { Scribe.command("pause") },
-                KeyAction("undo", "Undo", true) { Scribe.command("undo") },
-                KeyAction("redo", "Raw words", true) { Scribe.command("undo_cleanup") },
-                KeyAction("paste", "Paste last", true) { Scribe.command("paste_last") },
-            )
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                keys.chunked(3).forEach { row ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        row.forEach { k ->
-                            Column(
-                                Modifier.weight(1f).disabled(!(k.enabled && d.available)).clip(RoundedCornerShape(4.dp)).background(token("bg-raised")).border(1.dp, token("line"), RoundedCornerShape(4.dp))
-                                    .tap(k.enabled && d.available, label = k.label, radius = 4.dp) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); k.run() }.padding(vertical = 12.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                Glyph(k.icon, color = token("world-linux"), size = 18)
-                                Txt(k.label, size = 12, line = 16, bold = true, color = token("ink-strong"))
-                            }
-                        }
-                    }
-                }
+            Box(Modifier.fillMaxWidth().heightIn(min = 96.dp).background(r.carbon2, RoundedCornerShape(16.dp)).padding(14.dp)) {
+                if (shown.isBlank()) Ser(if (ready) "Say something…" else "—", 26, ink(3))
+                else T(shown.takeLast(420), if (shown.length > 160) 16 else 20, 500, if (d.phase == "error") r.badInk else ink(1), line = if (shown.length > 160) 22 else 27)
             }
-
-            // ---------------------------------------------------------------- what landed
-            if (d.history.isNotEmpty()) ListGroup("Just now", "Copy all", { ClipboardSync.copyAgain(ctx, d.history.reversed().joinToString("\n\n")); host.snack(Snack("Copied", icon = "check")) }) {
-                d.history.take(6).forEach { t ->
-                    ListRow(t.take(140), null, icon = "check", trailing = { IconButton("copy", "Copy") { ClipboardSync.copyAgain(ctx, t); host.snack(Snack("Copied", icon = "check")) } })
-                }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Readout("Pace", if (wpm > 0) "$wpm" else "--", Modifier.weight(1f), if (wpm > 0) r.live else null)
+                Readout("Words", d.text.split(Regex("\\s+")).count { it.isNotBlank() }.takeIf { d.text.isNotBlank() }?.toString() ?: "--", Modifier.weight(1f))
+                Readout("Sent", "${d.history.size}", Modifier.weight(1f))
             }
-            Txt("Tip: add the “Dictate on laptop” tile to Quick Settings, or pick Phone as EchoScribe's microphone and press Right Ctrl on the laptop.", muted = true, size = 12, line = 17)
         }
-    }
-}
+        // ------------------------------------------------------------ the seam: your voice
+        VoiceSeam(levels, d.recording && d.phase != "paused", working)
+        // ------------------------------------------------------------ paper: this phone
+        PaperBody {
+            when {
+                l == null -> Banner("No laptop yet", "Dictation types on a laptop running EchoFiles and EchoScribe.") { Key("Pair", tone = Tone.Carbon, height = 38.dp, size = 13, radius = 11.dp) { host.go("pair") } }
+                !connected -> Banner("Out of range", "Open ${l.name} on the same Wi‑Fi, or keep it in Bluetooth range.")
+                !Prefs.on(ctx, "dictation") -> Banner("Dictation is off", "Turn it on to use this phone's mic with EchoScribe.") {
+                    Key("Turn on", tone = Tone.Carbon, height = 38.dp, size = 13, radius = 11.dp) { Prefs.set(ctx, "dictation", true); host.refresh(); Scribe.hello() }
+                }
+                !Scribe.canRecord(ctx) -> Banner("Microphone needed", "EchoConnect only listens while you hold the key, or when the laptop asks and you allow it.") {
+                    Key("Allow", tone = Tone.Carbon, height = 38.dp, size = 13, radius = 11.dp) { host.request(Manifest.permission.RECORD_AUDIO) }
+                }
+                !d.available && d.asked -> Banner("EchoScribe isn't answering", d.error.ifBlank { "Start EchoScribe on ${l.name}; EchoFiles connects them on its own." }, LedState.Off) {
+                    Key("Retry", tone = Tone.Carbon, height = 38.dp, size = 13, radius = 11.dp) { Scribe.hello() }
+                }
+            }
+            Lbl("This phone")
+            TalkKey(
+                recording = d.recording,
+                locked = locked,
+                enabled = ready || d.recording,
+                onPress = {
+                    if (!Scribe.state.value.recording) {
+                        since = System.currentTimeMillis()
+                        if (!Scribe.start(ctx, d.mode)) host.snack(Snack("No link to ${l?.name ?: "the laptop"}", "danger"))
+                    }
+                },
+                // Read the scribe's state directly: `d` only catches up on the next frame.
+                onRelease = { held ->
+                    val rec = Scribe.state.value.recording
+                    when {
+                        held < 300 && !locked && rec -> { locked = true; Haptics.tick(view) }
+                        locked && held < 300 && rec && System.currentTimeMillis() - since > 600 -> { locked = false; Scribe.stop() }
+                        !locked -> Scribe.stop()
+                    }
+                },
+            )
+            if (d.recording) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Key("Scrap it", Modifier.weight(1f), Tone.Cut, icon = "close", height = 46.dp, size = 14) { locked = false; Scribe.cancel() }
+                Key(if (d.phase == "paused") "Resume" else "Pause", Modifier.weight(1f), icon = if (d.phase == "paused") "play" else "pause", height = 46.dp, size = 14) { Scribe.command("pause") }
+                if (locked) Key("Send", Modifier.weight(1f), Tone.Signal, icon = "send", height = 46.dp, size = 14) { locked = false; Scribe.stop() }
+            }
+            ThreeWay(listOf("Dictate", "Edit selection", "Note"), MODES.indexOf(d.mode).coerceAtLeast(0), "Mode") { Scribe.setMode(MODES[it]) }
 
-private class KeyAction(val icon: String, val label: String, val enabled: Boolean, val run: () -> Unit)
+            PlateGroup("On the laptop") {
+                PlateRow("Hinglish", "Indic model, Latin script, every app") { Slide(d.hinglish, "Hinglish", enabled = d.available) { Scribe.command("hinglish") } }
+                PlateRow("Code mode", when (d.code) { "on" -> "Everywhere: camelCase, symbols, repo names"; "off" -> "Off"; else -> "In editors and terminals" }) {
+                    Key(when (d.code) { "on" -> "All"; "off" -> "Off"; else -> "Auto" }, height = 38.dp, size = 13, radius = 11.dp, enabled = d.available) { Scribe.command("code") }
+                }
+                PlateRow("Voice", d.persona.ifBlank { "Follows the app" }) {
+                    Key("Next", trailingIcon = "chevron-right", height = 38.dp, size = 13, radius = 11.dp, enabled = d.available) { Scribe.command("persona") }
+                }
+            }
 
-@Composable private fun Stat(value: String, label: String) {
-    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(value, color = token("ink-strong"), fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-        Txt(label, muted = true, size = 12, line = 18)
+            Lbl("Keys")
+            val keys = listOf(
+                Triple("Enter", "send") { Scribe.command("key") { put("key", "Return") } },
+                Triple("Tab", "arrow-right") { Scribe.command("key") { put("key", "Tab") } },
+                Triple("Undo", "undo") { Scribe.command("undo") },
+                Triple("Raw words", "redo") { Scribe.command("undo_cleanup") },
+                Triple("Paste last", "paste") { Scribe.command("paste_last") },
+                Triple("Esc", "close") { Scribe.command("key") { put("key", "Escape") } },
+            )
+            keys.chunked(3).forEach { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    row.forEach { (label, icon, run) -> Key(label, Modifier.weight(1f), icon = icon, height = 48.dp, size = 13, enabled = d.available) { run() } }
+                }
+            }
+
+            if (d.history.isNotEmpty()) PlateGroup("Sent", right = {
+                Key("Copy all", height = 32.dp, size = 12, radius = 10.dp) { ClipboardSync.copyAgain(ctx, d.history.reversed().joinToString("\n\n")); host.snack(Snack("Copied", "success")) }
+            }) {
+                d.history.take(6).forEach { t ->
+                    PlateRow(t.take(140)) { Key("Copy", height = 34.dp, size = 12, radius = 10.dp) { ClipboardSync.copyAgain(ctx, t); host.snack(Snack("Copied", "success")) } }
+                }
+            }
+            Note("Hands off", "Add the “Dictate on laptop” tile to Quick Settings, or pick Phone as EchoScribe's microphone and press Right Ctrl on the laptop.")
+            Spacer(Modifier.windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom)).height(24.dp))
+        }
     }
 }
 
 /**
- * The mic: concentric squares (EchoConnect's ring motif) that breathe with your voice while
- * recording, orbit while the laptop works, and throw a burst of sparks when the text lands.
+ * The seam as your voice: bars that are the last few seconds of the phone's mic, in signal,
+ * crossing to the laptop. Flat when quiet; a slow sweep while the laptop works.
  */
-@Composable private fun Orb(level: Float, live: Boolean, busy: Boolean, enabled: Boolean, sparks: Int, onPress: () -> Unit, onRelease: (Long) -> Unit) {
-    val ember = token("brand-ember")
-    val accent = token("accent")
-    val line = token("line-strong")
-    val raised = token("bg-raised")
-    val voice by animateFloatAsState(if (live) level else 0f, spring(dampingRatio = 0.55f, stiffness = 380f), label = "voice")
-    val press by animateFloatAsState(if (live) 0.94f else 1f, spring(dampingRatio = 0.5f, stiffness = 500f), label = "press")
-    val t = rememberInfiniteTransition(label = "orb")
-    val breathe by t.animateFloat(0f, 1f, infiniteRepeatable(tween(2200, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "breathe")
-    val spin by t.animateFloat(0f, 360f, infiniteRepeatable(tween(1400, easing = LinearEasing)), label = "spin")
-    // Sparks: a short burst each time `sparks` ticks.
-    val burst = remember { Animatable(1f) }
-    val seeds = remember(sparks) { List(18) { Random.nextFloat() to Random.nextFloat() } }
-    LaunchedEffect(sparks) { if (sparks > 0) { burst.snapTo(0f); burst.animateTo(1f, tween(900, easing = FastOutSlowInEasing)) } }
-    val tint = if (live) ember else if (busy) accent else line
-    // pointerInput captures its block once; read the newest callbacks through these.
-    val pressNow by rememberUpdatedState(onPress)
-    val releaseNow by rememberUpdatedState(onRelease)
-
-    Box(
-        Modifier.size(232.dp)
-            .semantics {
-                contentDescription = if (live) "Recording. Double tap to send." else "Dictate on the laptop. Double tap to start, again to send."
-                // TalkBack can't hold: a double tap toggles (as a quick tap does, hands-free).
-                if (enabled) onClick(if (live) "Send" else "Start dictating") { pressNow(); releaseNow(0); true }
-            }
-            .pointerInput(enabled) {
-                if (!enabled) return@pointerInput
-                detectTapGestures(onPress = {
-                    val down = System.currentTimeMillis()
-                    pressNow()
-                    tryAwaitRelease()
-                    releaseNow(System.currentTimeMillis() - down)
-                })
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        Canvas(Modifier.fillMaxSize()) {
-            val c = Offset(size.width / 2, size.height / 2)
-            fun square(half: Float, color: Color, width: Float, rotate: Float = 0f) {
-                val tl = Offset(c.x - half, c.y - half)
-                if (rotate == 0f) drawRoundRect(color, tl, Size(half * 2, half * 2), CornerRadius(4.dp.toPx()), style = Stroke(width))
-                else rotate(rotate, c) { drawRoundRect(color, tl, Size(half * 2, half * 2), CornerRadius(4.dp.toPx()), style = Stroke(width)) }
-            }
-            val base = size.minDimension * 0.24f
-            // Three rings: the outer ones ride the voice, the idle ones breathe.
-            for (i in 0..2) {
-                val reach = base + i * size.minDimension * 0.085f + (if (live) voice * size.minDimension * 0.07f * (i + 1) else breathe * 4.dp.toPx() * (i + 1))
-                val a = if (live) (0.75f - i * 0.2f) * (0.4f + voice) else if (busy) 0.5f - i * 0.12f else 0.22f - i * 0.06f
-                square(reach, tint.copy(alpha = a.coerceIn(0.05f, 1f)), (2.5f - i * 0.6f).dp.toPx(), if (busy) spin * (if (i % 2 == 0) 1 else -1) * (0.25f + i * 0.1f) else 0f)
-            }
-            // Sparks when text lands.
-            if (burst.value < 1f) {
-                seeds.forEachIndexed { k, (r, s) ->
-                    val angle = (k / seeds.size.toFloat()) * 2 * PI + r * 0.6
-                    val dist = base + burst.value * size.minDimension * (0.25f + s * 0.2f)
-                    val p = Offset(c.x + (cos(angle) * dist).toFloat(), c.y + (sin(angle) * dist).toFloat())
-                    val sz = (3f + s * 4f).dp.toPx() * (1f - burst.value)
-                    drawRect(if (k % 3 == 0) accent else ember, Offset(p.x - sz / 2, p.y - sz / 2), Size(sz, sz), alpha = 1f - burst.value)
+@Composable private fun VoiceSeam(levels: List<Float>, live: Boolean, working: Boolean, height: Dp = 88.dp) {
+    val r = relay()
+    val t = rememberInfiniteTransition(label = "seam")
+    val sweep by t.animateFloat(0f, 1f, infiniteRepeatable(tween(1200, easing = LinearEasing)), label = "sweep")
+    Carbon(Modifier.fillMaxWidth().height(height)) {
+        Canvas(Modifier.fillMaxSize().clipToBounds().semantics { contentDescription = if (live) "Your voice, going to the laptop" else "Link" }) {
+            drawRect(r.carbon3, size = Size(size.width, 1.dp.toPx()))
+            val mid = size.height / 2
+            val step = 7.dp.toPx(); val w = 4.dp.toPx()
+            val n = ((size.width - 32.dp.toPx()) / step).toInt().coerceAtLeast(1)
+            val x0 = (size.width - n * step) / 2
+            for (i in 0 until n) {
+                val lv = levels.getOrElse(levels.size - n + i) { 0f }
+                val h = when {
+                    live -> (4.dp.toPx() + lv * size.height * 0.82f)
+                    working -> 4.dp.toPx() + size.height * 0.3f * abs(sin((i / n.toFloat() - sweep) * 6.28f)).let { if (abs(i / n.toFloat() - sweep) < 0.18f) it else 0f }
+                    else -> 2.dp.toPx()
                 }
+                val c = when {
+                    live -> lerp(r.sig, Color.White, (lv * 0.6f).coerceIn(0f, 0.6f))
+                    working -> r.warn
+                    else -> r.carbon3
+                }
+                drawRoundRect(c, Offset(x0 + i * step, mid - h / 2), Size(w, h), CornerRadius(w / 2))
             }
-        }
-        Box(
-            Modifier.scale(press).size(108.dp).clip(RoundedCornerShape(4.dp)).background(if (live) ember else raised).border(1.dp, if (live) ember else line, RoundedCornerShape(4.dp)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Glyph("mic", color = if (live) Color.Black else token("ink-strong"), size = 40, stroke = 2.2f)
         }
     }
 }
 
-/** Home's way in: a slim card that says who's listening. */
-@Composable fun DictateCard(l: Laptop?, host: Host) {
-    val d by Scribe.state.collectAsStateWithLifecycle()
-    val ok = l?.connected == true && d.available
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).background(token("bg-raised")).border(1.dp, if (d.recording) token("brand-ember") else token("line"), RoundedCornerShape(4.dp))
-            .tap(label = "Dictate on laptop", radius = 4.dp) { host.go("dictate") }.padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+/**
+ * The talk key: Relay's keycap, tall. Hold to talk, let go to send; a quick tap is hands-free.
+ * It sinks the whole lip while held and glows signal while the mic is open.
+ */
+@Composable private fun TalkKey(recording: Boolean, locked: Boolean, enabled: Boolean, onPress: () -> Unit, onRelease: (Long) -> Unit) {
+    val r = relay()
+    val view = LocalView.current
+    var held by remember { mutableStateOf(false) }
+    val down by animateDpAsState(if (held || recording) 4.dp else 0.dp, tween(60, easing = LinearEasing), label = "talk")
+    val pulse by rememberInfiniteTransition(label = "talk-pulse").animateFloat(0.25f, 0.6f, infiniteRepeatable(tween(900, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "p")
+    val face = if (recording) r.sig else r.cap
+    val lip = if (recording) lerp(r.sig, Color.Black, 0.45f) else r.edge
+    val fg = if (recording) r.onSig else r.ink
+    val pressNow by rememberUpdatedState(onPress)
+    val releaseNow by rememberUpdatedState(onRelease)
+    Box(
+        Modifier.fillMaxWidth().padding(bottom = 4.dp).height(132.dp).alpha(if (enabled) 1f else 0.4f)
+            .semantics {
+                contentDescription = if (recording) "Recording. Double tap to send." else "Talk. Double tap to start, again to send."
+                if (enabled) onClick(if (recording) "Send" else "Start talking") { pressNow(); releaseNow(0); true }
+            }
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                detectTapGestures(onPress = {
+                    val t0 = System.currentTimeMillis()
+                    held = true; Haptics.key(view); pressNow()
+                    tryAwaitRelease()
+                    held = false; releaseNow(System.currentTimeMillis() - t0)
+                })
+            }
+            .drawBehind {
+                if (recording) drawRoundRect(r.sig.copy(alpha = pulse * 0.35f), Offset(-6.dp.toPx(), -6.dp.toPx() + down.toPx()), Size(size.width + 12.dp.toPx(), size.height + 12.dp.toPx()), CornerRadius(28.dp.toPx()))
+                drawRoundRect(lip, Offset(0f, 4.dp.toPx()), size, CornerRadius(22.dp.toPx()))
+            }
+            .offset(y = down)
+            .background(face, RoundedCornerShape(22.dp))
+            .padding(horizontal = 20.dp),
+        contentAlignment = Alignment.CenterStart,
     ) {
-        Box(Modifier.size(40.dp).background(if (d.recording) token("brand-ember") else token("state-hover"), RoundedCornerShape(4.dp)), contentAlignment = Alignment.Center) {
-            Glyph("mic", color = if (d.recording) Color.Black else token("world-linux"))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Glyph("mic", color = fg, size = 34, stroke = 2.2f)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                T(when { recording && locked -> "Hands-free"; recording -> "Talking…"; else -> "Hold to talk" }, 24, 700, fg)
+                T(when { recording && locked -> "Tap to send"; recording -> "Let go to send"; else -> "Tap once for hands-free" }, 14, color = fg.copy(alpha = 0.75f))
+            }
+            if (recording) Lbl("Live", fg)
         }
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Txt("Dictate on ${l?.name ?: "laptop"}", size = 14, line = 19, bold = true, color = token("ink-strong"))
-            Txt(
-                when {
-                    d.recording -> "Listening…"
-                    ok -> "Talk here, it types there · EchoScribe"
-                    l?.connected == true -> "Start EchoScribe on the laptop"
-                    else -> "Laptop not nearby"
-                },
-                muted = true, size = 12, line = 16,
-            )
-        }
-        if (ok) StatePill("Ready", "success", small = true)
-        Glyph("chevron-right")
     }
 }

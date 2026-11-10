@@ -17,6 +17,7 @@ mod cloud_live;
 mod cloud_settings;
 mod codec;
 mod columns;
+mod connect;
 mod drives;
 mod file_list;
 mod folders;
@@ -24,13 +25,12 @@ mod gpu;
 mod indexer;
 mod jpeg;
 mod keys;
-mod network;
 mod kinds;
+mod network;
 mod overlay;
 mod pane;
 mod phone;
 mod phone_link;
-mod connect;
 mod phone_view;
 mod preview;
 mod remote;
@@ -65,8 +65,6 @@ fn main() -> iced::Result {
     // SAFETY: still single-threaded; nothing else reads the environment yet.
     unsafe { gpu::configure() };
 
-
-
     // One EchoFiles: a second launch hands its request to the running one and exits.
     let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
     if args.iter().any(|a| a == "--sync-agent-skill") {
@@ -84,15 +82,27 @@ fn main() -> iced::Result {
         let request = if args.iter().any(|a| a == "--settings") {
             system::Request::Settings
         } else {
-            std::env::args_os().skip(1).find(|a| !a.as_encoded_bytes().starts_with(b"--")).map(|a| system::request_for_os(&a)).unwrap_or(system::Request::Open(None))
+            std::env::args_os()
+                .skip(1)
+                .find(|a| !a.as_encoded_bytes().starts_with(b"--"))
+                .map(|a| system::request_for_os(&a))
+                .unwrap_or(system::Request::Open(None))
         };
         if system::forward_to_running(&request) {
             return Ok(());
         }
         owns_socket = system::listen();
         if !owns_socket {
-            for _ in 0..20 { if system::forward_to_running(&request) { return Ok(()); } std::thread::sleep(std::time::Duration::from_millis(50)); }
-            eprintln!("Couldn't acquire the EchoFiles instance socket");
+            for _ in 0..20 {
+                if system::forward_to_running(&request) {
+                    return Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            eprintln!(
+                "EchoFiles couldn't start: another copy holds its lock, or it couldn't listen on {} (check that folder is private and writable)",
+                ef_config::socket_path().display()
+            );
             return Ok(());
         }
         // Answer `ef` from here: settings, index maps and threads stay loaded.
@@ -119,6 +129,7 @@ fn main() -> iced::Result {
     let result = iced::daemon(app::App::boot, app::App::update, app::App::view)
         .title(app::App::title)
         .subscription(app::App::subscription)
+        .theme(app::App::theme)
         .default_font(style::FONT)
         .antialiasing(false)
         .run();

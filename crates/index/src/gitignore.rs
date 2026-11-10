@@ -94,7 +94,8 @@ impl RuleSet {
     /// Parse rule text whose patterns are relative to `dir`.
     pub fn parse(dir: &[u8], source: PathBuf, text: &[u8], case_insensitive: bool) -> RuleSet {
         let dir = if dir.len() > 1 { dir.strip_suffix(b"/").unwrap_or(dir) } else { dir };
-        let mut set = RuleSet { dir: dir.to_vec(), source, rules: Vec::new(), by_name: Default::default(), other: Vec::new(), case_insensitive };
+        let mut set =
+            RuleSet { dir: dir.to_vec(), source, rules: Vec::new(), by_name: Default::default(), other: Vec::new(), case_insensitive };
         for (n, raw) in text.split(|&b| b == b'\n').enumerate() {
             let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
             set.add(raw, n as u32 + 1);
@@ -157,7 +158,7 @@ impl RuleSet {
         let rel = match abs.strip_prefix(self.dir.as_slice()) {
             Some(r) if self.dir == b"/" => r,
             Some(r) if r.first() == Some(&b'/') => &r[1..],
-            Some(r) if r.is_empty() => return Verdict::None,
+            Some([]) => return Verdict::None,
             _ => abs,
         };
         let name = rel.rsplit(|&b| b == b'/').next().unwrap_or(rel);
@@ -296,7 +297,8 @@ pub struct Globals {
 impl Globals {
     pub fn new(opts: IgnoreOptions, root: &Path, excludes: &[String], ignore_files: &[PathBuf]) -> Globals {
         let ci = opts.case_insensitive;
-        let overrides = (!excludes.is_empty()).then(|| RuleSet::from_patterns(root.as_os_str().as_bytes(), PathBuf::from("--exclude"), excludes, ci));
+        let overrides =
+            (!excludes.is_empty()).then(|| RuleSet::from_patterns(root.as_os_str().as_bytes(), PathBuf::from("--exclude"), excludes, ci));
         let mut explicit = Vec::new();
         let rules_file = |path: &Path| -> Option<RuleSet> {
             let text = std::fs::read(path).ok()?;
@@ -319,7 +321,10 @@ impl Globals {
 }
 
 fn xdg_config() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| crate::config::home().join(".config"))
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| crate::config::home().join(".config"))
 }
 
 /// `core.excludesFile` from `~/.gitconfig` or `$XDG_CONFIG_HOME/git/config`, else the
@@ -465,18 +470,23 @@ impl Stack {
             }
             saw_git |= r.has_git;
         }
-        custom.or(|| dot).or(|| git).or(|| exclude).or(|| match (&g.git_global, any_git) {
-            (Some(s), true) => s.matched(abs, is_dir),
-            _ => Verdict::None,
-        }).or(|| {
-            for e in g.explicit.iter().rev() {
-                let v = e.matched(abs, is_dir);
-                if !v.is_none() {
-                    return v;
+        custom
+            .or(|| dot)
+            .or(|| git)
+            .or(|| exclude)
+            .or(|| match (&g.git_global, any_git) {
+                (Some(s), true) => s.matched(abs, is_dir),
+                _ => Verdict::None,
+            })
+            .or(|| {
+                for e in g.explicit.iter().rev() {
+                    let v = e.matched(abs, is_dir);
+                    if !v.is_none() {
+                        return v;
+                    }
                 }
-            }
-            Verdict::None
-        })
+                Verdict::None
+            })
     }
 }
 

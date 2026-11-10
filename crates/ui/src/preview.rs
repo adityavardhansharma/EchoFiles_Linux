@@ -5,14 +5,14 @@
 
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ef_config as config;
 use ef_core::fmt;
 use ef_core::listing::win;
 use ef_core::ops::DirSize;
-use iced::widget::{column, container, image, row, scrollable, text, Space};
+use iced::widget::{Space, column, container, image, row, scrollable, text};
 use iced::{Alignment, Background, Border, Element, Length};
 
 use crate::actions::FileMsg;
@@ -31,7 +31,6 @@ pub struct PreviewData {
     pub kind: String,
     pub size: u64,
     pub modified: i64,
-    pub accessed: i64,
     pub created: Option<i64>,
     pub mode: u32,
     pub owner: String,
@@ -52,12 +51,14 @@ pub struct PreviewData {
 fn name_of(file: &str, id: u32) -> String {
     std::fs::read_to_string(file)
         .ok()
-        .and_then(|t| t.lines().find_map(|l| {
-            let mut f = l.split(':');
-            let n = f.next()?;
-            let _ = f.next();
-            (f.next()?.parse::<u32>().ok()? == id).then(|| n.to_string())
-        }))
+        .and_then(|t| {
+            t.lines().find_map(|l| {
+                let mut f = l.split(':');
+                let n = f.next()?;
+                let _ = f.next();
+                (f.next()?.parse::<u32>().ok()? == id).then(|| n.to_string())
+            })
+        })
         .unwrap_or_else(|| id.to_string())
 }
 
@@ -103,7 +104,6 @@ pub fn gather(p: &Path) -> PreviewData {
                 kind: String::new(),
                 size: 0,
                 modified: 0,
-                accessed: 0,
                 created: None,
                 mode: 0,
                 owner: String::new(),
@@ -116,7 +116,7 @@ pub fn gather(p: &Path) -> PreviewData {
                 attrs: None,
                 error: Some(e.to_string()),
                 cancel: Arc::default(),
-            }
+            };
         }
     };
     let link = lm.file_type().is_symlink().then(|| std::fs::read_link(p).ok()).flatten();
@@ -154,7 +154,6 @@ pub fn gather(p: &Path) -> PreviewData {
         kind,
         size: m.len(),
         modified: m.mtime(),
-        accessed: m.atime(),
         created,
         mode: m.permissions().mode(),
         owner: name_of("/etc/passwd", m.uid()),
@@ -174,7 +173,8 @@ impl App {
     pub(crate) fn props_counting(&self) -> bool {
         match &self.dialog {
             Some(crate::overlay::Dialog::Properties { data, total, .. }) => {
-                total.as_ref().is_some_and(|t| !t.done.load(Ordering::Relaxed)) || data.as_ref().and_then(|d| d.tree.as_ref()).is_some_and(|t| !t.done.load(Ordering::Relaxed))
+                total.as_ref().is_some_and(|t| !t.done.load(Ordering::Relaxed))
+                    || data.as_ref().and_then(|d| d.tree.as_ref()).is_some_and(|t| !t.done.load(Ordering::Relaxed))
             }
             _ => false,
         }
@@ -184,7 +184,15 @@ impl App {
     pub(crate) fn properties_dialog(&self) -> Option<Element<'_, Message>> {
         let Some(crate::overlay::Dialog::Properties { paths, data, total, opened, .. }) = &self.dialog else { return None };
         let p = &self.palette;
-        let close = w::text_button(p, &self.icons, "Close", None, Some("Esc"), Variant::Secondary, Some(Message::Ui(crate::overlay::UiMsg::CloseDialog)));
+        let close = w::text_button(
+            p,
+            &self.icons,
+            "Close",
+            None,
+            Some("Esc"),
+            Variant::Secondary,
+            Some(Message::Ui(crate::overlay::UiMsg::CloseDialog)),
+        );
         let muted = |s: String| text(s).size(style::META).font(style::FONT).color(color(p.ink_muted));
         if paths.len() > 1 {
             let t = total.as_ref()?;
@@ -202,13 +210,25 @@ impl App {
                 self.prop("Location", config::tilde(paths[0].parent().unwrap_or(&paths[0]))),
             ]
             .spacing(6);
-            return Some(self.dialog_frame_with("file-list", format!("{} items", paths.len()), body.into(), vec![close], false, true, *opened));
+            return Some(self.dialog_frame_with(
+                "file-list",
+                format!("{} items", paths.len()),
+                body.into(),
+                vec![close],
+                false,
+                true,
+                *opened,
+            ));
         }
         let path = &paths[0];
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
         let body: Element<'_, Message> = match data {
             None => muted("Reading…".into()).into(),
-            Some(d) if d.error.is_some() => text(format!("Can't read it: {}", d.error.clone().unwrap_or_default())).size(style::META).font(style::FONT).color(color(p.danger.ink)).into(),
+            Some(d) if d.error.is_some() => text(format!("Can't read it: {}", d.error.clone().unwrap_or_default()))
+                .size(style::META)
+                .font(style::FONT)
+                .color(color(p.danger.ink))
+                .into(),
             Some(d) => column![muted(d.kind.clone()), self.facts(path, d)].spacing(style::SPACE_3).into(),
         };
         let icon = if path.is_dir() { "folder" } else { crate::kinds::icon(name.as_bytes(), ef_core::Kind::File) };
@@ -223,7 +243,8 @@ impl App {
         let p = &self.palette;
         row![
             text(label.to_string()).size(style::META).font(style::FONT).color(color(p.ink_muted)).width(84),
-            text(value).size(style::META).font(style::FONT).color(color(p.ink)).width(Length::Fill),
+            // Long paths break between any characters rather than running past the edge.
+            text(value).size(style::META).font(style::FONT).color(color(p.ink)).width(Length::Fill).wrapping(text::Wrapping::WordOrGlyph),
         ]
         .spacing(style::SPACE_3)
         .into()
@@ -244,7 +265,9 @@ impl App {
                 let mut f = String::new();
                 fmt::count(files, &mut f);
                 props = props.push(self.prop("Size", format!("{s} · {f} {}", if files == 1 { "file" } else { "files" })));
-                props = props.push(self.prop("Contains", format!("{} {}", d.items.unwrap_or(0), if d.items == Some(1) { "item" } else { "items" })));
+                let mut items = String::new();
+                fmt::count(d.items.unwrap_or(0), &mut items);
+                props = props.push(self.prop("Contains", format!("{items} {}", if d.items == Some(1) { "item" } else { "items" })));
             }
             _ => {
                 fmt::size(d.size, &mut s);
@@ -262,7 +285,8 @@ impl App {
         if let Some(c) = d.created {
             props = props.push(self.prop("Created", date(c)));
         }
-        props = props.push(self.prop("Opened", date(d.accessed)));
+        // No "Opened" (access time): with relatime it moves only now and then, and reading
+        // the file for this preview can move it, so it was often wrong or contradictory.
         props = props.push(self.prop("Location", config::tilde(path.parent().unwrap_or(path))));
         if let Some(l) = &d.link {
             props = props.push(self.prop("Points to", format!("{}{}", l.display(), if d.broken { " (missing)" } else { "" })));
@@ -270,15 +294,22 @@ impl App {
         match d.attrs {
             None => {
                 props = props.push(self.prop("Permissions", format!("{} ({:o})", perms(d.mode), d.mode & 0o7777)));
-                props = props.push(self.prop("Owner", format!("{} · {}", d.owner, d.group)));
+                let owner = if d.owner == d.group { d.owner.clone() } else { format!("{} · group {}", d.owner, d.group) };
+                props = props.push(self.prop("Owner", owner));
             }
             Some(a) => {
-                let mut on: Vec<&str> = [(win::READONLY, "Read-only"), (win::HIDDEN, "Hidden"), (win::SYSTEM, "System"), (win::ARCHIVE, "Archive")]
-                    .into_iter()
-                    .filter(|(b, _)| a & b != 0)
-                    .map(|(_, l)| l)
-                    .collect();
-                for (b, l) in [(win::COMPRESSED, "Compressed"), (win::ENCRYPTED, "Encrypted (EFS)"), (win::SPARSE, "Sparse"), (win::REPARSE, "Junction or link")] {
+                let mut on: Vec<&str> =
+                    [(win::READONLY, "Read-only"), (win::HIDDEN, "Hidden"), (win::SYSTEM, "System"), (win::ARCHIVE, "Archive")]
+                        .into_iter()
+                        .filter(|(b, _)| a & b != 0)
+                        .map(|(_, l)| l)
+                        .collect();
+                for (b, l) in [
+                    (win::COMPRESSED, "Compressed"),
+                    (win::ENCRYPTED, "Encrypted (EFS)"),
+                    (win::SPARSE, "Sparse"),
+                    (win::REPARSE, "Junction or link"),
+                ] {
                     if a & b != 0 {
                         on.push(l);
                     }
@@ -301,17 +332,30 @@ impl App {
         let p = &self.palette;
         let head = |t: &str| text(t.to_string()).size(style::LABEL).font(style::FONT_BOLD).color(color(p.ink_muted));
         let mut col = column![].spacing(2);
-        let copy_path = w::text_button(p, &self.icons, "Copy path", Some("link"), None, Variant::Secondary, Some(Message::File(FileMsg::CopyPath)));
+        let copy_path =
+            w::text_button(p, &self.icons, "Copy path", Some("link"), None, Variant::Secondary, Some(Message::File(FileMsg::CopyPath)));
         match d.attrs {
             Some(a) => {
                 col = col.push(head("WINDOWS ATTRIBUTES"));
-                for (bit, label) in [(win::READONLY, "Read-only"), (win::HIDDEN, "Hidden"), (win::SYSTEM, "System"), (win::ARCHIVE, "Archive")] {
+                for (bit, label) in
+                    [(win::READONLY, "Read-only"), (win::HIDDEN, "Hidden"), (win::SYSTEM, "System"), (win::ARCHIVE, "Archive")]
+                {
                     let path = path.to_path_buf();
-                    col = col.push(w::checkbox(p, &self.icons, label, a & bit != 0, move |on| Message::File(FileMsg::SetAttr(path.clone(), bit, on))));
+                    col = col.push(w::checkbox(p, &self.icons, label, a & bit != 0, move |on| {
+                        Message::File(FileMsg::SetAttr(path.clone(), bit, on))
+                    }));
                 }
                 let mut buttons = column![copy_path].spacing(style::SPACE_3);
                 if self.windows_path(path).is_some() {
-                    buttons = buttons.push(w::text_button(p, &self.icons, "Copy Windows path", Some("link"), None, Variant::Secondary, Some(Message::File(FileMsg::CopyWindowsPath))));
+                    buttons = buttons.push(w::text_button(
+                        p,
+                        &self.icons,
+                        "Copy Windows path",
+                        Some("link"),
+                        None,
+                        Variant::Secondary,
+                        Some(Message::File(FileMsg::CopyWindowsPath)),
+                    ));
                 }
                 col = col.push(Space::new().height(style::SPACE_3)).push(buttons);
             }
@@ -327,11 +371,23 @@ impl App {
                 col = col.push(w::checkbox(p, &self.icons, "Read-only", read_only, set(if read_only { m | 0o200 } else { m & !0o222 })));
                 if !d.is_dir {
                     let exec = m & 0o111 != 0;
-                    col = col.push(w::checkbox(p, &self.icons, "Executable", exec, set(if exec { m & !0o111 } else { m | ((m & 0o444) >> 2) })));
+                    col = col.push(w::checkbox(
+                        p,
+                        &self.icons,
+                        "Executable",
+                        exec,
+                        set(if exec { m & !0o111 } else { m | ((m & 0o444) >> 2) }),
+                    ));
                 }
                 let private = m & 0o077 == 0;
                 let open_up = if d.is_dir { 0o055 } else { 0o044 };
-                col = col.push(w::checkbox(p, &self.icons, "Only you can open it", private, set(if private { m | open_up } else { m & !0o077 })));
+                col = col.push(w::checkbox(
+                    p,
+                    &self.icons,
+                    "Only you can open it",
+                    private,
+                    set(if private { m | open_up } else { m & !0o077 }),
+                ));
                 col = col.push(Space::new().height(style::SPACE_3)).push(copy_path);
             }
             None => col = col.push(copy_path),
@@ -348,20 +404,51 @@ impl App {
         let Some((path, d)) = self.preview.as_ref().filter(|(path, _)| Some(path) == self.preview_target().as_ref()) else {
             let msg = if pane.loaded.is_some() { "Select something to see its details." } else { "" };
             col = col.push(Space::new().height(40));
-            col = col.push(container(w::glyph(&self.icons, "info", 40.0, color(p.ink_faint))).width(Length::Fill).align_x(Alignment::Center));
-            col = col.push(container(text(msg).size(style::META).font(style::FONT).color(color(p.ink_muted))).width(Length::Fill).align_x(Alignment::Center));
+            col =
+                col.push(container(w::glyph(&self.icons, "info", 40.0, color(p.ink_faint))).width(Length::Fill).align_x(Alignment::Center));
+            col = col.push(
+                container(text(msg).size(style::META).font(style::FONT).color(color(p.ink_muted)))
+                    .width(Length::Fill)
+                    .align_x(Alignment::Center),
+            );
             return w::fill(container(col).padding(16), p.bg_sunken).width(WIDTH).height(Length::Fill).into();
         };
-        // Picture: thumbnail when there is one, else the 96px colour icon.
-        let pic: Element<'_, Message> = match self.thumbs.get(path) {
-            Some(h) => image(h).width(Length::Fill).height(180).content_fit(iced::ContentFit::Contain).into(),
-            None => {
+        // Picture: thumbnail when there is one; for text, the text itself (it used to sit
+        // below every fact and button, off screen, under a big generic icon); else the
+        // 96px colour icon.
+        let text_box = |t: &str| -> Element<'_, Message> {
+            let pal = p.clone();
+            container(text(t.to_string()).size(style::LABEL).font(style::FONT).color(color(p.ink)))
+                .padding(8)
+                .width(Length::Fill)
+                .max_height(260)
+                .clip(true)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(color(pal.bg_deep))),
+                    border: Border { color: color(pal.line), width: 1.0, radius: 2.0.into() },
+                    ..Default::default()
+                })
+                .into()
+        };
+        let pic: Element<'_, Message> = match (self.thumbs.get(path), &d.text) {
+            (Some(h), _) => image(h).width(Length::Fill).height(180).content_fit(iced::ContentFit::Contain).into(),
+            (None, Some(t)) => text_box(t),
+            (None, None) => {
                 let icon = crate::kinds::icon(d.name.as_bytes(), if d.is_dir { ef_core::Kind::Dir } else { ef_core::Kind::File });
-                container(iced::widget::svg(self.icons.color(icon)).width(96).height(96)).width(Length::Fill).height(140).center_x(Length::Fill).center_y(140).into()
+                container(iced::widget::svg(self.icons.color(icon)).width(96).height(96))
+                    .width(Length::Fill)
+                    .height(140)
+                    .center_x(Length::Fill)
+                    .center_y(140)
+                    .into()
             }
         };
         col = col.push(pic);
-        let mut head = column![text(d.name.clone()).size(15).font(style::FONT_BOLD).color(color(p.ink_strong)), text(d.kind.clone()).size(style::META).font(style::FONT).color(color(p.ink_muted))].spacing(2);
+        let mut head = column![
+            text(d.name.clone()).size(15).font(style::FONT_BOLD).color(color(p.ink_strong)),
+            text(d.kind.clone()).size(style::META).font(style::FONT).color(color(p.ink_muted))
+        ]
+        .spacing(2);
         if several {
             let (files, dirs, bytes) = pane.selection_stats();
             let mut s = format!("{} selected", files + dirs);
@@ -377,23 +464,28 @@ impl App {
         col = col.push(head);
         if let Some(e) = &d.error {
             col = col.push(text(format!("Can't read it: {e}")).size(style::META).font(style::FONT).color(color(p.danger.ink)));
-            return w::fill(scrollable(container(col).padding(16)).height(Length::Fill), p.bg_sunken).width(WIDTH).height(Length::Fill).into();
+            return w::fill(scrollable(container(col).padding(16)).height(Length::Fill), p.bg_sunken)
+                .width(WIDTH)
+                .height(Length::Fill)
+                .into();
         }
         col = col.push(self.facts(path, d));
         col = col.push(self.controls(path, d));
-        col = col.push(row![
-            w::text_button(p, &self.icons, "Open", Some("external"), Some("Enter"), Variant::Secondary, Some(Message::File(FileMsg::Open))),
-            w::text_button(p, &self.icons, "Rename", Some("rename"), None, Variant::Ghost, Some(Message::File(FileMsg::StartRename))),
-        ].spacing(style::SPACE_3));
-        if let Some(t) = &d.text {
-            let pal = p.clone();
-            col = col.push(
-                container(text(t.clone()).size(style::LABEL).font(style::FONT).color(color(p.ink)))
-                    .padding(8)
-                    .width(Length::Fill)
-                    .style(move |_| container::Style { background: Some(Background::Color(color(pal.bg_deep))), border: Border { color: color(pal.line), width: 1.0, radius: 2.0.into() }, ..Default::default() }),
-            );
-        }
+        col = col.push(
+            row![
+                w::text_button(
+                    p,
+                    &self.icons,
+                    "Open",
+                    Some("external"),
+                    Some("Enter"),
+                    Variant::Secondary,
+                    Some(Message::File(FileMsg::Open))
+                ),
+                w::text_button(p, &self.icons, "Rename", Some("rename"), None, Variant::Ghost, Some(Message::File(FileMsg::StartRename))),
+            ]
+            .spacing(style::SPACE_3),
+        );
         w::fill(scrollable(container(col).padding(16)).height(Length::Fill), p.bg_sunken).width(WIDTH).height(Length::Fill).into()
     }
 }

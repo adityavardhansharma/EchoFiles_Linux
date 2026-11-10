@@ -7,8 +7,8 @@
 use std::ffi::{CStr, OsStr};
 use std::io;
 use std::mem::MaybeUninit;
-use std::os::unix::ffi::OsStrExt;
 use std::os::fd::{AsFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
@@ -63,8 +63,19 @@ pub mod win {
 
 /// Files Windows keeps at a volume's top level that Explorer never shows.
 const WINDOWS_JUNK: [&str; 13] = [
-    "$recycle.bin", "system volume information", "pagefile.sys", "hiberfil.sys", "swapfile.sys", "dumpstack.log.tmp", "dumpstack.log",
-    "thumbs.db", "desktop.ini", "$winreagent", "config.msi", "$sysreset", "recovery",
+    "$recycle.bin",
+    "system volume information",
+    "pagefile.sys",
+    "hiberfil.sys",
+    "swapfile.sys",
+    "dumpstack.log.tmp",
+    "dumpstack.log",
+    "thumbs.db",
+    "desktop.ini",
+    "$winreagent",
+    "config.msi",
+    "$sysreset",
+    "recovery",
 ];
 
 /// A directory's entries as parallel columns; ~40 bytes per entry, no per-entry heap allocation.
@@ -116,6 +127,16 @@ impl Listing {
         self.kind[i] == Kind::Dir
     }
 
+    /// A folder, or a link to one: what sorts with folders and shows a folder icon.
+    pub fn is_folderish(&self, i: usize) -> bool {
+        self.kind[i] == Kind::Dir || (self.kind[i] == Kind::Symlink && self.flags[i] & flags::LINK_DIR != 0)
+    }
+
+    /// A link whose target doesn't exist.
+    pub fn is_broken_link(&self, i: usize) -> bool {
+        self.kind[i] == Kind::Symlink && self.flags[i] & flags::BROKEN != 0
+    }
+
     pub fn is_hidden(&self, i: usize) -> bool {
         self.flags[i] & flags::HIDDEN != 0
     }
@@ -159,6 +180,15 @@ pub fn open_dir(dir: &Path) -> io::Result<OwnedFd> {
 
 /// Phase A: names and types only. Enough to paint the first frame.
 pub fn read_names(dir: &Path, fd: &OwnedFd) -> io::Result<Listing> {
+    read_names_with(dir, fd, std::time::Duration::MAX, |_| {})
+}
+
+/// Phase A, handing `partial` the names read so far every `every` while reading takes
+/// that long — a phone folder arrives in batches over Wi-Fi, so it can be painted as it
+/// comes. A local folder is read long before the first hand-over.
+pub fn read_names_with(dir: &Path, fd: &OwnedFd, every: std::time::Duration, mut partial: impl FnMut(&Listing)) -> io::Result<Listing> {
+    let started = std::time::Instant::now();
+    let mut next = every;
     let mut listing = Listing { dir: dir.to_path_buf(), ..Default::default() };
     let mut buf: Vec<MaybeUninit<u8>> = Vec::with_capacity(DENTS_BUF);
     buf.resize(DENTS_BUF, MaybeUninit::uninit());
@@ -177,6 +207,10 @@ pub fn read_names(dir: &Path, fd: &OwnedFd) -> io::Result<Listing> {
             _ => Kind::Other,
         };
         listing.push(name, kind);
+        if listing.len().is_multiple_of(64) && started.elapsed() >= next {
+            partial(&listing);
+            next = started.elapsed() + every;
+        }
     }
     if listing.name_off.is_empty() {
         listing.name_off.push(0);
@@ -219,7 +253,14 @@ pub fn fill_metadata(listing: &mut Listing, fd: &OwnedFd) {
     let links: Vec<usize> = (0..n).filter(|&i| listing.kind[i] == Kind::Symlink).collect();
     let targets: Vec<(usize, Option<u32>)> = links
         .par_iter()
-        .map(|&i| (i, rustix::fs::statx(fd.as_fd(), listing.name_cstr(i), AtFlags::STATX_DONT_SYNC, StatxFlags::TYPE).ok().map(|st| st.stx_mode as u32)))
+        .map(|&i| {
+            (
+                i,
+                rustix::fs::statx(fd.as_fd(), listing.name_cstr(i), AtFlags::STATX_DONT_SYNC, StatxFlags::TYPE)
+                    .ok()
+                    .map(|st| st.stx_mode as u32),
+            )
+        })
         .collect();
     for (i, mode) in targets {
         match mode {

@@ -21,10 +21,11 @@ pub unsafe fn configure() {
         if unset("WGPU_BACKEND") {
             std::env::set_var("WGPU_BACKEND", "vulkan");
         }
-        if unset("VK_LOADER_DRIVERS_SELECT") && !wants_high {
-            if let Some(glob) = display_gpu_driver_glob() {
-                std::env::set_var("VK_LOADER_DRIVERS_SELECT", glob);
-            }
+        if unset("VK_LOADER_DRIVERS_SELECT")
+            && !wants_high
+            && let Some(glob) = display_gpu_driver_glob()
+        {
+            std::env::set_var("VK_LOADER_DRIVERS_SELECT", glob);
         }
     }
 }
@@ -58,9 +59,7 @@ fn display_gpu_driver_glob() -> Option<&'static str> {
     };
     // Only restrict the loader if that driver is actually installed.
     let installed = ["/usr/share/vulkan/icd.d", "/etc/vulkan/icd.d"].iter().any(|d| {
-        std::fs::read_dir(d)
-            .map(|es| es.flatten().any(|e| e.file_name().to_string_lossy().starts_with(manifest)))
-            .unwrap_or(false)
+        std::fs::read_dir(d).map(|es| es.flatten().any(|e| e.file_name().to_string_lossy().starts_with(manifest))).unwrap_or(false)
     });
     installed.then_some(glob)
 }

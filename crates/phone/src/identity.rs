@@ -1,4 +1,4 @@
-//! This laptop's KDE Connect identity (device id, certificate, key) and the phones it trusts.
+//! This device's link identity (device id, certificate, key) and the devices it trusts.
 //!
 //! Everything lives in `~/.config/echofiles/phone/`: an atomically published mode-600
 //! `identity.json` bundle (legacy split identities remain readable), and `trusted/<device id>` — one file per paired phone
@@ -14,8 +14,15 @@ use std::path::{Path, PathBuf};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use sha2::{Digest, Sha256};
 
+/// `$XDG_CONFIG_HOME/echofiles/phone`. A relative `XDG_CONFIG_HOME` is ignored, as the
+/// spec requires and as `ef_config::config_dir` does, so the identity and pairings never
+/// land relative to whatever folder EchoFiles was started from.
 pub fn dir() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")).join("echofiles/phone")
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"))
+        .join("echofiles/phone")
 }
 
 /// Who we are on the network.
@@ -39,24 +46,37 @@ fn hex(bytes: &[u8]) -> String {
 fn unhex(s: &str) -> Option<Vec<u8>> {
     let s = s.trim();
     s.len().is_multiple_of(2).then_some(())?;
-    s.as_bytes().chunks_exact(2).map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()).collect()
+    s.as_bytes().as_chunks::<2>().0.iter().map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()).collect()
 }
 
 pub fn host_name() -> String {
     let mut buf = [0u8; 256];
     // SAFETY: gethostname writes at most `len` bytes into `buf`.
     let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
-    let name = if ok { String::from_utf8_lossy(&buf[..buf.iter().position(|&b| b == 0).unwrap_or(buf.len())]).into_owned() } else { String::new() };
+    let name = if ok {
+        String::from_utf8_lossy(&buf[..buf.iter().position(|&b| b == 0).unwrap_or(buf.len())]).into_owned()
+    } else {
+        String::new()
+    };
     if name.trim().is_empty() { "EchoFiles".into() } else { name }
 }
 
-/// Load the identity, making one the first time (32 hex characters, the form current
-/// KDE Connect expects; the certificate's common name is the device id).
+/// Load the identity, making one the first time (32 hex characters, the form the link
+/// protocol expects; the certificate's common name is the device id).
 pub fn load_or_create(d: &Path) -> io::Result<Identity> {
     std::fs::create_dir_all(d)?;
-    let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(d.join("identity.lock"))?;
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(d.join("identity.lock"))?;
     // SAFETY: the descriptor belongs to this scoped File; close releases the lock.
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 { return Err(io::Error::last_os_error()); }
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
     let bundle = d.join("identity.json");
     match std::fs::read(&bundle) {
         Ok(bytes) => {
@@ -64,11 +84,12 @@ pub fn load_or_create(d: &Path) -> io::Result<Identity> {
             let id = v["id"].as_str().filter(|id| safe_id(id)).ok_or_else(|| io::Error::other("invalid identity ID"))?;
             let cert = v["certificate"].as_str().and_then(unhex).ok_or_else(|| io::Error::other("invalid identity certificate"))?;
             let key = v["key"].as_str().and_then(unhex).ok_or_else(|| io::Error::other("invalid identity key"))?;
-            let identity = Identity { device_id: id.into(), name: host_name(), cert: CertificateDer::from(cert), key: PrivatePkcs8KeyDer::from(key) };
+            let identity =
+                Identity { device_id: id.into(), name: host_name(), cert: CertificateDer::from(cert), key: PrivatePkcs8KeyDer::from(key) };
             crate::tls::Tls::new(&identity).map_err(|e| io::Error::other(format!("Invalid stored phone identity: {e}")))?;
             return Ok(identity);
-        },
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {},
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
     let id_file = d.join("device-id");
@@ -77,26 +98,30 @@ pub fn load_or_create(d: &Path) -> io::Result<Identity> {
     if let (Ok(id), Ok(cert), Ok(key)) = (std::fs::read_to_string(&id_file), std::fs::read(&cert_file), std::fs::read(&key_file)) {
         let id = id.trim().to_string();
         if safe_id(&id) {
-            let identity = Identity { device_id: id, name: host_name(), cert: CertificateDer::from(cert), key: PrivatePkcs8KeyDer::from(key) };
+            let identity =
+                Identity { device_id: id, name: host_name(), cert: CertificateDer::from(cert), key: PrivatePkcs8KeyDer::from(key) };
             crate::tls::Tls::new(&identity).map_err(|e| io::Error::other(format!("Invalid stored phone identity: {e}")))?;
             return Ok(identity);
         }
         return Err(io::Error::other("Invalid stored phone device ID"));
     }
-    if [&id_file, &cert_file, &key_file].iter().any(|p| p.exists()) { return Err(io::Error::other("Incomplete phone identity; restore the identity files before retrying")); }
+    if [&id_file, &cert_file, &key_file].iter().any(|p| p.exists()) {
+        return Err(io::Error::other("Incomplete phone identity; restore the identity files before retrying"));
+    }
     let mut raw = [0u8; 16];
     getrandom::fill(&mut raw).map_err(|e| io::Error::other(e.to_string()))?;
     let id = hex(&raw);
     let key = rcgen::KeyPair::generate().map_err(|e| io::Error::other(e.to_string()))?;
     let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).map_err(|e| io::Error::other(e.to_string()))?;
     params.distinguished_name.push(rcgen::DnType::CommonName, id.clone());
-    params.distinguished_name.push(rcgen::DnType::OrganizationName, "KDE");
-    params.distinguished_name.push(rcgen::DnType::OrganizationalUnitName, "KDE Connect");
+    params.distinguished_name.push(rcgen::DnType::OrganizationName, "EchoFiles");
+    params.distinguished_name.push(rcgen::DnType::OrganizationalUnitName, "EchoConnect");
     params.not_before = rcgen::date_time_ymd(2024, 1, 1);
     params.not_after = rcgen::date_time_ymd(2034, 1, 1);
     let cert = params.self_signed(&key).map_err(|e| io::Error::other(e.to_string()))?;
     let key_der = key.serialize_der();
-    let bytes = serde_json::to_vec(&serde_json::json!({"id":id, "certificate":hex(cert.der()), "key":hex(&key_der)})).map_err(io::Error::other)?;
+    let bytes =
+        serde_json::to_vec(&serde_json::json!({"id":id, "certificate":hex(cert.der()), "key":hex(&key_der)})).map_err(io::Error::other)?;
     write_private(&bundle, &bytes)?;
     Ok(Identity { device_id: id, name: host_name(), cert: cert.der().clone(), key: PrivatePkcs8KeyDer::from(key_der) })
 }
@@ -176,7 +201,10 @@ pub fn trust(d: &Path, t: &Trusted) -> io::Result<()> {
     }
     std::fs::create_dir_all(trusted_dir(d))?;
     let name = t.name.replace('\n', " ");
-    write_private(&trusted_dir(d).join(&t.id), format!("name={name}\ntype={}\ncertificate={}\n", t.kind.replace(['\n', '\r'], " "), hex(&t.cert)).as_bytes())
+    write_private(
+        &trusted_dir(d).join(&t.id),
+        format!("name={name}\ntype={}\ncertificate={}\n", t.kind.replace(['\n', '\r'], " "), hex(&t.cert)).as_bytes(),
+    )
 }
 
 pub fn forget(d: &Path, id: &str) -> io::Result<()> {

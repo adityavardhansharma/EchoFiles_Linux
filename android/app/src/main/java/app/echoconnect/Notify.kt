@@ -37,6 +37,14 @@ object Notify {
     fun openApp(ctx: Context): PendingIntent =
         PendingIntent.getActivity(ctx, 0, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_IMMUTABLE)
 
+    /** Opens EchoConnect straight into the file picker, to send files up. */
+    fun pickFiles(ctx: Context, code: Int): PendingIntent =
+        PendingIntent.getActivity(ctx, code, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP).putExtra(MainActivity.EXTRA_PAGE, "pick-files"), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
+    /** Reads the clipboard for a moment and sends it up (the same path as the quick-settings tile). */
+    fun sendClipboard(ctx: Context, code: Int): PendingIntent =
+        PendingIntent.getActivity(ctx, code, Intent(ctx, app.echoconnect.clipboard.ClipboardReadActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_IMMUTABLE)
+
     fun action(ctx: Context, what: String, code: Int): PendingIntent =
         PendingIntent.getBroadcast(ctx, code, Intent(ctx, NotificationActions::class.java).setAction(what), PendingIntent.FLAG_IMMUTABLE)
 
