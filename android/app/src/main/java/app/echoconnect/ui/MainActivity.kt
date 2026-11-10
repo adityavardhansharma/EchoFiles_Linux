@@ -16,10 +16,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.echoconnect.*
 import app.echoconnect.bluetooth.BluetoothLink
 import app.echoconnect.clipboard.ClipboardSync
+import app.echoconnect.share.Share
 
 class MainActivity : ComponentActivity(), Host {
     private var rev by mutableIntStateOf(0)
@@ -29,8 +31,9 @@ class MainActivity : ComponentActivity(), Host {
 
     private val files = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isEmpty()) return@registerForActivityResult
+        if (!Prefs.on(this, "files")) { filesOff(); return@registerForActivityResult }
         Work.run { uris.forEach { Connect.sendUri(it, count = uris.size) } }
-        snack(Snack(if (uris.size == 1) "Sending 1 file to ${laptopName()}" else "Sending ${uris.size} files to ${laptopName()}", icon = "upload", action = "View") { go("transfers") })
+        snack(Snack(if (uris.size == 1) "Sending 1 file up to ${laptopName()}" else "Sending ${uris.size} files up to ${laptopName()}", action = "View") { go("transfers") })
     }
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { startFeatures(); refresh() }
     private val prefsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> refresh() }
@@ -44,11 +47,23 @@ class MainActivity : ComponentActivity(), Host {
         ConnectService.start(this)
         page = saved?.getString("page") ?: if (Prefs.pairedOnce(this)) "home" else "first-run"
         tab = saved?.getString("tab") ?: "home"
-        intent?.getStringExtra(EXTRA_PAGE)?.let { go(it) }
+        handle(intent)
         getSharedPreferences("echoconnect", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(prefsListener)
         setContent { AppTheme { App() } }
     }
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); intent.getStringExtra(EXTRA_PAGE)?.let { go(it) } }
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); handle(intent) }
+
+    /** Opens the page an intent names; "pick-files" (the widget and the notification) goes straight to the picker. */
+    private fun handle(intent: Intent?) {
+        val target = intent?.getStringExtra(EXTRA_PAGE) ?: return
+        intent.removeExtra(EXTRA_PAGE)
+        if (target == "pick-files") { go("home"); if (Prefs.on(this, "files")) window.decorView.post { pickFiles() } else filesOff() } else go(target)
+    }
+
+    /** Files is switched off on the Panel: say so, and offer to switch it on. */
+    private fun filesOff() = snack(Snack("Files is switched off", "warning", action = "Turn on") {
+        Prefs.set(this, "files", true); Connect.send("echofiles.settings", org.json.JSONObject().put("files", true)); refresh()
+    })
     override fun onDestroy() { getSharedPreferences("echoconnect", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(prefsListener); super.onDestroy() }
     override fun onSaveInstanceState(out: Bundle) { super.onSaveInstanceState(out); out.putString("page", page); out.putString("tab", tab) }
     override fun onResume() {
@@ -85,36 +100,35 @@ class MainActivity : ComponentActivity(), Host {
         val s by Connect.state.collectAsStateWithLifecycle()
         var linkSheet by remember { mutableStateOf(false) }
         var forget by remember { mutableStateOf(false) }
+        var stations by remember { mutableStateOf(false) }
         val back = { page = tab }
         BackHandler(page !in TABS && page != "first-run") { back() }
         BackHandler(page in TABS && page != "home") { go("home") }
-        Box(Modifier.fillMaxSize().background(token("bg"))) {
-            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))) {
-                Box(Modifier.weight(1f)) {
-                    when (page) {
-                        "first-run", "pair" -> PairingScreen(s, this@MainActivity, page == "first-run") { clip -> go(if (clip) "clip-setup" else "home"); if (clip) tab = "clipboard" }
-                        "clipboard" -> ClipboardScreen(s, this@MainActivity)
-                        "transfers" -> TransfersScreen(s, this@MainActivity)
-                        "settings" -> SettingsScreen(s, this@MainActivity) { forget = true }
-                        "permissions" -> PermissionsScreen(this@MainActivity, back)
-                        "clip-setup" -> ClipboardSetupScreen(s, this@MainActivity, back)
-                        "notify-apps" -> NotificationAppsScreen(this@MainActivity, back)
-                        else -> HomeScreen(s, this@MainActivity) { linkSheet = true }
-                    }
-                    Box(Modifier.align(Alignment.BottomCenter)) { SnackbarHost(snackbar) { snackbar = null } }
+        Box(Modifier.fillMaxSize().background(relay().paper)) {
+            when (page) {
+                "first-run", "pair" -> PairingScreen(s, this@MainActivity, page == "first-run") { clip -> go(if (clip) "clip-setup" else "home"); if (clip) tab = "clipboard" }
+                "clipboard" -> ClipboardScreen(s, this@MainActivity)
+                "transfers" -> TransfersScreen(s, this@MainActivity)
+                "settings" -> SettingsScreen(s, this@MainActivity) { forget = true }
+                "permissions" -> PermissionsScreen(this@MainActivity, back)
+                "clip-setup" -> ClipboardSetupScreen(s, this@MainActivity, back)
+                "notify-apps" -> NotificationAppsScreen(this@MainActivity, back)
+                "dictate" -> DictateScreen(s, this@MainActivity, back)
+                else -> HomeScreen(s, this@MainActivity, { stations = true }) { linkSheet = true }
+            }
+            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom)).sideSafe()) {
+                SnackbarHost(snackbar) { snackbar = null }
+                if (page in TABS) {
+                    val moving = s.transfers.count { !it.finished && it.error == null && !Share.waiting().containsKey(it.id) }
+                    Dial(TABS.indexOf(page), moving, Modifier.padding(start = 12.dp, end = 12.dp, bottom = 14.dp)) { go(TABS[it]) }
                 }
-                if (page in TABS) Box(Modifier.background(token("bg-deep")).windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))) {
-                    BottomNav(TABS.indexOf(page), mapOf(2 to s.transfers.count { !it.finished && it.error == null })) { go(TABS[it]) }
-                } else Spacer(Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)))
             }
-            if (linkSheet) Box(Modifier.fillMaxSize()) { OpenLinkSheet(s, this@MainActivity) { linkSheet = false } }
-        }
-        if (page != "first-run" && page != "pair") s.pair?.let { PairDialog(it) }
-        if (forget) s.laptop?.let { l ->
-            EchoDialog("Forget ${l.name}?", { forget = false }, danger = true, body = "It stops seeing this phone and its cached file names are removed. Pair again with its code to undo.") {
-                Button("Keep laptop", Variant.Ghost) { forget = false }
-                Button("Forget laptop", Variant.Danger) { Connect.forget(l.id); forget = false; snack(Snack("Forgot ${l.name}", icon = "unlink")) }
+            if (stations) StationsSheet(s, this@MainActivity) { stations = false }
+            if (linkSheet) OpenLinkSheet(s, this@MainActivity) { linkSheet = false }
+            if (forget) s.laptop?.let { l ->
+                ForgetSheet(l, onKeep = { forget = false }) { Connect.forget(l.id); forget = false; snack(Snack("Cut the link to ${l.name}", "success")) }
             }
+            if (page != "first-run" && page != "pair") s.pair?.let { PairDialog(it) }
         }
     }
 

@@ -21,7 +21,7 @@ class EchoApp : Application() {
         super.onCreate()
         Connect.init(this)
         Notify.channels(this)
-        listOf(Battery, ClipboardSync, Notifications, Messages, Contacts, Calls, Media, Share, Ring, Files, Photos, Capture, LaptopCommands, Dnd, app.echoconnect.signal.Signal)
+        listOf(Battery, ClipboardSync, Notifications, Messages, Contacts, Calls, Media, Share, Ring, Files, Photos, Capture, LaptopCommands, Dnd, app.echoconnect.signal.Signal, app.echoconnect.scribe.Scribe)
             .forEach(Connect::register)
         ConnectService.start(this)
     }

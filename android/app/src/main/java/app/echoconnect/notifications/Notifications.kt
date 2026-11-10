@@ -10,6 +10,25 @@ import org.json.JSONArray
 
 object Notifications : Plugin {
     @Volatile var listener: NotificationListener? = null
+    private val posted = java.util.concurrent.ConcurrentHashMap<String, MutableList<Long>>()
+    /** Bumped on every noted alert, so the mixer redraws its meters. */
+    val version = kotlinx.coroutines.flow.MutableStateFlow(0)
+
+    /** Notes a notification from [pkg], for the mixer's meters. */
+    fun note(pkg: String) {
+        val now = System.currentTimeMillis()
+        posted.getOrPut(pkg) { java.util.Collections.synchronizedList(mutableListOf()) }.apply { add(now); synchronized(this) { removeAll { now - it > 3600_000 } } }
+        version.value++
+    }
+
+    /** How many notifications [pkg] posted in the last hour. */
+    fun recent(pkg: String): Int {
+        val now = System.currentTimeMillis()
+        return posted[pkg]?.let { l -> synchronized(l) { l.count { now - it <= 3600_000 } } } ?: 0
+    }
+
+    /** Apps that posted in the last hour, even if their notifications are gone now. */
+    fun recentApps(): Set<String> = posted.keys.filter { recent(it) > 0 }.toSet()
     override val handles = setOf("kdeconnect.notification.request", "kdeconnect.notification.reply", "kdeconnect.notification.action")
     override fun onReady(ctx: Context, laptop: String) { if (!Prefs.on(ctx, "notifications")) return; listener?.activeNotifications?.forEach { publish(ctx, it, true) } }
     fun publish(ctx: Context, n: StatusBarNotification, silent: Boolean = false) {
@@ -53,7 +72,10 @@ object Notifications : Plugin {
 class NotificationListener : NotificationListenerService() {
     override fun onListenerConnected() { Notifications.listener = this; Connect.laptopId?.let { Notifications.onReady(this, it) } }
     override fun onListenerDisconnected() { Notifications.listener = null }
-    override fun onNotificationPosted(sbn: StatusBarNotification) { Notifications.publish(this, sbn) }
+    override fun onNotificationPosted(sbn: StatusBarNotification) {
+        if (sbn.notification.flags and Notification.FLAG_GROUP_SUMMARY == 0) Notifications.note(sbn.packageName)
+        Notifications.publish(this, sbn)
+    }
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         if (Prefs.on(this, "notifications")) Connect.send("kdeconnect.notification", JSONObject().put("id", sbn.key).put("isCancel", true))
     }

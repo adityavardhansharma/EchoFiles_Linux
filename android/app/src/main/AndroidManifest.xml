@@ -33,6 +33,8 @@
     <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
@@ -126,6 +128,32 @@
             android:excludeFromRecents="true"
             android:taskAffinity="" />
 
+        <!-- Dictation on the laptop: the mic stays open only while dictating -->
+        <service
+            android:name=".scribe.MicService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <activity
+            android:name=".scribe.MicActivity"
+            android:exported="false"
+            android:theme="@style/Theme.EchoConnect.Invisible"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity="" />
+
+        <service
+            android:name=".scribe.DictateTile"
+            android:exported="true"
+            android:icon="@drawable/ic_mic"
+            android:label="@string/dictate_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data android:name="android.service.quicksettings.TOGGLEABLE_TILE" android:value="true" />
+        </service>
+
         <service
             android:name=".ConnectService"
             android:exported="false"
@@ -170,6 +198,13 @@
         </receiver>
 
         <receiver android:name=".NotificationActions" android:exported="false" />
+
+        <receiver android:name=".LinkWidget" android:exported="false" android:label="@string/widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/link_widget" />
+        </receiver>
 
         <provider
             android:name="androidx.core.content.FileProvider"

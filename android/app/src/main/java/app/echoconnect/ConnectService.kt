@@ -38,6 +38,7 @@ class ConnectService : Service() {
             if (Connect.state.value.transfers.any { !it.finished }) Connect.tickTransfers()
             if (++tickCount % 30 == 0) BluetoothLink.start(this@ConnectService)
             if (Connect.laptopId == null) ClipboardSync.stopReader()
+            LinkWidget.updateIfChanged(this@ConnectService)
             main.postDelayed(this, 500)
         }
     }
@@ -86,7 +87,7 @@ class ConnectService : Service() {
 
         private fun notification(ctx: Context): Notification {
             val s = Connect.state.value
-            val l = s.laptops.firstOrNull { it.paired && it.connected }
+            val l = s.laptop?.takeIf { it.connected }
             val title = when {
                 l != null -> "Connected to ${l.name}"
                 s.laptops.any { it.paired } -> "Waiting for ${s.laptops.first { it.paired }.name}"
@@ -106,8 +107,9 @@ class ConnectService : Service() {
                 .setOngoing(true)
                 .setShowWhen(false)
             if (l != null) {
-                b.addAction(Notification.Action.Builder(null, "Send clipboard", sendClip).build())
-                if (l.echofiles && l.lan) b.addAction(Notification.Action.Builder(null, "Lock laptop", Notify.action(ctx, NotificationActions.LOCK, 11)).build())
+                b.addAction(Notification.Action.Builder(null, "Clipboard ↑", sendClip).build())
+                if (l.lan) b.addAction(Notification.Action.Builder(null, "Files ↑", Notify.pickFiles(ctx, 12)).build())
+                if (l.echofiles && l.lan) b.addAction(Notification.Action.Builder(null, "Lock", Notify.action(ctx, NotificationActions.LOCK, 11)).build())
             }
             return b.build()
         }

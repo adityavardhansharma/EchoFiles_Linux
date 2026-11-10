@@ -27,6 +27,7 @@ mod pane;
 mod phone;
 mod phone_view;
 mod preview;
+mod scribe;
 mod search;
 mod settings;
 mod style;

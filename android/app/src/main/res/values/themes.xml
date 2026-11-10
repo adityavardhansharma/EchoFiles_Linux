@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Echo theme grounds; Compose draws everything else from the laptop's tokens. -->
+    <!-- Relay carbon; Compose draws everything else. -->
     <style name="Theme.EchoConnect" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/bg</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
@@ -18,5 +18,5 @@
         <item name="android:windowAnimationStyle">@null</item>
         <item name="android:windowBackground">@android:color/transparent</item>
     </style>
-    <color name="bg">#0B1030</color>
+    <color name="bg">#121211</color>
 </resources>

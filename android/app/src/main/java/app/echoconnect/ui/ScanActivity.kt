@@ -9,8 +9,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
@@ -20,7 +22,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -30,13 +34,13 @@ import com.google.mlkit.vision.common.InputImage
 import org.json.JSONObject
 import java.util.concurrent.Executors
 
-/** The camera pointed at the code EchoFiles shows: accent corner brackets and one status line. */
+/** The camera pointed at the code EchoFiles shows: signal brackets over the picture, a carbon panel reading below. */
 @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
 class ScanActivity : ComponentActivity() {
     private val executor = Executors.newSingleThreadExecutor()
     @Volatile private var consumed = false
     private val scanner = BarcodeScanning.getClient()
-    private var status by mutableStateOf("Point at the code in EchoFiles → Connect phone")
+    private var status by mutableStateOf("Hold the phone so the code fills the corners")
     private var found by mutableStateOf(false)
     private var allowed by mutableStateOf<Boolean?>(null)
     private val permission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { allowed = it }
@@ -45,40 +49,65 @@ class ScanActivity : ComponentActivity() {
         super.onCreate(saved); enableEdgeToEdge()
         allowed = if (Work.allowed(this, Manifest.permission.CAMERA)) true else { permission.launch(Manifest.permission.CAMERA); null }
         setContent { AppTheme {
-            Column(Modifier.fillMaxSize().background(token("bg")).safeDrawingPadding()) {
-                AppBar("Scan the laptop's code", back = { finish() })
-                ScreenBody(Modifier.weight(1f)) {
-                    Lede(strong("On the laptop, open EchoFiles and click **Connect phone** in the sidebar. The code pins the laptop's certificate, so nobody else can pose as it."))
-                    when (allowed) {
-                        false -> Banner("Camera is off for EchoConnect.", "Allow the camera to scan, or go back and type the laptop's address.", "warning") {
-                            Button("Allow camera", size = BtnSize.Sm) { permission.launch(Manifest.permission.CAMERA) }
-                        }
-                        else -> Viewfinder(allowed == true)
-                    }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                        if (found) Glyph("check", color = token("success-ink"), size = 16)
-                        Txt(status, size = 13, line = 18, color = token(if (found) "success-ink" else "ink-muted"), align = TextAlign.Center, modifier = Modifier.padding(start = 8.dp))
-                    }
+            val r = relay()
+            Box(Modifier.fillMaxSize().background(Color.Black)) {
+                when (allowed) {
+                    false -> Box(Modifier.fillMaxSize().background(Color(0xFF15161A)))
+                    else -> if (allowed == true) AndroidView({ ctx -> PreviewView(ctx).also { bind(it) } }, Modifier.fillMaxSize())
                 }
-                Column(Modifier.fillMaxWidth().hairline().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp)) {
-                    Button("Type the laptop's address instead", Variant.Ghost, block = true) { finish() }
+                Brackets(Modifier.align(Alignment.Center).offset(y = (-90).dp).size(270.dp), if (found) r.live else r.sig)
+                Row(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars).sideSafe().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Carbon(Modifier.clip(RoundedCornerShape(14.dp))) { Box(Modifier.size(48.dp).clickable(onClickLabel = "Close") { finish() }.semantics { contentDescription = "Close" }, contentAlignment = Alignment.Center) { Glyph("close") } }
+                    Carbon(Modifier.clip(RoundedCornerShape(12.dp)), Color(0xCC121211)) { Lbl("Point at EchoFiles › Connect phone", Color(0xFFF2EFE8), Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) }
+                }
+                Carbon(Modifier.align(Alignment.BottomCenter).fillMaxWidth().clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))) {
+                    Column(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars).sideSafe().padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Box(Modifier.fillMaxWidth().height(4.dp).background(r.sig))
+                        if (allowed == false) Banner("Camera is off for EchoConnect", "Allow the camera to read the code, or go back and type the laptop's address.") {
+                            Key("Allow camera", height = 40.dp, size = 13) { permission.launch(Manifest.permission.CAMERA) }
+                        } else Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            ReadGrid(found, Modifier.size(120.dp))
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Lbl(if (found) "Code read" else "Reading code")
+                                Dm(if (found) "FOUND" else "LOOK", 40, if (found) r.live else r.sig, glow = true)
+                                Lbl(status, ink(2), maxLines = 3)
+                            }
+                        }
+                        T("The code pins the laptop's certificate, so nobody else on the network can pose as it.", 13, color = ink(2))
+                        Key("Type the address instead", Modifier.fillMaxWidth(), Tone.Carbon, height = 50.dp, size = 14) { finish() }
+                    }
                 }
             }
         } }
     }
 
-    @Composable private fun Viewfinder(camera: Boolean) {
-        val corner = token(if (found) "success" else "accent")
-        Box(Modifier.fillMaxWidth().aspectRatio(1f).widthIn(max = 300.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xFF0A0B10)), contentAlignment = Alignment.Center) {
-            if (camera) AndroidView({ ctx -> PreviewView(ctx).also { bind(it) } }, Modifier.fillMaxSize())
-            Canvas(Modifier.fillMaxSize()) {
-                val inset = size.width * .14f; val len = 36.dp.toPx(); val w = 4.dp.toPx()
-                val l = inset; val t = inset; val r = size.width - inset; val b = size.height - inset
-                fun line(a: Offset, z: Offset) = drawLine(corner, a, z, w, StrokeCap.Square)
-                line(Offset(l, t), Offset(l + len, t)); line(Offset(l, t), Offset(l, t + len))
-                line(Offset(r, t), Offset(r - len, t)); line(Offset(r, t), Offset(r, t + len))
-                line(Offset(l, b), Offset(l + len, b)); line(Offset(l, b), Offset(l, b - len))
-                line(Offset(r, b), Offset(r - len, b)); line(Offset(r, b), Offset(r, b - len))
+    /** Four chunky corners that breathe while looking and snap green when a code is found. */
+    @Composable private fun Brackets(modifier: Modifier, color: Color) {
+        val breathe by rememberInfiniteTransition(label = "hunt").animateFloat(0f, 1f, infiniteRepeatable(tween(1000, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "b")
+        Canvas(modifier.clearAndSetSemantics { }) {
+            val inset = (if (found) 0f else breathe * 6f) * density; val len = 50.dp.toPx(); val w = 7.dp.toPx()
+            val l = inset; val t = inset; val r = size.width - inset; val b = size.height - inset
+            fun line(a: Offset, z: Offset) = drawLine(color, a, z, w, StrokeCap.Round)
+            line(Offset(l, t), Offset(l + len, t)); line(Offset(l, t), Offset(l, t + len))
+            line(Offset(r, t), Offset(r - len, t)); line(Offset(r, t), Offset(r, t + len))
+            line(Offset(l, b), Offset(l + len, b)); line(Offset(l, b), Offset(l, b - len))
+            line(Offset(r, b), Offset(r - len, b)); line(Offset(r, b), Offset(r, b - len))
+        }
+    }
+
+    /** A 21 × 21 dot grid: a sweep lights it row by row while looking; all of it lights when found. */
+    @Composable private fun ReadGrid(found: Boolean, modifier: Modifier) {
+        val sig = relay().sig; val live = relay().live
+        val sweep by rememberInfiniteTransition(label = "grid").animateFloat(0f, 21f, infiniteRepeatable(tween(1600, easing = LinearEasing)), label = "s")
+        Canvas(modifier.clearAndSetSemantics { }) {
+            val n = 21; val step = size.width / n; val rad = step * 0.36f
+            for (y in 0 until n) for (x in 0 until n) {
+                val finder = (x < 7 && y < 7) || (x > 13 && y < 7) || (x < 7 && y > 13)
+                val on = when {
+                    found -> finder || (x * 7 + y * 13) % 3 != 0
+                    else -> finder && y.toFloat() < sweep || (y == sweep.toInt())
+                }
+                drawCircle(if (!on) Color(0xFF2D2D2A) else if (found) live else sig, rad, Offset(x * step + step / 2, y * step + step / 2))
             }
         }
     }
