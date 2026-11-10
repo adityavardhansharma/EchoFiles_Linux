@@ -59,6 +59,7 @@ const BOTH_SEND: &[&str] = &[
     "echofiles.files.thumb",
     "echofiles.files.write",
     "echofiles.photos.read",
+    "echofiles.scribe",
     "echofiles.settings",
     "kdeconnect.battery",
     "kdeconnect.battery.request",
@@ -96,6 +97,7 @@ const PHONE_ONLY: &[&str] = &[
     "echofiles.photos.error",
     "echofiles.photos.file",
     "echofiles.photos.thumb",
+    "echofiles.scribe.audio",
     "kdeconnect.connectivity_report",
     "kdeconnect.contacts.response_uids_timestamps",
     "kdeconnect.contacts.response_vcards",
@@ -146,6 +148,8 @@ fn bluetooth_ok(kind: &str) -> bool {
             | "kdeconnect.telephony.request_mute"
     ) || kind.starts_with("echofiles.call")
         || kind == "echofiles.clipboard.image.inline"
+        // Dictation through EchoScribe: small control packets and 16 kHz speech (~43 KB/s).
+        || kind.starts_with("echofiles.scribe")
 }
 
 type Tracer = Box<dyn Fn(&str) + Send + Sync>;
@@ -158,6 +162,10 @@ pub fn trace_to(f: impl Fn(&str) + Send + Sync + 'static) {
 }
 
 fn trace(what: &str) {
+    // Streamed dictation audio is five packets a second; it would bury everything else.
+    if what.ends_with("echofiles.scribe.audio") {
+        return;
+    }
     let t = TRACE.get_or_init(|| std::env::var_os("EF_PHONE_LOG").map(|_| Box::new(|l: &str| eprintln!("phone: {l}")) as Tracer));
     if let Some(f) = t {
         f(what);

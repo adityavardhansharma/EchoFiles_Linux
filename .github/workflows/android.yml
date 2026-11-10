@@ -22,6 +22,11 @@ on:
         required: true
         default: false
         type: boolean
+      run_tests:
+        description: Run the Rust core's tests before building
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -56,6 +61,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - run: cargo install cargo-ndk --locked
       - name: Rust core tests
+        if: ${{ inputs.run_tests }}
         run: cargo test -p echofiles-phone -p echoconnect-core --locked -- --test-threads=1
       - name: Signed release APK
         env:

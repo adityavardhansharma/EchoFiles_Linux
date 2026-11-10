@@ -113,6 +113,7 @@ class MainActivity : ComponentActivity(), Host {
                 "permissions" -> PermissionsScreen(this@MainActivity, back)
                 "clip-setup" -> ClipboardSetupScreen(s, this@MainActivity, back)
                 "notify-apps" -> NotificationAppsScreen(this@MainActivity, back)
+                "dictate" -> DictateScreen(s, this@MainActivity, back)
                 else -> HomeScreen(s, this@MainActivity, { stations = true }) { linkSheet = true }
             }
             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom)).sideSafe()) {
